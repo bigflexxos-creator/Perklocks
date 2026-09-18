@@ -15,7 +15,7 @@
  * The canonical NFL ATD pipeline (nfl_atd_engine + xTD v2 + Bayesian
  * shrinkage) is UNCHANGED — this screen is a READ-only UX rewrite.
  */
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   RefreshControl, ScrollView, StyleSheet,
   Text, View, Pressable,
@@ -25,11 +25,13 @@ import { Stack, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import {
   api,
-  type NFLAtdLeaderboardResponse,
-  type NFLAtdByGameResponse,
-  type NFLAtdByGameGroup,
+  getBackendUrl,
+  type NFLAtdSlateResponse,
+  type NFLAtdSlateGame,
   type NFLAtdPick,
 } from "@/src/lib/api";
+import { storage } from "@/src/utils/storage";
+import { classifyError, ErrorKind } from "@/src/lib/errorTaxonomy";
 import { COLORS } from "@/src/theme";
 import { SkeletonList } from "@/src/components/Skeleton";
 import { EmptyState } from "@/src/components/EmptyState";
@@ -37,19 +39,19 @@ import { safeBack } from "@/src/utils/safeBack";
 
 type ViewMode = "topDay" | "byGame";
 
-function gradeForProb(p: number): string {
-  if (p >= 0.70) return "A+";
-  if (p >= 0.60) return "A";
-  if (p >= 0.52) return "B+";
-  if (p >= 0.45) return "B";
-  if (p >= 0.38) return "C+";
-  return "C";
+/** P0.4 — no client-derived grade.  Canonical published rows show the
+ *  backend grade; on-demand candidates show an evidence/data badge. */
+function dataBadge(pick: NFLAtdPick): string {
+  if (pick.candidate_state === "PUBLISHED" && pick.grade) return String(pick.grade).toUpperCase();
+  if ((pick.sample_games ?? 0) >= 8) return "STRONG DATA";
+  if ((pick.sample_games ?? 0) >= 4) return "MODEL";
+  return "LIMITED DATA";
 }
-function gradeColor(g: string): string {
-  if (g === "A+" || g === "A") return "rgba(74, 222, 128, 0.92)";
-  if (g === "B+" || g === "B") return "rgba(132, 204, 22, 0.85)";
-  if (g === "C+" || g === "C") return "rgba(234, 179, 8, 0.85)";
-  return "rgba(239, 68, 68, 0.80)";
+function badgeColor(b: string): string {
+  if (b.includes("LOCK")) return "rgba(74, 222, 128, 0.92)";
+  if (b === "PLAYABLE" || b === "STRONG DATA") return "rgba(132, 204, 22, 0.85)";
+  if (b === "MODEL") return "rgba(234, 179, 8, 0.85)";
+  return "rgba(148, 163, 184, 0.7)";
 }
 function oppRatingChip(r: string): { bg: string; fg: string; label: string } {
   if (r === "high") return { bg: "rgba(74, 222, 128, 0.18)",  fg: "#86efac", label: "HIGH OPP" };
@@ -65,14 +67,14 @@ function fmtOdds(o?: number | null): string {
 
 function PickCard({ pick, rank, hideRank = false }:
                   { pick: NFLAtdPick; rank: number; hideRank?: boolean }) {
-  const grade = gradeForProb(pick.td_probability);
+  const grade = dataBadge(pick);
   const opp = oppRatingChip(pick.opportunity_rating);
   const oddsStr = fmtOdds(pick.book_odds);
   return (
     <View style={styles.card}>
       <View style={styles.headerRow}>
         {!hideRank && <Text style={styles.rank}>#{rank}</Text>}
-        <View style={[styles.gradeChip, { backgroundColor: gradeColor(grade) }]}>
+        <View style={[styles.gradeChip, { backgroundColor: badgeColor(grade) }]}>
           <Text style={styles.gradeText}>{grade}</Text>
         </View>
         <View style={{ flex: 1, marginLeft: 10 }}>
@@ -127,70 +129,147 @@ function PickCard({ pick, rank, hideRank = false }:
   );
 }
 
+// ── P4.4 · last-good ATD slate cache keyed by API origin + board_version ──
+const ATD_CACHE_KEY = "atd_slate_cache_v1";
+type AtdCache = { origin: string; slate: NFLAtdSlateResponse; ts: number };
+let _atdMem: AtdCache | null = null;
+
+function fmtKickoff(iso?: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+/** Compact ranked row for the By Game list (sportsbook-like). */
+function CandidateRow({ pick, rank }: { pick: NFLAtdPick; rank: number }) {
+  const oddsStr = fmtOdds(pick.book_odds);
+  const badge = dataBadge(pick);
+  return (
+    <View style={styles.candRow} testID={`atd-cand-${pick.player_id || rank}`}>
+      <Text style={styles.candRank}>{rank}.</Text>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.candName} numberOfLines={1}>{pick.player_name}</Text>
+        <Text style={styles.candSub} numberOfLines={1}>
+          {pick.team}{pick.position ? ` · ${pick.position}` : ""}{badge ? ` · ${badge}` : ""}
+        </Text>
+      </View>
+      <Text style={styles.candProb}>{(pick.td_probability * 100).toFixed(1)}%</Text>
+      <Text style={styles.candOdds}>{oddsStr || "—"}</Text>
+      {typeof pick.lock_score === "number" && pick.candidate_state === "PUBLISHED" ? (
+        <Text style={styles.candLock}>L{Math.round(pick.lock_score)}</Text>
+      ) : <View style={{ width: 34 }} />}
+    </View>
+  );
+}
+
+function GameCard({ game }: { game: NFLAtdSlateGame }) {
+  const [expanded, setExpanded] = useState(false);
+  const rows = expanded ? game.candidates : game.top;
+  const title = game.away_team && game.home_team
+    ? `${game.away_team} @ ${game.home_team}`
+    : game.event;
+  return (
+    <View style={styles.gameGroup} testID={`atd-game-${game.canonical_event_id}`}>
+      <View style={styles.gameHead}>
+        <Text style={styles.gameGroupTitle} numberOfLines={1}>{title}</Text>
+        <Text style={styles.gameTime}>
+          {game.state === "STARTED" ? "STARTED" : fmtKickoff(game.commence_time)}
+        </Text>
+      </View>
+      <Text style={styles.gameKicker}>TOP ATD CANDIDATES</Text>
+      {rows.map((p, i) => (
+        <CandidateRow key={`${game.canonical_event_id}-${p.player_id || p.player_name}-${i}`} pick={p} rank={i + 1} />
+      ))}
+      {game.candidates_in_game > game.top.length && (
+        <Pressable onPress={() => setExpanded((e) => !e)} style={styles.viewAll} testID={`atd-viewall-${game.canonical_event_id}`}>
+          <Text style={styles.viewAllTxt}>
+            {expanded ? "SHOW LESS" : `VIEW ALL (${game.candidates_in_game})`}
+          </Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
 export default function NFLAtdScreen() {
   useRouter();
-  const [top, setTop] = useState<NFLAtdLeaderboardResponse | null>(null);
-  const [byGame, setByGame] = useState<NFLAtdByGameResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [slate, setSlate] = useState<NFLAtdSlateResponse | null>(_atdMem?.slate ?? null);
+  const [loading, setLoading] = useState(!_atdMem);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [stale, setStale] = useState<boolean>(!!_atdMem);
   const [mode, setMode] = useState<ViewMode>("topDay");
+  const ctrlRef = useRef<AbortController | null>(null);
+
+  // Restore last-good slate for THIS API origin (cold boot).
+  useEffect(() => {
+    if (_atdMem) return;
+    (async () => {
+      try {
+        const raw = await storage.getItem<string>(ATD_CACHE_KEY, "");
+        if (!raw) return;
+        const c: AtdCache = JSON.parse(raw as any);
+        let origin = ""; try { origin = getBackendUrl(); } catch {}
+        if (!c?.slate || (c.origin && origin && c.origin !== origin)) return;
+        if (!slate) { setSlate(c.slate); setStale(true); setLoading(false); }
+      } catch { /* corrupt cache — ignore */ }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const load = useCallback(async () => {
+    if (ctrlRef.current) { try { ctrlRef.current.abort(); } catch {} }
+    const ctrl = new AbortController();
+    ctrlRef.current = ctrl;
     try {
+      // ONE slate request — Top 5 and By Game derive from the same universe.
+      const res = await api.nflAtdSlate(0.10, 5, 3, { signal: ctrl.signal });
+      if (ctrlRef.current !== ctrl) return;
+      setSlate(res);
+      setStale(false);
       setError(null);
-      // Fire BOTH endpoints in parallel — they hit the same canonical
-      // NFL ATD publication rows so scores/odds match across views.
-      const [tRes, gRes] = await Promise.all([
-        api.nflAtdLeaderboard(60, 0.10, "low"),
-        api.nflAtdByGame(5, 0.05, "low"),
-      ]);
-      setTop(tRes);
-      setByGame(gRes);
+      let origin = ""; try { origin = getBackendUrl(); } catch {}
+      _atdMem = { origin, slate: res, ts: Date.now() };
+      storage.setItem(ATD_CACHE_KEY, JSON.stringify(_atdMem)).catch?.(() => {});
     } catch (e: any) {
+      if (classifyError(e) === ErrorKind.ABORTED_SUPERSEDED) return;
+      if (ctrlRef.current !== ctrl) return;
+      // Keep last-good visible; only a true no-data failure blanks the screen.
+      setStale(true);
       setError(e?.message || "Failed to load ATD board");
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (ctrlRef.current === ctrl) {
+        setLoading(false);
+        setRefreshing(false);
+        ctrlRef.current = null;
+      }
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    return () => { if (ctrlRef.current) { try { ctrlRef.current.abort(); } catch {} } };
+  }, [load]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
     load();
   }, [load]);
 
-  // ── TOP 5 · true whole-slate ranking, NO per-game diversification ──
-  // MLB HR enforces "one HR pick per game" so a hot lineup doesn't
-  // crowd out other games.  That rule does NOT apply here: if two
-  // players in the same event are the two strongest ATD wagers on
-  // the slate, they both belong in Top 5.  Backend is already
-  // ranked by td_probability desc; we re-sort defensively.
-  const topFive = useMemo(() => {
-    const picks: NFLAtdPick[] = top?.picks ?? [];
-    return [...picks]
-      .sort((a, b) => b.td_probability - a.td_probability)
-      .slice(0, 5);
-  }, [top]);
+  const topFive: NFLAtdPick[] = useMemo(() => slate?.top5 ?? [], [slate]);
+  const games: NFLAtdSlateGame[] = useMemo(() => slate?.games ?? [], [slate]);
 
-  const games: NFLAtdByGameGroup[] = useMemo(
-    () => byGame?.games ?? [],
-    [byGame],
-  );
-
-  // Header summary counts adapt to current mode.
   const summary = useMemo(() => {
-    if (mode === "topDay") {
-      return `Top ${topFive.length} of ${top?.passed_filters ?? 0}`;
-    }
-    return `${games.length}g · ${byGame?.picks_returned ?? 0} picks`;
-  }, [mode, topFive.length, top, games.length, byGame]);
+    if (!slate) return "";
+    if (mode === "topDay") return `Top ${topFive.length} of ${slate.universe_count}`;
+    return `${games.length}g · ${slate.universe_count} candidates`;
+  }, [mode, topFive.length, games.length, slate]);
 
   const emptyForCurrentMode =
     (mode === "topDay" && topFive.length === 0) ||
     (mode === "byGame" && games.length === 0);
+  const hardError = !!error && !slate;
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -206,12 +285,9 @@ export default function NFLAtdScreen() {
         </Pressable>
         <Ionicons name="american-football-outline" size={20} color={COLORS.goldElite} />
         <Text style={styles.headerTitle}>NFL ANYTIME TOUCHDOWNS</Text>
-        {(top || byGame) && (
-          <Text style={styles.headerSub}>{summary}</Text>
-        )}
+        {!!slate && <Text style={styles.headerSub}>{summary}</Text>}
       </View>
 
-      {/* View mode toggle — MLB HR pattern */}
       <View style={styles.toggleRow}>
         <Pressable
           onPress={() => setMode("topDay")}
@@ -233,11 +309,23 @@ export default function NFLAtdScreen() {
         </Pressable>
       </View>
 
-      {loading ? (
+      {/* P4.4 / P0.11 — stale-while-revalidate strip; never a full-screen error
+          while last-good data exists. */}
+      {!!slate && (stale || refreshing) && (
+        <Pressable onPress={onRefresh} style={styles.staleStrip} testID="atd-stale-strip">
+          <Text style={styles.staleTxt}>
+            {refreshing ? "UPDATING" : error ? "OFFLINE · SHOWING LAST GOOD" : "STALE"}
+            {" · BOARD "}{String(slate.board_version).slice(0, 8)}
+            {slate.data_as_of ? ` · AS OF ${fmtKickoff(slate.data_as_of)}` : ""}
+          </Text>
+        </Pressable>
+      )}
+
+      {loading && !slate ? (
         <View style={styles.scroll} testID="atd-skeleton">
           <SkeletonList count={4} />
         </View>
-      ) : error ? (
+      ) : hardError ? (
         <ScrollView
           contentContainerStyle={styles.scroll}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.voltBlue} />}
@@ -245,7 +333,7 @@ export default function NFLAtdScreen() {
           <EmptyState
             variant="error"
             title="Couldn't load ATD board"
-            message={error}
+            message={error || ""}
             onRetry={onRefresh}
             secondaryHint="Pull down to retry manually."
             testID="atd-error"
@@ -278,7 +366,7 @@ export default function NFLAtdScreen() {
             <>
               <Text style={styles.sectionTitle}>🔥 TOP 5 TODAY</Text>
               <Text style={styles.intro}>
-                True five highest-ranked ATD wagers across the slate —
+                Highest-ranked legitimate ATD candidates across the ENTIRE slate —
                 no per-game quota, real sportsbook odds when available.
               </Text>
               {topFive.map((p, i) => (
@@ -289,21 +377,11 @@ export default function NFLAtdScreen() {
             <>
               <Text style={styles.sectionTitle}>📋 BY GAME</Text>
               <Text style={styles.intro}>
-                ATD candidates grouped by matchup. One player = one ATD
-                score across every view.
+                Ranked within each matchup. One player = one ATD probability
+                across every view — same universe as Top 5.
               </Text>
               {games.map((g) => (
-                <View key={g.canonical_event_id || g.event} style={styles.gameGroup}>
-                  <Text style={styles.gameGroupTitle}>{g.event}</Text>
-                  {g.picks.map((p, i) => (
-                    <PickCard
-                      key={`bg-${g.canonical_event_id || g.event}-${p.player_id}-${i}`}
-                      pick={p}
-                      rank={i + 1}
-                      hideRank
-                    />
-                  ))}
-                </View>
+                <GameCard key={g.canonical_event_id || g.event} game={g} />
               ))}
             </>
           )}
@@ -315,6 +393,23 @@ export default function NFLAtdScreen() {
 }
 
 const styles = StyleSheet.create({
+  staleStrip: {
+    marginHorizontal: 14, marginBottom: 8, paddingHorizontal: 12, paddingVertical: 7,
+    borderRadius: 8, borderWidth: 1, borderColor: COLORS.borderDefault, backgroundColor: COLORS.surface,
+  },
+  staleTxt: { color: COLORS.goldRich, fontSize: 10.5, fontWeight: "800", letterSpacing: 0.8 },
+  gameHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  gameTime: { color: COLORS.textMuted, fontSize: 11, fontWeight: "700", marginLeft: 8 },
+  gameKicker: { color: COLORS.textMuted, fontSize: 9.5, fontWeight: "800", letterSpacing: 1.2, marginTop: 6, marginBottom: 4 },
+  candRow: { flexDirection: "row", alignItems: "center", paddingVertical: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: COLORS.borderDefault, gap: 8 },
+  candRank: { color: COLORS.textMuted, fontSize: 12, fontWeight: "800", width: 20 },
+  candName: { color: COLORS.textPrimary, fontSize: 13.5, fontWeight: "700" },
+  candSub: { color: COLORS.textMuted, fontSize: 10.5, marginTop: 1 },
+  candProb: { color: COLORS.goldElite, fontSize: 13.5, fontWeight: "900", width: 56, textAlign: "right", fontVariant: ["tabular-nums"] },
+  candOdds: { color: COLORS.textSecondary, fontSize: 12, fontWeight: "700", width: 48, textAlign: "right", fontVariant: ["tabular-nums"] },
+  candLock: { color: COLORS.voltBlue, fontSize: 11, fontWeight: "800", width: 34, textAlign: "right" },
+  viewAll: { alignSelf: "flex-start", paddingVertical: 8, paddingHorizontal: 4, minHeight: 44, justifyContent: "center" },
+  viewAllTxt: { color: COLORS.voltBlue, fontSize: 11.5, fontWeight: "800", letterSpacing: 0.8 },
   safe: { flex: 1, backgroundColor: COLORS.deepBlack },
   header: {
     flexDirection: "row", alignItems: "center", paddingHorizontal: 14,

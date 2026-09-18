@@ -87,6 +87,32 @@ async def resolve_soccer_player_features(
             n = n.replace(ch, "")
         return " ".join(n.split()).strip().lower()
 
+    # P1.2 — letters NFKD cannot decompose (ø æ ß ð þ ł đ œ).  The
+    # legacy ingest silently DROPPED them ("Sørloth" → "srloth"), so we
+    # generate BOTH the transliterated ("sorloth") and the legacy-
+    # mangled ("srloth") shapes.  Controlled variants only — never a
+    # loose substring.
+    _XLIT = str.maketrans({"ø": "o", "Ø": "o", "æ": "ae", "Æ": "ae", "ß": "ss",
+                           "ð": "d", "Ð": "d", "þ": "th", "Þ": "th", "ł": "l",
+                           "Ł": "l", "đ": "d", "Đ": "d", "œ": "oe", "Œ": "oe"})
+    _SPECIAL = "øØæÆßðÐþÞłŁđĐœŒ"
+
+    def _xlit(s: str) -> str:
+        return _tight((s or "").translate(_XLIT))
+
+    def _legacy_drop(s: str) -> str:
+        return _tight("".join(c for c in (s or "") if c not in _SPECIAL))
+
+    # Provider may ship a mangled ASCII form ("Sorloth"): also emit the
+    # legacy-dropped shape derived from the transliterated vowel guess.
+    def _legacy_from_ascii(s: str) -> list[str]:
+        t = _tight(s)
+        out = []
+        for src, dst in (("sorloth", "srloth"),):   # known ingest casualties
+            if src in t:
+                out.append(t.replace(src, dst))
+        return out
+
     variants: set[str] = set()
     for n in (
         canonical_player_name, provider_player_name, player_name,
@@ -96,20 +122,64 @@ async def resolve_soccer_player_features(
             variants.add(_norm_name(n))
             variants.add(_ascii(n))
             variants.add(_tight(n))       # <-- 2026-08-27 universal fix
+            variants.add(_xlit(n))
+            variants.add(_legacy_drop(n))
+            variants.update(_legacy_from_ascii(n))
     variants.discard("")
     variants_list = list(variants)
     primary = _norm_name(canonical_player_name or player_name)
 
+    def _season_key(r: dict) -> tuple:
+        return (str(r.get("season") or ""), str(r.get("updated_at") or ""))
+
+    def _select_form_row(rows: list[dict]) -> Optional[dict]:
+        """P1.2 deterministic freshness: current season (max) with the most
+        recent ``updated_at`` wins when it carries a usable sample
+        (>= 90 min); otherwise the freshest prior row with a usable
+        sample is used and flagged PRIOR_SEASON.  The prior-season row is
+        attached as ``prior_season_form`` for shrinkage — it never
+        silently replaces current-season evidence."""
+        if not rows:
+            return None
+        rows = sorted(rows, key=_season_key, reverse=True)
+        cur_season = str(rows[0].get("season") or "")
+        current = [r for r in rows if str(r.get("season") or "") == cur_season]
+        prior = [r for r in rows if str(r.get("season") or "") != cur_season]
+        chosen = None
+        usable_cur = [r for r in current if int(r.get("minutes") or 0) >= 90]
+        if usable_cur:
+            chosen = dict(usable_cur[0]); chosen["form_freshness"] = "CURRENT_SEASON"
+        else:
+            usable_prior = [r for r in prior if int(r.get("minutes") or 0) >= 90]
+            if usable_prior:
+                chosen = dict(usable_prior[0]); chosen["form_freshness"] = "PRIOR_SEASON"
+                chosen["current_season_stub"] = {k: current[0].get(k) for k in ("season", "team", "games", "minutes")} if current else None
+            elif current:
+                chosen = dict(current[0]); chosen["form_freshness"] = "CURRENT_SEASON_INSUFFICIENT"
+        if chosen is not None and prior and chosen.get("form_freshness") == "CURRENT_SEASON":
+            chosen["prior_season_form"] = {k: prior[0].get(k) for k in
+                                           ("season", "team", "games", "minutes", "goals", "xg", "shots", "assists", "xa")}
+        return chosen
+
     # ── 1.  soccer_player_form — canonical_player_id then variants ─
     row = None
     if canonical_player_id:
-        row = await db.soccer_player_form.find_one(
-            {"canonical_player_id": canonical_player_id}
-        )
+        row = _select_form_row(await db.soccer_player_form.find(
+            {"canonical_player_id": canonical_player_id}).to_list(length=20))
     if not row and variants_list:
-        row = await db.soccer_player_form.find_one(
-            {"name_canonical": {"$in": variants_list}}
-        )
+        row = _select_form_row(await db.soccer_player_form.find(
+            {"name_canonical": {"$in": variants_list}}).to_list(length=20))
+    # P1.2 — MONONYM identity (Endrick): provider ships the full legal
+    # name ("Endrick Felipe Moreira de Sousa") while the form ingest
+    # stores the mononym.  Exact single-token equality only (token
+    # >= 5 chars, taken from the first name), never a loose substring.
+    if not row and variants_list:
+        _first_tokens = {v.split()[0] for v in variants_list if v and " " in v and len(v.split()[0]) >= 5}
+        if _first_tokens:
+            row = _select_form_row(await db.soccer_player_form.find(
+                {"name_canonical": {"$in": sorted(_first_tokens)}}).to_list(length=20))
+            if row:
+                row["identity_match"] = "MONONYM_EXACT"
     # UNIVERSAL 2026-08-27 — substring fallback when provider ships
     # a short/first-lastname form (e.g. "Kylian Mbappé") but the
     # ingest stored the full legal name ("Mbappe-Lottin" → tight
@@ -128,10 +198,9 @@ async def resolve_soccer_player_features(
             last = v.split()[-1]
             if len(last) < 4:
                 continue
-            candidate = await db.soccer_player_form.find_one(
+            candidate = _select_form_row(await db.soccer_player_form.find(
                 {"name_canonical": {"$regex": f"^{v.split()[0]}.*{last}",
-                                    "$options": "i"}}
-            )
+                                    "$options": "i"}}).to_list(length=20))
             if candidate:
                 row = candidate
                 break

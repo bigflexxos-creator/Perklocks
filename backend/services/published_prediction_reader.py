@@ -116,71 +116,18 @@ def hydrate(pick: dict, *, sport_defaults: bool = True) -> dict:
         return pick
     p = dict(pick)   # shallow copy
     has_snapshot = "published_lock_score" in p
-    # ── v4 CONFIDENCE-FIRST authority (2026-06-14) ─────────────────
-    # When a pick has been LEGITIMATELY re-scored under the v4
-    # confidence-first formula (persisted top-level fields:
-    # ``lock_score``, ``lock_score_version``, ``win_probability``,
-    # ``edge_percent``), the frozen v3 ``published_*`` snapshot is
-    # STALE and MUST NOT overwrite the authoritative v4 values here
-    # at the wire boundary.  We detect v4 authority via the version
-    # stamp; when present, we (a) skip the v3-snapshot → legacy alias
-    # copy for scoring-authority fields, and (b) refresh the
-    # ``published_*`` fields IN PLACE on the returned dict so the
-    # PublishedPickContract attached downstream carries the same v4
-    # numbers.  The pick's persisted DB row is not modified here —
-    # this is a read-boundary projection only.  Any consumer that
-    # reads ``published_lock_score`` / ``published_probability`` /
-    # ``published_edge`` off the wire receives the current v4 truth.
-    _v4_authoritative = (
-        p.get("lock_score_version") == "v4.confidence_first.2026-06-14"
-        and p.get("lock_score") is not None
-    )
-    if has_snapshot and _v4_authoritative:
-        # v4 persisted scoring authority overrides frozen v3 snapshot
-        # at the wire.  Refresh the published_* fields from persisted
-        # v4 truth so the contract stays coherent for downstream
-        # consumers (Rollover, Parlay, Alt-Line, evaluator).
-        _v4_ls = p.get("lock_score")
-        _v4_wp_pct = p.get("win_probability")
-        # win_probability is stored as a 0-100 percentage on picks;
-        # published_probability is a 0-1 fraction — convert.
-        try:
-            _v4_wp_frac = round(float(_v4_wp_pct) / 100.0, 4) if _v4_wp_pct is not None else None
-        except (TypeError, ValueError):
-            _v4_wp_frac = None
-        _v4_edge = p.get("edge_percent")
-        _v4_grade = p.get("grade")
-        p["published_lock_score"] = _v4_ls
-        if _v4_wp_frac is not None:
-            p["published_probability"] = _v4_wp_frac
-        p["published_edge"] = _v4_edge
-        if _v4_grade:
-            p["published_grade"] = _v4_grade
-        # Also refresh the confidence label so it matches the v4 grade.
-        try:
-            _v4_lsf = float(_v4_ls) if _v4_ls is not None else 0.0
-            if _v4_lsf >= 98.0: _v4_conf_label = "Very High"
-            elif _v4_lsf >= 90.0: _v4_conf_label = "High"
-            elif _v4_lsf >= 85.0: _v4_conf_label = "Medium"
-            else: _v4_conf_label = "Low"
-            p["published_confidence"] = _v4_conf_label
-            p["confidence"] = _v4_conf_label
-        except (TypeError, ValueError):
-            pass
-        # Odds aliases stay tied to book_odds via the else-branch below.
-        odds = p.get("book_odds")
-        if odds is not None:
-            for a in ODDS_ALIASES:
-                p.setdefault(a, odds)
-                p[a] = odds
-        # Provenance markers — flag this row as v4-authoritative so
-        # any downstream test can prove the snapshot was superseded.
-        p["_prediction_source"] = "snapshot_v4_authoritative"
-        p["_snapshot_version"] = p.get("snapshot_version")
-        p["_model_version"] = p.get("model_version")
-        p["_published_at"] = p.get("published_at")
-        p["_v4_read_authority"] = "v4.confidence_first.2026-06-14"
-    elif has_snapshot:
+    # ── FINAL UNIVERSAL ROOT CLOSURE · P0.3 (IMMUTABLE PUBLICATION WINS)
+    # The former "v4 read-authority" branch let MUTABLE top-level
+    # fields (lock_score / win_probability / edge_percent / grade)
+    # supersede the frozen ``published_*`` snapshot at read time.
+    # That produced the 89-vs-85 Locks/Pick-Breakdown split: a
+    # detail-side rescoring pass mutated the top-level fields, the
+    # reader then promoted them over the snapshot.  Prohibited now.
+    # Any legitimate re-score MUST go through
+    # ``PredictionPublicationService.publish`` (versioned snapshot +
+    # dual-write) BEFORE it can be read.  Reads hydrate legacy aliases
+    # FROM the snapshot — never the reverse.
+    if has_snapshot:
         # Alias each published_* back onto the field name the frontend
         # (and existing tests) expect.
         for pub_key, legacy_key in PUBLISHED_TO_LEGACY.items():
@@ -209,6 +156,7 @@ def hydrate(pick: dict, *, sport_defaults: bool = True) -> dict:
         # Provenance markers.
         p["_prediction_source"] = "snapshot"
         p["_snapshot_version"] = p.get("snapshot_version")
+        p["publication_version"] = p.get("snapshot_version")
         p["_model_version"] = p.get("model_version")
         p["_published_at"] = p.get("published_at")
     else:

@@ -1,0 +1,51 @@
+{
+  "summary": "PERKLOCKS Final Universal Root Closure sweep — backend + frontend. 11/11 pytest cases green. Board↔Detail parity holds (Sassuolo -0.25 card 89/74.2%/+27.03%/Playable identical on Pick Breakdown; Dortmund BTTS Yes recorded 89/79.11%/+2.92%/Playable via API — matches spec). Truth manifest fields (api_origin, environment, board_version, generated_at, data_as_of) all present at /api/picks/today?lite=true and every pick carries truth_fingerprint + publication_version. /api/nfl/atd/slate returns board_version, publication_version, generated_at, data_as_of, universe_count, top5, games with 5 games / 62 candidates; top5 equals first-5 of /api/nfl/atd/leaderboard; no duplicate players within a game. Rollover returns rollover_version='v6-official-slate' with 3 stable legs across consecutive calls (Dortmund/PSG-Marseille/Werder-Dortmund Total Goals Over 2.5, LS 89). Frontend: login → Locks board renders picks (no Connection Hiccup); direct /atd route renders Top 5 Today and By Game views with atd-toggle-top / atd-toggle-game testIDs and VIEW ALL (n) buttons; Rollover tab renders 3 legs. One UX finding: the ATD screen has NO bottom-tab entry (bottom nav shows only LOCKS · ROLLOVER · PARLAY · MY BETS · LAB · PROFILE) — accessible only via deep-link /atd. React Native: only harmless deprecation warnings ('shadow*' → 'boxShadow', 'textShadow*' → 'textShadow', 'props.pointerEvents' → 'style.pointerEvents'). No blank screens, no red screens, no 500s.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Bottom Tab Navigator",
+        "issue": "ATD screen has no visible bottom-tab entry — reachable only via direct URL /atd. Bottom nav shows only LOCKS, ROLLOVER, PARLAY, MY BETS, LAB, PROFILE. Users cannot navigate to ATD from within the app UI.",
+        "testID": "n/a",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "Global styles",
+        "issue": "Deprecated style props emitted at runtime: 'shadow*' → use 'boxShadow'; 'textShadow*' → use 'textShadow'; 'props.pointerEvents' → use 'style.pointerEvents'. Non-blocking but should be migrated. Reference: browser console warnings on / and /atd."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter139_final_universal_root_closure.py",
+    "/app/test_reports/pytest/iter139_root_closure.xml"
+  ],
+  "action_items": [
+    "Confirm intended navigation to ATD screen — if it should be reachable from bottom tabs, add ATD to the (tabs) group; if intentionally hidden, provide an in-app entry point (deep link from Locks header or promo card).",
+    "Migrate deprecated RN-Web style props: 'shadow*'→'boxShadow', 'textShadow*'→'textShadow', 'props.pointerEvents'→'style.pointerEvents' to silence console warnings and future-proof for RN-Web upgrades.",
+    "(Optional) Surface truth_manifest.board_version in a debug/DEV-only footer so QA can eyeball parity in future test runs."
+  ],
+  "critical_code_review_comments": [
+    "picks_routes.py + published_prediction_reader.py deliver identical list-vs-detail objects — parity verified with 5 picks + Dortmund BTTS Yes.",
+    "nfl_atd_slate.py correctly deduplicates candidates within each game and aligns top5 with leaderboard order.",
+    "rollover_official_slate.py returns a stable slate object with slate_id='rollover:2026-09-18:official' — leg ids stable across 2 consecutive calls."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter139_final_universal_root_closure.py"
+  ],
+  "success_rate": {
+    "backend": "100% (11/11)",
+    "frontend": "95% (all core flows green; 1 minor navigation gap for ATD)"
+  },
+  "seed_data_creation": "None — used pre-existing demo@lockscore.ai/demo123.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Board↔detail response shape: /api/picks/{id} returns pick fields at TOP LEVEL (not wrapped in a 'pick' key — the 'pick' field at top level is a legacy string). Use `detail if 'lock_score' in detail else detail.get('pick')`. Rollover legs live under response['picks'] (array of 3), NOT response['slate']['legs']. Frontend ScrollView on Locks board is a nested overflow:auto div, not the window — use JS: `document.querySelector('.css-view-g5y9jx.r-overflowY-1rnoaur').scrollBy(0, N)` or page.mouse.wheel(). ATD screen is only reachable via direct URL /atd (no bottom-tab entry). Dortmund BTTS Yes is on the slate but requires deep scroll of the Locks list — testing via API is faster.",
+  "rca_of_issue": "No product defects found this iteration. Prior iter138 CRITICAL (NFL alt-ladder label wiring) is out-of-scope for this closure sweep and was not re-tested."
+}

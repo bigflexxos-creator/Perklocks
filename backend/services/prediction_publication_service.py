@@ -291,6 +291,40 @@ class PredictionPublicationService:
         ))
         idempotency_key = _compute_idempotency_key(payload)
         now = datetime.now(timezone.utc)
+        # ── P0.3 VERSIONED RE-PUBLICATION ─────────────────────────
+        # A re-score of an already-published prediction produces a NEW
+        # snapshot version (monotone) and the prior snapshot is
+        # deactivated.  Nothing is deleted; nothing is rescored at
+        # read time.  ``publication_version`` == ``snapshot_version``.
+        _prior = await self.db[SNAPSHOT_COLLECTION].find_one(
+            {"prediction_id": payload.prediction_id},
+            sort=[("snapshot_version", -1)],
+            projection={"_id": 0, "snapshot_version": 1,
+                        "idempotency_key": 1, "published_lock_score": 1,
+                        "published_probability": 1, "published_edge": 1,
+                        "published_line": 1, "published_odds": 1,
+                        "published_grade": 1},
+        )
+        if _prior:
+            try:
+                _prior_v = int(_prior.get("snapshot_version") or 1)
+            except (TypeError, ValueError):
+                _prior_v = 1
+            _same_truth = (
+                _prior.get("published_lock_score") == payload.published_lock_score
+                and _prior.get("published_probability") == payload.published_probability
+                and _prior.get("published_edge") == payload.published_edge
+                and _prior.get("published_line") == payload.published_line
+                and _prior.get("published_odds") == payload.published_odds
+                and _prior.get("published_grade") == payload.published_grade
+            )
+            from dataclasses import replace as _dc_replace
+            payload = _dc_replace(payload, snapshot_version=(
+                _prior_v if _same_truth else _prior_v + 1))
+            if _same_truth:
+                # Same scored truth ⇒ same version; keep the prior
+                # idempotency key so the insert below is a clean no-op.
+                idempotency_key = _prior.get("idempotency_key") or idempotency_key
         snap_doc = payload.to_snapshot_dict(
             payload_hash=payload_hash,
             idempotency_key=idempotency_key,
@@ -309,6 +343,37 @@ class PredictionPublicationService:
         dual_write_doc = snap_doc
         try:
             await self.db[SNAPSHOT_COLLECTION].insert_one(snap_doc)
+            # P5 — immutable publication event (append-only ledger).
+            # Historical pregame truth is read from here, never from a
+            # mutable picks doc.
+            try:
+                await self.db["publication_events"].insert_one({
+                    "event": "PUBLISHED" if payload.snapshot_version <= 1 else "REPUBLISHED",
+                    "prediction_id": payload.prediction_id,
+                    "publication_version": payload.snapshot_version,
+                    "board_version": payload.board_version,
+                    "publication_source": publication_source,
+                    "at": now.isoformat(),
+                    "payload_hash": payload_hash,
+                    "published_lock_score": payload.published_lock_score,
+                    "published_probability": payload.published_probability,
+                    "published_edge": payload.published_edge,
+                    "published_grade": payload.published_grade,
+                    "published_line": payload.published_line,
+                    "published_odds": payload.published_odds,
+                    "model_version": payload.model_version,
+                })
+            except Exception as _pe_err:  # pragma: no cover
+                logger.debug("publication_events append skipped: %s", _pe_err)
+            if _prior and payload.snapshot_version > 1:
+                await self.db[SNAPSHOT_COLLECTION].update_many(
+                    {"prediction_id": payload.prediction_id,
+                     "snapshot_version": {"$lt": payload.snapshot_version},
+                     "is_active": True},
+                    {"$set": {"is_active": False,
+                              "superseded_at": now.isoformat(),
+                              "superseded_by_version": payload.snapshot_version}},
+                )
         except DuplicateKeyError:
             was_new = False
             existing = await self.db[SNAPSHOT_COLLECTION].find_one(
@@ -848,6 +913,21 @@ class PredictionPublicationService:
         # are stored.
         _edge: Optional[float] = _f_or_none("edge_percent")
 
+        # ── P0.4 GRADE INVARIANT (persisted at publication) ────────
+        # The grade written into the immutable snapshot is derived
+        # from the canonical application mapping over the published
+        # Lock Score — never copied from a possibly-stale candidate
+        # label.  Every consumer then reads ``published_grade``; none
+        # re-derives its own.
+        _pub_lock = round(_f("lock_score"), 2)
+        try:
+            from sports_engine import _grade as _canon_grade, _confidence as _canon_conf
+            _pub_grade = _canon_grade(_pub_lock)
+            if _conf_label == LEGACY_UNKNOWN:
+                _conf_label = _canon_conf(_pub_lock)
+        except Exception:  # pragma: no cover — sports_engine always importable in prod
+            _pub_grade = _s("grade", default="Pass")
+
         published_reasoning = (
             candidate.get("reasoning")
             or candidate.get("pick_rationale")
@@ -865,8 +945,8 @@ class PredictionPublicationService:
             published_probability=_normalize_probability_at_publish(
                 _f_or_none("win_probability")),
             published_edge=_edge,
-            published_lock_score=round(_f("lock_score"), 2),
-            published_grade=_s("grade", default="Pass"),
+            published_lock_score=_pub_lock,
+            published_grade=_pub_grade,
             published_confidence=_conf_label,
             published_confidence_score=_conf_score,
             published_reasoning=published_reasoning,

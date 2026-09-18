@@ -2882,6 +2882,11 @@ _LITE_BOARD_WHITELIST = frozenset({
     # ── Truth invariants (frozen canonical; contract tests) ──
     "published_lock_score", "published_grade", "publication_state",
     "publication_revision",
+    # P0.5 truth manifest fields — same on list + detail.
+    "publication_version", "snapshot_version", "model_version",
+    "canonical_event_id", "canonical_pick_id", "published_at",
+    "published_probability", "published_edge", "external_id", "event_id",
+    "generation_id", "book", "sportsbook",
     # PERKLOCKS MAIN 37 · P0.2 — surface the immutable
     # ``PublishedPickContract`` on the lite wire payload so every
     # frontend consumer (Lock badge, Rollover, Alt-Line, evaluator)
@@ -4627,6 +4632,15 @@ async def on_startup():
     _LIFECYCLE     = get_lifecycle()
     app.state.lifecycle = _LIFECYCLE
     app.state.task_registry = _TASK_REGISTRY
+
+    # P4/P8 — warm the ONE ATD universe in the background at boot so the
+    # first /nfl/atd/* GET serves the snapshot instead of building it.
+    try:
+        from services.nfl_atd_slate import build_atd_universe as _atd_warm
+        asyncio.create_task(_atd_warm(db))
+    except Exception as _atd_warm_err:
+        logger.debug("ATD universe warm skipped: %s", _atd_warm_err)
+
 
     # Run the lifecycle preflight (settings + DB + ping + indexes +
     # lease recovery).  All steps are idempotent — the existing

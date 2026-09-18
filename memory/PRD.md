@@ -195,3 +195,17 @@ Continuous surgical NFL build.  Additive READ-path UX only.
 - No NBA/NHL/UFC touched
 - ATD by-game merge preserved from Session 3
 - Board snapshot cache + prewarm intact
+
+## FINAL UNIVERSAL ROOT CLOSURE (2026-09-18) — see memory/final_universal_root_closure_2026_09_18.md
+- P0.1 89-vs-85 root cause fixed: GET-time rescoring removed for published picks; `hydrate()` snapshot-always-wins
+  (v4 read-override deleted); versioned re-publication + canonical `published_grade` + `publication_events`.
+- One-time reconciliation persisted the truth the board already displayed (no displayed numbers changed).
+- P0.5 truth manifest + per-pick `truth_fingerprint` on list & detail; lite whitelist extended.
+- Frontend: single-flight 401 verification, origin+board_version keyed board cache (v2), STALE/UPDATING pill,
+  global connectivity authority, DEV HUD surface/origin/env/board version.
+- P4 `GET /api/nfl/atd/slate` single universe (cached 10 min, warmed at boot); ATD screen redesigned By Game.
+- P6 `rollover_slates`/`rollover_slate_events` immutable official Top 3; ranking = conservative calibrated WP.
+- P1.2 soccer resolver: deterministic freshness + prior-season shrinkage; Sørloth transliteration; Endrick mononym.
+- Harness: `scripts/p10_final_parity_harness.py` (92 picks, 0 unexplained diffs); `scripts/parity_list_vs_detail.py`.
+- Open: Kane VS Union real game logs (needs match-level ingest), NBA authority (no NBA slate), settlement
+  single-authority consolidation, Intelligence 2.0 UI, player media, P11 device reliability matrix, ATD tab entry.

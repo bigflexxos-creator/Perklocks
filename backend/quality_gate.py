@@ -1378,14 +1378,11 @@ def apply_quality_gate(
     for p in picks:
         reason = _block_reason(p)
         if reason is None:
-            # ── Phase 2A.5 DEFECT #4 (2026-08) ─────────────────────
-            # `_apply_elite_scorer_anchor` RETIRED as a finalizer step.
-            # Elite classification is now a downstream evidence-derived
-            # label from `services.soccer_scorer_bridge.quality_profile`
-            # and does not directly assign Lock Score.
-            # _apply_elite_scorer_anchor(p)   # retired 2026-08 Phase 2A.5
-            _apply_display_cap(p)
-            _apply_lockscore_coherence(p)
+            # P0.2 — a canonically published pick is frozen: display
+            # caps / coherence clamps belong BEFORE publication only.
+            if p.get("published_lock_score") is None:
+                _apply_display_cap(p)
+                _apply_lockscore_coherence(p)
             kept.append(p)
             continue
         blocked_counts[reason] = blocked_counts.get(reason, 0) + 1

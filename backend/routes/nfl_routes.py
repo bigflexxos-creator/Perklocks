@@ -52,6 +52,25 @@ async def nfl_safe_bets(
         raise HTTPException(500, f"nfl safe-bets failed: {e}")
 
 
+@router.get("/atd/slate")
+async def nfl_atd_slate(
+    min_probability: float = Query(0.10, ge=0.01, le=0.99),
+    top_n: int = Query(5, ge=1, le=20),
+    top_n_per_game: int = Query(3, ge=1, le=20),
+):
+    """P4 — ONE ATD slate truth.  Top 5 and By Game derive from the SAME
+    universe built once per request (canonical published ATD rows +
+    explicit on-demand candidates).  Mongo-only; zero provider calls."""
+    try:
+        from services.nfl_atd_slate import build_atd_slate
+        return await build_atd_slate(
+            db, min_probability=min_probability, top_n=top_n,
+            top_n_per_game=top_n_per_game,
+        )
+    except Exception as e:
+        raise HTTPException(500, f"nfl atd slate failed: {e}")
+
+
 @router.get("/atd/leaderboard")
 async def nfl_atd_leaderboard(
     limit: int = Query(20, ge=1, le=100),
@@ -104,132 +123,10 @@ async def nfl_atd_leaderboard(
         #     research, not a bettable live-board row.
         _now = datetime.now(timezone.utc)
         _min_event_time = (_now - timedelta(minutes=15)).isoformat()
-        # ── Primary: canonical published ATD picks ──────────────────
-        canonical: list[dict] = []
-        try:
-            cursor = db.picks.find(
-                {
-                    "sport": "NFL",
-                    # 2026-09-13 — restrict to the canonical
-                    # ``Anytime TD`` market only (was previously
-                    # including ``1st TD`` / ``First TD``).
-                    "market": {"$regex": r"Anytime\s*TD",
-                               "$options": "i"},
-                    "atd_evidence.td_probability": {"$gt": 0},
-                    # Freshness — event must be current/upcoming.
-                    "event_time": {"$gte": _min_event_time},
-                },
-                {"_id": 0},
-            ).sort("lock_score", -1).limit(200)
-            async for p in cursor:
-                _ev = p.get("atd_evidence") or {}
-                _sel = p.get("selection") or p.get("pick") or ""
-                _team = (p.get("player_team")
-                         or p.get("canonical_team_id")
-                         or p.get("player_team_name")
-                         or "")
-                # Skip if no current team resolved (safety net — the
-                # publication gate already enforces this).
-                if not _team:
-                    continue
-                td_prob = float(_ev.get("td_probability") or 0.0)
-                if td_prob <= 0.0:
-                    # Fall back to win_probability/100 when engine
-                    # evidence wasn't captured on the pick.
-                    _wp = p.get("win_probability")
-                    if isinstance(_wp, (int, float)) and _wp > 0:
-                        td_prob = float(_wp) / 100.0
-                if td_prob < min_probability:
-                    continue
-                _opp_rating = _ev.get("opportunity_rating") or "med"
-                canonical.append({
-                    "player_id":       p.get("canonical_player_id") or p.get("player_id") or "",
-                    "player_name":     _sel or p.get("player_name") or "",
-                    "team":            _team,
-                    "opponent":        _ev.get("opponent")
-                                        or (p.get("home_team")
-                                             if p.get("away_team") == _team
-                                             else p.get("away_team"))
-                                        or "",
-                    "td_probability":  round(td_prob, 4),
-                    "confidence":      float(_ev.get("confidence") or 0.0),
-                    "opportunity_rating": _opp_rating,
-                    "weighted_touches_recent": float(_ev.get("weighted_touches_recent") or 0.0),
-                    "weighted_tds_recent":     float(_ev.get("weighted_tds_recent") or 0.0),
-                    "team_td_rate":            float(_ev.get("team_td_rate") or 0.0),
-                    "matchup_factor":          float(_ev.get("matchup_factor") or 1.0),
-                    "game_script_factor":      float(_ev.get("game_script_factor") or 1.0),
-                    "is_rb_archetype":         bool(_ev.get("is_rb_archetype")),
-                    "sample_games":            int(_ev.get("sample_games") or 0),
-                    "reasons":                 list(_ev.get("reasons") or []),
-                    # Betting provenance (new, non-breaking additive fields).
-                    "pick_id":         p.get("id"),
-                    "book_odds":       p.get("book_odds"),
-                    "implied_probability": p.get("implied_probability"),
-                    "edge_percent":    p.get("edge_percent"),
-                    "lock_score":      p.get("lock_score"),
-                    "event":           p.get("event"),
-                    "event_time":      p.get("event_time"),
-                    "market":          p.get("market"),
-                    "publication_state": p.get("publication_state"),
-                    "provenance":      "canonical_publication",
-                })
-            # Sort by td_probability desc — pure mathematical
-            # ranking as the user directed ("top 5 mathematically,
-            # should not just be running backs").  Previously we
-            # sorted by (confidence, td_probability); confidence
-            # penalises low sample size, which disadvantages
-            # WRs / TEs whose per-game samples are shorter than an
-            # RB workhorse.  For a leaderboard the primary answer is
-            # "who has the highest independent TD probability" — no
-            # position bias.  Confidence remains available on each
-            # pick for the UI to render as secondary context.
-            canonical.sort(
-                key=lambda r: (r["td_probability"], r["confidence"]),
-                reverse=True,
-            )
-        except Exception:
-            canonical = []
-
-        # ── UNIVERSE EXPANDER (2026-09-14 · rev 2) ────────────────────
-        # Per-player merge: for EVERY current-slate event with fresh
-        # provider ATD rows, run the SAME authoritative ATD engine
-        # for players not already canonically covered — not just for
-        # events with zero canonical rows.  This fixes the 1-player-
-        # per-game truncation (DET@BUF only showing Gibbs, etc.).
-        try:
-            from services.nfl_atd_universe import (
-                expand_atd_universe_from_live_alt_lines,
-                dedupe_atd_candidates,
-            )
-            _cov: dict[str, dict[str, set]] = {}
-            for c in canonical:
-                _keys = {c.get("event") or "", c.get("canonical_event_id") or ""}
-                for k in _keys:
-                    if not k:
-                        continue
-                    bucket = _cov.setdefault(k, {"player_ids": set(), "player_names": set()})
-                    _pid = (c.get("player_id") or "").strip()
-                    if _pid:
-                        bucket["player_ids"].add(_pid)
-                    _nm = (c.get("player_name") or "").strip().lower()
-                    if _nm:
-                        bucket["player_names"].add(_nm)
-            _on_demand = await expand_atd_universe_from_live_alt_lines(
-                db,
-                canonical_by_event=_cov,
-                min_probability=float(min_probability or 0.0),
-            )
-            if _on_demand:
-                canonical = dedupe_atd_candidates(canonical, _on_demand)
-                canonical.sort(
-                    key=lambda r: (r["td_probability"], r["confidence"]),
-                    reverse=True,
-                )
-        except Exception:
-            # Fail-open: expander errors never dark-hole the canonical
-            # response.  Publication path stays authoritative.
-            pass
+        # ── P4: ONE universe (shared with /atd/by-game + /atd/slate) ──
+        from services.nfl_atd_slate import build_atd_universe
+        _uni = await build_atd_universe(db, min_probability=float(min_probability))
+        canonical: list[dict] = _uni["candidates"]
 
         if canonical:
             return {
@@ -365,105 +262,10 @@ async def nfl_atd_by_game(
         # canonical current-slate ATD candidate universe.
         _now = datetime.now(timezone.utc)
         _min_event_time = (_now - timedelta(minutes=15)).isoformat()
-        cursor = db.picks.find(
-            {
-                "sport": "NFL",
-                "market": {"$regex": r"Anytime\s*TD",
-                           "$options": "i"},
-                "atd_evidence.td_probability": {"$gt": 0},
-                "event_time": {"$gte": _min_event_time},
-            },
-            {"_id": 0},
-        )
-        all_candidates: list[dict] = []
-        async for p in cursor:
-            _ev = p.get("atd_evidence") or {}
-            td_prob = float(_ev.get("td_probability") or 0.0)
-            if td_prob <= 0.0:
-                _wp = p.get("win_probability")
-                if isinstance(_wp, (int, float)) and _wp > 0:
-                    td_prob = float(_wp) / 100.0
-            if td_prob < min_probability:
-                continue
-            _team = (p.get("player_team")
-                     or p.get("canonical_team_id")
-                     or p.get("player_team_name")
-                     or "")
-            if not _team:
-                continue
-            _sel = p.get("selection") or p.get("pick") or ""
-            event = p.get("event") or ""
-            canonical_event_id = (
-                p.get("canonical_event_id")
-                or p.get("event_id")
-                or event
-            )
-            all_candidates.append({
-                "canonical_event_id": canonical_event_id,
-                "event":              event,
-                "event_time":         p.get("event_time"),
-                "home_team":          p.get("home_team"),
-                "away_team":          p.get("away_team"),
-                "player_id":          p.get("canonical_player_id") or p.get("player_id") or "",
-                "player_name":        _sel or p.get("player_name") or "",
-                "team":               _team,
-                "opponent":           _ev.get("opponent")
-                                       or (p.get("home_team")
-                                            if p.get("away_team") == _team
-                                            else p.get("away_team"))
-                                       or "",
-                "td_probability":     round(td_prob, 4),
-                "confidence":         float(_ev.get("confidence") or 0.0),
-                "opportunity_rating": _ev.get("opportunity_rating") or "med",
-                "is_rb_archetype":    bool(_ev.get("is_rb_archetype")),
-                "sample_games":       int(_ev.get("sample_games") or 0),
-                "reasons":            list(_ev.get("reasons") or []),
-                "pick_id":            p.get("id"),
-                "book_odds":          p.get("book_odds"),
-                "implied_probability": p.get("implied_probability"),
-                "edge_percent":       p.get("edge_percent"),
-                "lock_score":         p.get("lock_score"),
-                "market":             p.get("market"),
-                "publication_state":  p.get("publication_state"),
-                "provenance":         "canonical_publication",
-            })
-
-        # ── UNIVERSE EXPANDER (2026-09-14 · rev 2) ────────────────────
-        # Per-player merge (not per-event).  For every current-slate
-        # event with fresh provider ``player_anytime_td`` rows, run
-        # the SAME authoritative ATD engine for provider players
-        # NOT already canonically published — even when the event
-        # already has 1+ canonical row.  Fixes the "one player per
-        # game" truncation (DET@BUF only Gibbs, etc.).  Canonical
-        # rows always win a dedupe collision.
-        try:
-            from services.nfl_atd_universe import (
-                expand_atd_universe_from_live_alt_lines,
-                dedupe_atd_candidates,
-            )
-            _cov: dict[str, dict[str, set]] = {}
-            for c in all_candidates:
-                _keys = {c.get("event") or "", c.get("canonical_event_id") or ""}
-                for k in _keys:
-                    if not k:
-                        continue
-                    bucket = _cov.setdefault(k, {"player_ids": set(), "player_names": set()})
-                    _pid = (c.get("player_id") or "").strip()
-                    if _pid:
-                        bucket["player_ids"].add(_pid)
-                    _nm = (c.get("player_name") or "").strip().lower()
-                    if _nm:
-                        bucket["player_names"].add(_nm)
-            _on_demand = await expand_atd_universe_from_live_alt_lines(
-                db,
-                canonical_by_event=_cov,
-                min_probability=float(min_probability or 0.0),
-            )
-            if _on_demand:
-                all_candidates = dedupe_atd_candidates(all_candidates, _on_demand)
-        except Exception:
-            # Fail-open: never dark-hole the canonical response.
-            pass
+        # ── P4: ONE universe (shared with /atd/leaderboard + /atd/slate) ──
+        from services.nfl_atd_slate import build_atd_universe
+        _uni = await build_atd_universe(db, min_probability=float(min_probability))
+        all_candidates: list[dict] = _uni["candidates"]
 
         # Group by event NAME (with canonical_event_id fallback).
         # Canonical rows persist ``canonical_event_id = event_name``
@@ -479,14 +281,10 @@ async def nfl_atd_by_game(
         games_out = []
         picks_returned = 0
         for evt_id, rows in by_game.items():
-            rows.sort(
-                key=lambda r: (
-                    r["td_probability"],
-                    r["confidence"],
-                    -1 * (hash(r["player_id"] or "") & 0x7FFFFFFF),
-                ),
-                reverse=True,
-            )
+            # Deterministic — no hash: (td desc, confidence desc, player_id asc)
+            rows.sort(key=lambda r: (-float(r.get("td_probability") or 0.0),
+                                     -float(r.get("confidence") or 0.0),
+                                     str(r.get("player_id") or "")))
             picks = rows[: top_n_per_game]
             picks_returned += len(picks)
             # kickoff ordering key so the frontend can render chrono

@@ -240,7 +240,7 @@ async def stamp_rollover_history_tags(db, dates: list[str] | None = None) -> dic
                 {"pick_date": date, "id": {"$in": list(top_ids)},
                  "on_rollover_at": {"$exists": False}},
                 {"$set": {"on_rollover_at": now,
-                          "rollover_frozen_source": "settlement_tagger_backfill"}},
+                          "rollover_frozen_source": "RESEARCH_REPLAY"}},
             )
             tagged += set_res.modified_count
         dates_processed += 1

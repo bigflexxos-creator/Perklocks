@@ -11,6 +11,10 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
 import { getPerfSnapshot, startFpsMeter, stopFpsMeter, resetPerfSnapshot } from "@/src/lib/perfHUD";
+import { Platform } from "react-native";
+import Constants from "expo-constants";
+import { getBackendUrl, lastTruthManifest } from "@/src/lib/api";
+import { getConnectivity } from "@/src/lib/connectivity";
 
 const HUD_ENABLED =
   (typeof __DEV__ !== "undefined" && __DEV__) &&
@@ -57,6 +61,28 @@ export function DevPerfHUD(): React.ReactElement | null {
       </Pressable>
       {!collapsed && (
         <View style={styles.body}>
+          {/* P0.6 — SURFACE / API ORIGIN / ENVIRONMENT / BOARD VERSION */}
+          {(() => {
+            let origin = "unresolved";
+            try { origin = getBackendUrl(); } catch {}
+            const m = lastTruthManifest;
+            const c = getConnectivity();
+            const rows: Array<[string, string]> = [
+              ["surface", Platform.OS === "web" ? "web" : `expo-${Platform.OS}`],
+              ["api origin", origin],
+              ["environment", String(m?.environment ?? "—")],
+              ["board version", String(m?.board_version ?? "—")],
+              ["data as of", String(m?.data_as_of ?? "—").slice(0, 19)],
+              ["bundle", String(Constants.expoConfig?.version ?? "—")],
+              ["connectivity", `${c.online ? "online" : "offline"} · ${c.appState}`],
+            ];
+            return rows.map(([k, v]) => (
+              <View key={k} style={styles.row}>
+                <Text style={styles.label}>{k}</Text>
+                <Text style={styles.val} numberOfLines={1}>{v}</Text>
+              </View>
+            ));
+          })()}
           {priorityRows.length === 0 && (
             <Text style={styles.empty}>(no samples yet — interact with the app)</Text>
           )}
