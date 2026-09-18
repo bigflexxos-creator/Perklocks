@@ -242,10 +242,10 @@ export function StrategyLabWorkstation({ picks }: { picks: any[] }) {
         ))}
       </ScrollView>
 
-      {loading && (
+      {!!loading && (
         <ActivityIndicator color={COLORS.textPrimary} style={{ marginTop: 16 }} testID="sl-loading" />
       )}
-      {error && !loading && (
+      {!!error && !loading && (
         <View style={{ marginTop: 12 }}>
           <Text style={s.errTxt} testID="sl-error">⚠️  {error}</Text>
           <TouchableOpacity
@@ -260,7 +260,7 @@ export function StrategyLabWorkstation({ picks }: { picks: any[] }) {
 
       {/* P0J — typed input is below the min-length threshold: show a
           clarifying "keep typing" state so the tap doesn't feel dead. */}
-      {!loading && !error && subject && subject.length < MIN_TYPED_QUERY_LEN && (
+      {!loading && !error && !!subject && subject.length < MIN_TYPED_QUERY_LEN && (
         <Text style={s.blurb} testID="sl-typing-hint">
           Keep typing… (need {MIN_TYPED_QUERY_LEN}+ characters, or tap a
           suggestion chip / player row).
@@ -278,7 +278,7 @@ export function StrategyLabWorkstation({ picks }: { picks: any[] }) {
       {/* P0K — explicit "no data" state when the fetch succeeded but
           the adapter has zero authoritative rows. Prevents silent
           failure mode ("nothing happens"). */}
-      {!loading && !error && committedSubject && snapshot &&
+      {!loading && !error && !!committedSubject && !!snapshot &&
         (snapshot as any).no_data === true && (
         <Text style={s.blurb} testID="sl-no-data">
           No settled research history for &quot;{committedSubject}&quot; in {sport}.
@@ -286,7 +286,7 @@ export function StrategyLabWorkstation({ picks }: { picks: any[] }) {
         </Text>
       )}
 
-      {!loading && !error && committedSubject && snapshot &&
+      {!loading && !error && !!committedSubject && !!snapshot &&
         (snapshot as any).no_data !== true && (
         <>
           {section === "overview"    && <OverviewPanel snap={snapshot} />}

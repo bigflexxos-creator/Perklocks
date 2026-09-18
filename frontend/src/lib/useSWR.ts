@@ -88,10 +88,35 @@ export function swrCacheRead<T>(key: string): T | undefined {
   return snap?.data;
 }
 
+/** Timestamp (ms) of the cached snapshot for `key`, or 0 when absent. */
+export function swrCacheTs(key: string): number {
+  return _cache.get(key)?.ts ?? 0;
+}
+
 /** Imperatively seed the cache (used by primary-tab preload). */
+const DETAIL_PREFIXES = ["pick-detail|", "historical-intelligence|"];
+const DETAIL_MAX_ENTRIES = 40;
+const DETAIL_TTL_MS = 10 * 60_000;
+
+/** Bounded, TTL-swept retention for deep detail objects (never persisted). */
+function _sweepDetail(): void {
+  const now = Date.now();
+  const detail: Array<[string, number]> = [];
+  for (const [k, v] of _cache.entries()) {
+    if (!DETAIL_PREFIXES.some((p) => k.startsWith(p))) continue;
+    if (now - v.ts > DETAIL_TTL_MS) { _cache.delete(k); continue; }
+    detail.push([k, v.ts]);
+  }
+  if (detail.length > DETAIL_MAX_ENTRIES) {
+    detail.sort((a, b) => a[1] - b[1]);
+    for (const [k] of detail.slice(0, detail.length - DETAIL_MAX_ENTRIES)) _cache.delete(k);
+  }
+}
+
 export function swrCacheWrite<T>(key: string, data: T): void {
   _cache.set(key, { data, ts: Date.now() });
   if (_persistable(key)) _schedulePersist();
+  if (DETAIL_PREFIXES.some((p) => key.startsWith(p))) _sweepDetail();
 }
 
 type UseSWROptions = {

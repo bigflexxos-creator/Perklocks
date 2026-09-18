@@ -8,6 +8,9 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { COLORS, SPORTS } from "@/src/theme";
+import { setFeaturedPickId } from "@/src/lib/featuredStore";
+import { picksLiteKey, PROFILE_STATS_KEY } from "@/src/lib/serverStateKeys";
+import { swrCacheRead, swrCacheTs, swrCacheWrite } from "@/src/lib/useSWR";
 import { api, Pick, LineType, SortKey, SortDirection, PickFilters, getBackendUrl, noteTruthManifest } from "@/src/lib/api";
 import { LockBoardCard } from "@/src/components/LockBoardCard";
 import { ChipRow } from "@/src/components/ChipRow";
@@ -57,8 +60,28 @@ type PicksCache = { sport: string; picks: Pick[]; ts: number; origin?: string; b
 // Navigation `unmountOnBlur`-safe) so returning to the Locks tab
 // paints the previous slate SYNCHRONOUSLY on the very first frame
 // instead of waiting for AsyncStorage to resolve.
-const _picksMem: Map<string, { picks: Pick[]; ts: number }> = new Map();
-let _statsMem: { data: any; ts: number } | null = null;
+// Native perf closure — ONE keyed server-state authority (useSWR store).
+// `_picksMem` / `_statsMem` are thin adapters over canonical SWR keys so
+// the board, the Profile stats and any prefetch share ONE cache entry per
+// resource; AsyncStorage (PICKS_CACHE_KEY) stays a persisted last-good
+// recovery layer that HYDRATES the SWR resource instead of competing.
+const picksKey = picksLiteKey;
+const STATS_KEY = PROFILE_STATS_KEY;
+const _picksMem = {
+  get(sport: string): { picks: Pick[]; ts: number } | undefined {
+    return swrCacheRead<{ picks: Pick[]; ts: number }>(picksKey(sport));
+  },
+  set(sport: string, v: { picks: Pick[]; ts: number }): void {
+    swrCacheWrite(picksKey(sport), v);
+  },
+};
+const _statsMem = {
+  // Same key + same shape as Profile ("profile|stats" ← api.stats()).
+  get data(): any { return swrCacheRead<any>(STATS_KEY); },
+  get ts(): number { return swrCacheTs(STATS_KEY); },
+  get present(): boolean { return swrCacheRead(STATS_KEY) !== undefined; },
+  set(v: { data: any; ts: number }): void { if (v.data) swrCacheWrite(STATS_KEY, v.data); },
+};
 const STATS_STALE_MS = 30_000;      // /stats independently cached 30s
 const FETCH_DEDUPE_MS = 1500;       // dedupe overlapping non-manual fetches
 
@@ -165,7 +188,7 @@ export default function LocksScreen() {
   const [gameFilterOpen, setGameFilterOpen] = useState(false);
   const [loading, setLoading] = useState(_memSeed ? false : true);
   const [refreshing, setRefreshing] = useState(false);
-  const [stats, setStats] = useState<{ total_picks: number; elite_count: number; avg_edge_percent: number } | null>(_statsMem?.data ?? null);
+  const [stats, setStats] = useState<{ total_picks: number; elite_count: number; avg_edge_percent: number } | null>(_statsMem.data ?? null);
   const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
   // P0.7 — canonical board identity of the slate on screen + stale flag.
   const [boardVersion, setBoardVersion] = useState<string | null>(null);
@@ -236,6 +259,8 @@ export default function LocksScreen() {
         if (c.origin && _origin && c.origin !== _origin) return;
         // Only rehydrate if we don't already have fresh picks in memory.
         if (picksRef.current.length > 0) return;
+        // Hydrate the canonical SWR resource (persisted last-good → live cache).
+        if (!_picksMem.get(c.sport)) _picksMem.set(c.sport, { picks: c.picks, ts: c.ts || Date.now() });
         setPicks(c.picks);
         setBoardVersion(c.boardVersion ?? null);
         setLastLoadedAt(c.ts ? new Date(c.ts) : null);
@@ -465,8 +490,6 @@ export default function LocksScreen() {
     const rows: Row[] = [];
     dayGroups.forEach((group, gIdx) => {
       const uniqueEvents = new Set(group.items.map((p) => p.event || "")).size;
-      const rotationCount = gIdx === 0 ? Math.min(5, group.items.length) : 0;
-      const featuredIdxInGroup = rotationCount > 0 ? featuredIdx % rotationCount : -1;
       rows.push({
         type: "header",
         key: `h:${group.key}`,
@@ -479,11 +502,22 @@ export default function LocksScreen() {
           type: "pick",
           key: p.id,
           pick: p,
-          featured: gIdx === 0 && pIdx === featuredIdxInGroup,
+          // Hero state is delivered through featuredStore (keyed
+          // subscription inside the card) — NOT through row identity.
+          featured: false,
         });
       });
     });
     return rows;
+  }, [dayGroups]);
+  // Native perf closure — the 7-second rotation touches ONLY the featured
+  // store; listRows identity is untouched, so FlatList never reconciles the
+  // board for a hero flip and only two cards re-render.
+  useEffect(() => {
+    const first = dayGroups[0];
+    const rotationCount = first ? Math.min(5, first.items.length) : 0;
+    const target = rotationCount > 0 ? first.items[featuredIdx % rotationCount] : null;
+    setFeaturedPickId(target ? target.id : null);
   }, [dayGroups, featuredIdx]);
   const renderRow = useCallback(({ item }: { item: Row }) => {
     if (item.type === "header") {
@@ -564,7 +598,7 @@ export default function LocksScreen() {
     // 2026-08-27 PERF: stats has its own 30s stale window — no need to
     // re-fetch it on every picks refresh (tab focus, AppState resume,
     // filter tweak). Cuts request count roughly in half on warm returns.
-    const statsFresh = _statsMem && (now - _statsMem.ts) < STATS_STALE_MS;
+    const statsFresh = _statsMem.present && (now - _statsMem.ts) < STATS_STALE_MS;
     // MAIN 39 · P0.6 — explicit success/failure signal.
     let ok = false;
     // ── DEV-only perf mark: user-action → paint pipeline ──────────
@@ -586,7 +620,7 @@ export default function LocksScreen() {
           // load() supersedes us.
           signal:   controller.signal,
         }),
-        statsFresh ? Promise.resolve(_statsMem!.data) : api.stats().catch(() => null),
+        statsFresh ? Promise.resolve(_statsMem.data) : api.stats().catch(() => null),
       ]);
       perfMark.step("response");
       // Discard if a newer load was fired after we sent this one.
@@ -698,7 +732,7 @@ export default function LocksScreen() {
           nextStats = statsRes;
         }
         setStats(nextStats);
-        _statsMem = { data: nextStats, ts: Date.now() };
+        _statsMem.set({ data: nextStats, ts: Date.now() });
       }
       setLastLoadedAt(new Date());
       ok = true;

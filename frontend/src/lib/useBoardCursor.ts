@@ -22,6 +22,8 @@
  * response can NEVER commit state.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { swrCacheRead, swrCacheWrite } from "@/src/lib/useSWR";
+import { picksLiteKey } from "@/src/lib/serverStateKeys";
 import { api, Pick } from "@/src/lib/api";
 import { classifyError, ErrorKind, ErrorKindT, isSilentError } from "@/src/lib/errorTaxonomy";
 import perf from "@/src/lib/perfHUD";
@@ -53,7 +55,11 @@ const initialState: BoardCursorState = {
 };
 
 export function useBoardCursor(sport?: string, limit: number = 200) {
-  const [state, setState] = useState<BoardCursorState>(initialState);
+  // Seed page 1 from the canonical board cache (warm → immediate paint).
+  const _seed = swrCacheRead<{ picks: any[]; ts: number }>(picksLiteKey(sport || "All"));
+  const [state, setState] = useState<BoardCursorState>(
+    _seed?.picks?.length ? { ...initialState, picks: _seed.picks as any, loading: false } : initialState,
+  );
 
   // Per-generation AbortControllers.  Each new load()/loadMore()
   // aborts the previous.  React-strict double-mount and rapid
@@ -110,6 +116,13 @@ export function useBoardCursor(sport?: string, limit: number = 200) {
           t.end({ dropped: "version_mismatch" });
           return;
         }
+      }
+      // Page 1 writes through the SAME canonical cache authority the Locks
+      // board reads (`picks|lite|{sport}`) only when the page is the
+      // complete population (no further pages) — a partial page never
+      // masquerades as the full board.
+      if (!opts.append && !r.has_more && r.picks.length > 0) {
+        try { swrCacheWrite(picksLiteKey(sport || "All"), { picks: r.picks.slice(), ts: Date.now() }); } catch {}
       }
       setState((s) => {
         // Atomic swap for page 1, append for subsequent pages.

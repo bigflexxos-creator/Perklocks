@@ -20,6 +20,8 @@ import {
 import Svg, { Circle, Line } from "react-native-svg";
 import { COLORS } from "@/src/theme";
 import { api, getBackendUrl, HistoricalIntelligenceResponse, HistoricalObservation } from "@/src/lib/api";
+import { swrCacheRead, swrCacheWrite } from "@/src/lib/useSWR";
+import { historicalIntelligenceKey } from "@/src/lib/serverStateKeys";
 
 type SampleScope = "L5" | "L10" | "L20" | "SEASON";
 type VenueScope  = "ALL" | "HOME" | "AWAY";
@@ -215,8 +217,9 @@ export function HistoricalIntelligence({
   onData?: (d: HistoricalIntelligenceResponse) => void;
   onFailure?: (f: HIFailure | null) => void;
 }) {
-  const [data, setData]         = useState<HistoricalIntelligenceResponse | null>(null);
-  const [loading, setLoading]   = useState(true);
+  const _hiSeed = swrCacheRead<HistoricalIntelligenceResponse>(historicalIntelligenceKey(pickId, "L10", "ALL"));
+  const [data, setData]         = useState<HistoricalIntelligenceResponse | null>(_hiSeed ?? null);
+  const [loading, setLoading]   = useState(_hiSeed === undefined);
   const [failure, setFailure]   = useState<HIFailure | null>(null);
   const [tab, setTab]           = useState<Tab>("logs");
   const [sample, setSample]     = useState<SampleScope>("L10");
@@ -227,11 +230,16 @@ export function HistoricalIntelligence({
     const v = opts.venue  ?? venue;
     setLoading(true); setFailure(null);
     try { onFailure?.(null); } catch {}
+    // Cached scope → paint immediately, then revalidate quietly.
+    const _key = historicalIntelligenceKey(pickId, s, v);
+    const _cached = swrCacheRead<HistoricalIntelligenceResponse>(_key);
+    if (_cached) { setData(_cached); try { onData?.(_cached); } catch {} }
     try {
       const r = await api.historicalIntelligence(pickId, {
         sampleScope: s, venueScope: v,
       });
       setData(r);
+      swrCacheWrite(_key, r);
       try { onData?.(r); } catch {}
     } catch (e: any) {
       // QUERY_FAILED — the history source was NOT consulted successfully.

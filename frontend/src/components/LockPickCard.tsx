@@ -6,6 +6,7 @@ import { COLORS, GRADE_COLORS, getLockTierVisual, RADIUS, getSportColor, CONFIDE
 import { PlayerIdentity } from "@/src/components/PlayerIdentity";
 import { Pick, PickRationale, api } from "@/src/lib/api";
 import { formatGameTime } from "@/src/lib/formatGameTime";
+import { useIsFeatured } from "@/src/lib/featuredStore";
 import { useMLBLive } from "@/src/contexts/MLBLiveContext";
 import { getDisplayLock } from "@/src/lib/lockScore";
 import { PickEventRow } from "@/src/components/PickEventRow";
@@ -17,7 +18,19 @@ import { AltLineChips } from "@/src/components/AltLineChips";
 // the full Pick type through the closure.
 type LockPick = Pick;
 
-function LockPickCardImpl({ pick, featured = false }: { pick: Pick; featured?: boolean }) {
+function LockPickCardImpl({ pick, featured: featuredProp = false }: { pick: Pick; featured?: boolean }) {
+  // Hero state via keyed store subscription (only the two cards whose
+  // featured flag flips re-render on the 7-second rotation).
+  const featuredSelf = useIsFeatured(pick.id);
+  const featured = featuredProp || featuredSelf;
+  // Dev-only render telemetry for the native-performance acceptance gate
+  // (window.__lockCardRenders / __lockCardRendersById). Zero cost in prod.
+  if (__DEV__) {
+    const g = globalThis as any;
+    g.__lockCardRenders = (g.__lockCardRenders || 0) + 1;
+    const by = (g.__lockCardRendersById = g.__lockCardRendersById || {});
+    by[pick.id] = (by[pick.id] || 0) + 1;
+  }
   const router = useRouter();
   const [whyOpen, setWhyOpen] = useState(false);
   // The lite payload trims `pick_rationale` to summary + lean + top
