@@ -3890,23 +3890,93 @@ async def _daily_refresh_loop():
     immediately for the new day instead of waiting up to 59 minutes for
     the next hourly tick. Fixes the "where did all the picks go" bug
     reported 2026-06-23 at 00:48 UTC.
-    """
-    try:
-        from services import board_generation as _bg0
-        await _bg0.load_active()
-        await _ensure_today_picks(allow_heal=True)
 
-        async def _heal_lifecycle_loop():
-            # 144-F: healing moved off the read path onto a lifecycle loop.
-            while True:
-                await asyncio.sleep(600)
-                try:
-                    await _ensure_today_picks(allow_heal=True)
-                except Exception as _hl:
-                    logger.debug("heal lifecycle tick skipped: %s", _hl)
-        asyncio.create_task(_heal_lifecycle_loop())
-    except Exception as e:
-        logger.warning("Startup picks seed failed: %s", e)
+    P0 STARTUP RESTART CLOSURE (2026-09-18, Support-verified):
+    The previous behaviour executed ``_ensure_today_picks(allow_heal=True)``
+    as the FIRST thing this loop did.  Because the loop is eagerly
+    started at ``on_startup`` via ``register_and_start`` (which is
+    ``asyncio.create_task``), that call kicked off Odds API pick-seeding
+    inside the same event loop before ``/api/health`` had a chance to
+    respond quickly, causing supervisor/k8s health-check timeouts and
+    the observed "backend is bouncing" behaviour.  The surgical fix:
+      1. Yield control immediately so /api/health / /api/ready fire.
+      2. Wait for the readiness state published by the preflight step
+         (``_READINESS_STATE.database_ready``).
+      3. THEN run the initial seed under a single-flight guard so a
+         second copy of the loop (defensive against re-registration)
+         cannot cause overlapping ``_ensure_today_picks`` executions.
+    Atomic board contract is unchanged — if the seed fails, the last
+    COMMITTED board keeps serving traffic; the loop retries on cadence.
+    """
+    import time as _t
+    # ── PHASE 1 — Yield the event loop so /health responds first ───
+    # A single 0-second sleep is enough for the FastAPI startup path
+    # to reach `_READINESS_STATE` and the health endpoint to be wired.
+    # The extra 3-second gate below keeps the readiness invariant even
+    # when the preflight step is slow (large index build, cold Mongo).
+    await asyncio.sleep(0)
+    _t_ready_start = _t.time()
+    _INITIAL_SEED_MAX_WAIT_SEC = 45.0   # cap; never blocks forever
+    for _ in range(int(_INITIAL_SEED_MAX_WAIT_SEC)):
+        _rs = globals().get("_READINESS_STATE") or {}
+        if _rs.get("database_ready"):
+            break
+        await asyncio.sleep(1)
+    _t_ready = _t.time() - _t_ready_start
+    logger.info(
+        "daily_refresh_loop: health-ready waited %.1fs (readiness_state=%s) "
+        "— NOW scheduling initial seed",
+        _t_ready, globals().get("_READINESS_STATE"),
+    )
+
+    # ── PHASE 2 — Single-flight initial seed ───────────────────────
+    # Guard against double-registration / accidental double-start so
+    # a second loop instance can never launch a duplicate
+    # `_ensure_today_picks` while the first is still running.  The
+    # flag is intentionally a plain module-level global (Python asyncio
+    # is single-threaded so no lock is required).
+    if globals().get("_INITIAL_SEED_STARTED"):
+        logger.info(
+            "daily_refresh_loop: initial seed already dispatched by another "
+            "loop instance — this loop will proceed straight to cadence")
+    else:
+        globals()["_INITIAL_SEED_STARTED"] = True
+        _seed_started = _t.time()
+        try:
+            from services import board_generation as _bg0
+            await _bg0.load_active()
+            logger.info(
+                "daily_refresh_loop: initial seed dispatching at "
+                "T+%.1fs (post-ready)",
+                _t.time() - _seed_started,
+            )
+            await _ensure_today_picks(allow_heal=True)
+            logger.info(
+                "daily_refresh_loop: initial seed committed in %.1fs — "
+                "atomic board contract preserved",
+                _t.time() - _seed_started,
+            )
+
+            async def _heal_lifecycle_loop():
+                # 144-F: healing moved off the read path onto a
+                # lifecycle loop.  Startup-safe — the outer loop only
+                # spawns this AFTER the initial seed has completed
+                # once, so the healer can never overlap the initial
+                # seed on a cold boot.
+                while True:
+                    await asyncio.sleep(600)
+                    try:
+                        await _ensure_today_picks(allow_heal=True)
+                    except Exception as _hl:
+                        logger.debug("heal lifecycle tick skipped: %s", _hl)
+            asyncio.create_task(_heal_lifecycle_loop())
+        except Exception as e:
+            # Seed failed — server stays healthy; existing COMMITTED
+            # board keeps serving; loop still ticks on cadence below.
+            logger.warning(
+                "daily_refresh_loop: initial seed failed (%s) — "
+                "existing committed board remains active; loop will "
+                "retry on cadence.  Server health is UNAFFECTED.", e)
 
     last_refresh_date = _today_str()
     while True:
