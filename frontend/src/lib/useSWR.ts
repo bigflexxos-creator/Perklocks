@@ -32,6 +32,52 @@ type Snapshot<T> = {
 // stable string. Not exposed globally — tests use `swrCacheClear()`.
 const _cache: Map<string, Snapshot<unknown>> = new Map();
 
+// ── Iteration 145-C · SELECTIVE last-known-good persistence ────────────
+// Only small, trusted, user-facing summaries survive a cold boot so warm
+// tabs (Rollover · Parlay · My Bets · Profile) paint instantly and stay
+// navigable offline.  Deep/disposable data (HI, Lab analytics) is NOT
+// persisted.  Writes happen only after a SUCCESSFUL fetch (never on
+// error/timeout), so persisted state is always a valid response.
+const PERSIST_KEY = "swr_lkg_v1";
+const PERSIST_PREFIXES = ["rollover", "parlay", "my-bets", "profile|stats"];
+const PERSIST_MAX_BYTES = 200_000;
+let _persistTimer: ReturnType<typeof setTimeout> | null = null;
+let _hydrated = false;
+
+function _persistable(key: string): boolean {
+  return PERSIST_PREFIXES.some((p) => key.startsWith(p));
+}
+
+function _schedulePersist(): void {
+  if (_persistTimer) return;
+  _persistTimer = setTimeout(async () => {
+    _persistTimer = null;
+    try {
+      const { storage } = await import("@/src/utils/storage");
+      const out: Record<string, Snapshot<unknown>> = {};
+      for (const [k, v] of _cache.entries()) if (_persistable(k)) out[k] = v;
+      const raw = JSON.stringify(out);
+      if (raw.length <= PERSIST_MAX_BYTES) await storage.setItem(PERSIST_KEY, raw);
+    } catch { /* persistence is best-effort */ }
+  }, 400);
+}
+
+/** Hydrate persisted last-known-good snapshots into the module cache
+ *  (idempotent; never overwrites fresher in-memory entries). */
+export async function swrHydrateFromStorage(): Promise<void> {
+  if (_hydrated) return;
+  _hydrated = true;
+  try {
+    const { storage } = await import("@/src/utils/storage");
+    const raw = await storage.getItem<string>(PERSIST_KEY, "");
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Record<string, Snapshot<unknown>>;
+    for (const [k, v] of Object.entries(parsed)) {
+      if (!_cache.has(k) && v && typeof v.ts === "number") _cache.set(k, v);
+    }
+  } catch { /* corrupt store → ignore */ }
+}
+
 export function swrCacheClear(): void {
   _cache.clear();
 }
@@ -45,6 +91,7 @@ export function swrCacheRead<T>(key: string): T | undefined {
 /** Imperatively seed the cache (used by primary-tab preload). */
 export function swrCacheWrite<T>(key: string, data: T): void {
   _cache.set(key, { data, ts: Date.now() });
+  if (_persistable(key)) _schedulePersist();
 }
 
 type UseSWROptions = {

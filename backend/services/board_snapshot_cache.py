@@ -156,11 +156,21 @@ def _evict_lru_if_needed() -> None:
 
 def get_snapshot(params: dict[str, Any]) -> Optional[Snapshot]:
     """Return the cached snapshot if it is still within the TTL
-    window, else None.  Caller runs the full pipeline on miss."""
+    window, else None.  Caller runs the full pipeline on miss.
+
+    Iteration 144 — while a board generation is BUILDING the snapshot is
+    PINNED (TTL ignored): readers keep seeing the last COMMITTED
+    population until commit() clears the cache exactly once."""
     key = _cache_key(params)
     snap = _state.entries.get(key)
     if snap is None:
         return None
+    try:
+        from services.board_generation import is_building
+        if is_building():
+            return snap
+    except Exception:
+        pass
     age = (datetime.now(timezone.utc) - snap.generated_at).total_seconds()
     if age > _TTL_SECONDS:
         return None
@@ -191,6 +201,14 @@ def put_snapshot(params: dict[str, Any], response: dict,
         response=response,
         payload_bytes=_bytes,
     )
+    # Iteration 144 — never let an in-progress (BUILDING) population become
+    # a cached snapshot with a valid board_version/ETag.
+    try:
+        from services.board_generation import is_building
+        if is_building():
+            return snap
+    except Exception:
+        pass
     _state.entries[key] = snap
     _evict_lru_if_needed()
     return snap

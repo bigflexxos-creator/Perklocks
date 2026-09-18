@@ -3801,6 +3801,23 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 _p["truth_fingerprint"] = _tm_fp(_p)
         _final_response["truth_manifest"] = _tm_build(request, _manifest_bv, canonical)
         _final_response["board_version"] = _manifest_bv
+        # Iteration 144 — committed-generation manifest (additive).  A
+        # response assembled from the DB while a generation is BUILDING is
+        # honestly labelled so clients never persist it as last-known-good.
+        try:
+            from services import board_generation as _bg
+            _ev = {str((p or {}).get("canonical_event_id") or (p or {}).get("event_id") or (p or {}).get("event"))
+                   for p in canonical if isinstance(p, dict)}
+            _gm = _bg.manifest(_manifest_bv, len(canonical), len(_ev))
+            if _bg.is_building():
+                _gm["generation_state"] = "BUILDING"
+                _gm["building_generation_ids"] = _bg.building_ids()
+            _final_response["truth_manifest"].update(_gm)
+            response.headers["X-Generation-State"] = _gm["generation_state"]
+            if _gm.get("generation_id"):
+                response.headers["X-Generation-Id"] = str(_gm["generation_id"])
+        except Exception as _bg_err:
+            logger.debug("generation manifest skipped: %s", _bg_err)
     except Exception as _tm_err:
         logger.debug("truth manifest skipped: %s", _tm_err)
 

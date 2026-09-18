@@ -137,6 +137,7 @@ class ProbabilityContract:
     authority_version: str = AUTHORITY_VERSION
     closure: Optional[dict] = None          # sport-family closure record (services.probability_closures)
     closure_probability: Optional[float] = None
+    calibration_note: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -278,7 +279,10 @@ def walk_forward_fit(rows: list[tuple[str, float, int]], n_folds: int = 3) -> di
     ps = [r[1] for r in rows]; ys = [r[2] for r in rows]
     result = {"n_total": n, "candidates": {}, "champion": "identity", "status": "shadow",
               "method": "identity", "params": {}, "prior": round(sum(ys) / n, 4) if n else None,
-              "training_range": [rows[0][0], rows[-1][0]] if n else None}
+              "training_range": [rows[0][0], rows[-1][0]] if n else None,
+              # probability support of the training sample — a promoted
+              # calibrator is never EXTRAPOLATED outside it (identity instead)
+              "support": [round(min(ps), 4), round(max(ps), 4)] if n else None}
     if n < MIN_TRAIN_N + MIN_TEST_N:
         result["status"] = "NOT_ENOUGH_EVIDENCE"; result["raw_metrics"] = _metrics(ps, ys)
         return result
@@ -324,8 +328,11 @@ async def fit_all_calibrators(db) -> dict:
     summary = {}
     for fam, rows in data.items():
         doc = walk_forward_fit(rows)
-        promoted_flag = os.environ.get(f"PROB_AUTH_PROMOTE_{fam}", "0") == "1"
-        prev = await db[REGISTRY].find_one({"family": fam, "is_active": True}, {"_id": 0, "version": 1})
+        prev = await db[REGISTRY].find_one({"family": fam, "is_active": True}, {"_id": 0, "version": 1, "promotion_status": 1})
+        # Iteration 146 — a controlled promotion persists across refits as
+        # long as the family still passes the gate (shadow_ready).
+        promoted_flag = (os.environ.get(f"PROB_AUTH_PROMOTE_{fam}", "0") == "1"
+                         or (prev or {}).get("promotion_status") == "promoted")
         version = int((prev or {}).get("version") or 0) + 1
         doc.update({"family": fam, "version": version, "calibrator_version": f"{fam}.cal.v{version}",
                     "authority_version": AUTHORITY_VERSION, "fitted_at": now, "is_active": True,
@@ -386,6 +393,11 @@ def evaluate(pick: dict) -> ProbabilityContract:
         closure_p = closure.probability
         p_in = closure_p
     method = champ.get("method", "identity") if champ.get("status") == "shadow_ready" else "identity"
+    support_note = None
+    _sup = champ.get("support")
+    if method != "identity" and p_in is not None and isinstance(_sup, (list, tuple)) and len(_sup) == 2:
+        if p_in < float(_sup[0]) - 0.02 or p_in > float(_sup[1]) + 0.02:
+            method = "identity"; support_note = "OUT_OF_CALIBRATION_SUPPORT"
     cal = apply_calibrator(method, champ.get("params") or {}, p_in) if p_in is not None else None
     ess = _ess(pick)
     unc = None
@@ -432,6 +444,7 @@ def evaluate(pick: dict) -> ProbabilityContract:
         probability_delta=round((cal - raw) * 100, 2) if (cal is not None and raw is not None) else None,
         closure=closure.to_dict() if closure is not None else None,
         closure_probability=closure_p,
+        calibration_note=support_note,
     )
 
 

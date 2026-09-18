@@ -266,3 +266,31 @@ Continuous surgical NFL build.  Additive READ-path UX only.
   a family's calibrated/closure probability drives win_probability for NEW publications. Lock Score formula untouched.
 - Pre-existing failing tests (not from this session): test_cfb_game_market_evidence_contract (2), test_iter115 (3),
   test_block2a_tennis_consolidation sim matrix (2), test_nfl_nba_rationale_smoke (async), test_sim_phase_b sim_runs 20000.
+
+## ITERATIONS 144–147 · ATOMIC BOARD GENERATIONS + INSTANT UX + PROMOTION GOVERNANCE (2026-09-18)
+- **144 root defect**: pick_refresh_orchestrator delete_many/insert_many mutated the same population `/picks/today` reads and
+  the 15s snapshot TTL re-snapshotted partial populations (146→3→104 flapping). Fix: `services/board_generation.py`
+  (BUILDING→VALIDATING→COMMITTED|FAILED, tiny `board_generations/active` pointer, compare-and-set commit, no-op commit when
+  board_version unchanged, exactly one snapshot invalidation on a real commit). `_refresh_picks` (all scheduled loops +
+  manual UPDATE) wrapped in begin/validate/commit/fail; `board_snapshot_cache` pinned (TTL ignored, no new snapshots) while
+  building; `/picks/today` truth_manifest gains generation_id/state/revision/committed_at/event_count/schema_version +
+  authority fingerprint (environment_id, backend_revision, authority hash — no secrets); responses assembled during a build
+  are labelled BUILDING. 144-F: `_ensure_today_picks(allow_heal=False)` — healer no longer launched by reads; runs at
+  startup + 10-min lifecycle loop inside a HEAL generation. Client (`app/(tabs)/index.tsx`): accepts/persists only
+  COMMITTED (or LEGACY_UNTRACKED) responses, discards older revisions (acceptedRevisionRef), keeps last committed board
+  with "Board updating…" otherwise. Runtime proof: NFL UPDATE → every poll stayed on the committed generation
+  (396 picks, same board_version), single transitions per commit; failed build keeps A (tests/test_iter144_board_generation.py).
+- **145**: `src/lib/useSWR.ts` selective last-known-good persistence (`swr_lkg_v1`: rollover|parlay|my-bets|profile|stats
+  prefixes, ≤200KB, success-only writes) hydrated in `app/_layout.tsx`; Lab list seeded from SWR cache (warm revisit, no
+  spinner). Tabs already freezeOnBlur + module-level SWR cache → state preserved; errors never clear data.
+  Real-device (Expo/iPhone) airplane-mode proof NOT executed here (web proof only, iteration_147.json).
+- **146**: `POST /api/probability-authority/promote/{family}` (gate: shadow_ready, held-out n ≥100, log-loss beats identity)
+  / `demote`. `PROBABILITY_AUTHORITY_MODE=active` in backend/.env. Promotion persists across refits. Calibrators never
+  extrapolate outside training support (`support` in registry → identity + `OUT_OF_CALIBRATION_SUPPORT`).
+  `prediction_publication_service._build_payload` stamps promoted families: calibrated probability → win_probability,
+  Lock Score recomputed via canonical `compute_lock_score` (formula untouched), legacy values retained. PROMOTED: MLB_HRR
+  (platt, n=615/held-out 415, log-loss 0.7408→0.7375; calibrator is nearly flat ≈0.60–0.62 → HRR locks will honestly fall
+  below 85 on NEW publications). All other families shadow (NOT_ENOUGH / NO_SETTLED_EVIDENCE).
+- **147**: iteration_147.json — board manifest COMMITTED & stable (0 flaps), HI Trevor Lawrence AVAILABLE_WITH_DATA 10/10,
+  Rush/Rec/Receptions HI 200 with status, 503 on /picks/today keeps cards visible, warm tab switching no spinners.
+  Known minor: dev-only red-box "Unexpected text node: ." from `src/components/StrategyLabWorkstation.tsx:149` (Lab tab, pre-existing).

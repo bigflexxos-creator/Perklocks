@@ -1,0 +1,57 @@
+{
+  "summary": "Iteration 147 narrow certification — PASS. Backend: 3 mandated suites (test_iter144_board_generation.py, test_probability_closures.py, test_probability_authority_contracts.py) = 37/37 pass. New HTTP contract suite test_iter147_certification.py = 8/8 pass covering truth_manifest shape (state COMMITTED, generation_id/revision/schema_version='board.v1'/pick_count matching len(picks); no secret-like keys), 5-poll stability (generation_id/board_version flapped 0 times over ~20s at rev=56 gen_20260918T171049_6288276c bv=4dc0e3ee620f5352 pick_count=396), probability-authority mode=='active' with exactly [MLB_HRR] PROMOTED, POST /promote/SOCCER_TOTAL->409, POST /promote/NFL_PASS_YARDS->404, HI record pick 6d76acfa... AVAILABLE_WITH_DATA n=10 hits=10 served_by.authority present, and NFL spot-check found+queried 3/3 variants (Rush Yds, Reception Yds/Receiving, Receptions) all HTTP 200 with status field and none QUERY_FAILED. Frontend (390x844, demo@lockscore.ai/demo123): Locks board renders 58 pick cards; under page.route 503 for **/picks/today** cards REMAIN (58, freshness header 'Updated Xs ago' shown, no full blank); on unroute cards recover (58); rapid Locks→Rollover→Parlay→My Bets→Lab→Profile→Locks twice — no full-screen spinner/skeleton after 1s on any tab; pick 6d76acfa... detail shows hi-status-line 'AVAILABLE_WITH_DATA · L10 n=10/80 · src canonical-parity...'. One React Native dev-mode error surfaced on Lab tab: 'Unexpected text node: . A text node cannot be a child of a <View>' at src/components/StrategyLabWorkstation.tsx:149:5 — raw whitespace/text child of <View> — dev red-box overlay only, non-blocking in prod build.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "StrategyLabWorkstation (Lab tab)",
+        "issue": "React Native rule violation: 'Unexpected text node: . A text node cannot be a child of a <View>'. Dev-mode red-box overlay appears when navigating to Lab tab. Raw text/whitespace is being rendered as direct child of <View>. Reference: src/components/StrategyLabWorkstation.tsx:149:5 (LabScreen -> app/(tabs)/lab.tsx:241:39).",
+        "testID": "tab-lab",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Locks board (503 stale-serve)",
+        "issues": [
+          "During 503 stale-serve window the board correctly retains 58 pick cards, but there is no explicit 'Updating' or 'Stale' text banner — only the header timestamp 'Updated Xs ago' conveys freshness. Consider adding an explicit stale/updating chip when a refresh fails so users see why the timestamp is aging."
+        ]
+      }
+    ],
+    "react_native_issues": [
+      {
+        "component": "StrategyLabWorkstation",
+        "issue": "Unexpected text node error — a text node (likely a stray space/newline) is placed directly inside <View>. All text must be wrapped in <Text>. Reference: src/components/StrategyLabWorkstation.tsx:149:5"
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter144_board_generation.py",
+    "/app/backend/tests/test_probability_closures.py",
+    "/app/backend/tests/test_probability_authority_contracts.py",
+    "/app/backend/tests/test_iter147_certification.py",
+    "/app/test_reports/pytest/iter147.xml",
+    "/app/test_reports/pytest/iter147_http.xml"
+  ],
+  "action_items": [
+    "Fix React Native 'Unexpected text node' error in src/components/StrategyLabWorkstation.tsx line 149 — remove stray whitespace/text child inside <View> or wrap it in <Text>. This surfaces the dev red-box on the Lab tab.",
+    "(Optional polish) Add an explicit 'Updating…' or 'Stale' chip on the Locks board when a refresh fetch fails, in addition to the 'Updated Xs ago' timestamp, to make SWR stale-serve state more discoverable."
+  ],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/tests/test_iter147_certification.py"
+  ],
+  "success_rate": {
+    "backend": "100% (45/45: 37 mandated + 8 new HTTP contract)",
+    "frontend": "100% of critical flows (stale-serve, rapid-tab, HI status); 1 non-blocking dev-mode RN warning on Lab"
+  },
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Auth: demo@lockscore.ai/demo123 via POST /api/auth/login returns access_token. Frontend login uses testids login-email-input, login-password-input, login-submit-button (React Native onChangeText requires page.keyboard.type not page.fill). Tab testids: tab-locks, tab-rollover, tab-parlay, tab-my-bets, tab-lab, tab-profile. Pick cards use testid prefix pick-card-. HI status line testid: hi-status-line. Locks freshness indicator uses testid locks-update. In current backend state: mode='active', MLB_HRR PROMOTED, board rev=56 pick_count=396. Route mocking for **/picks/today** properly triggers SWR stale-serve. Truth-manifest shape confirmed: generation_id, generation_state (COMMITTED|BUILDING|LEGACY_UNTRACKED), revision, board_version, committed_at, pick_count, event_count, schema_version='board.v1', environment_id, backend_revision, authority, pid.",
+  "rca_of_issue": "N/A — mandated certification passed. One non-blocking React Native dev warning (StrategyLabWorkstation stray text child) — main agent can locate at file:line src/components/StrategyLabWorkstation.tsx:149:5 and either remove whitespace between JSX tags or wrap in <Text>."
+}
