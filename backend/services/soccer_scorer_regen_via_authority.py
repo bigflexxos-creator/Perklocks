@@ -144,14 +144,22 @@ async def regen_soccer_player_picks_via_authority(
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
 
+    # ── ACTIVE HORIZON — 48 h (2026-09-18, user-approved) ─────────
+    # Only regenerate ATGS/scorer picks whose event falls inside the
+    # rolling 48 h active window.  Prevents wasting compute + memory
+    # on events days out that the acquisition path shouldn't be
+    # active-processing yet.  Falls back gracefully — never restricts
+    # historical settlement or completed-match research.
+    from services.soccer_active_horizon import soccer_active_time_filter
+    _active_window = soccer_active_time_filter(
+        fields=("event_time", "kickoff_iso"), now=now,
+    )
+
     q = {
         "sport": "Soccer",
         "book_odds": {"$ne": None},
-        # Current or future events only
-        "$or": [
-            {"event_time": {"$gte": now_iso}},
-            {"kickoff_iso": {"$gte": now_iso}},
-        ],
+        # ACTIVE 48h window (was: unbounded future)
+        **_active_window,
         # NEVER touch settled / history picks
         "started":  {"$ne": True},
         "settled":  {"$ne": True},
