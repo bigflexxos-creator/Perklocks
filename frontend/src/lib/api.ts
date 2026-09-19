@@ -167,6 +167,36 @@ function resolveBaseUrl(): string {
 }
 const BASE_URL = resolveBaseUrl();
 
+// ── EXPO NATIVE TRACE (DEV-only) ────────────────────────────────────
+// One-time boot fingerprint so device runs surface the exact API
+// origin + platform + runtime in Metro/Expo Go logs.  Zero-cost in
+// production: entire block gated on __DEV__ and Platform.OS !== "web".
+try {
+  if (typeof __DEV__ !== "undefined" && __DEV__ && Platform.OS !== "web") {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[EXPO_BOOT] platform=${Platform.OS} runtime=native ` +
+      `api_origin=${BASE_URL || "(same-origin)"} ` +
+      `build_time_env=${process.env.EXPO_PUBLIC_BACKEND_URL || "(unset)"} ` +
+      `expo_hostUri=${(Constants as any).expoConfig?.hostUri || "(unset)"}`
+    );
+  }
+} catch {}
+
+// Board fetch instrumentation counters — flushed on every /picks/today
+// request via the [EXPO_BOARD_*] tag family.
+let _lastBoardVersion: string | number | null = null;
+let _lastBoardPickCount: number | null = null;
+function _traceBoard(tag: string, payload: Record<string, any>) {
+  if (typeof __DEV__ === "undefined" || !__DEV__) return;
+  if (Platform.OS === "web") return;
+  const parts = Object.entries(payload)
+    .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
+    .join(" ");
+  // eslint-disable-next-line no-console
+  console.log(`[${tag}] ${parts}`);
+}
+
 /**
  * Centralized backend URL accessor.  Throws a clear error when the
  * base URL is unavailable (production native build missing
@@ -969,6 +999,10 @@ async function request<T>(
     };
 
     let lastErr: any = null;
+    // ── EXPO NATIVE TRACE — one board request start ──
+    const _isBoardReq = method === "GET" && path.startsWith("/picks/today");
+    const _tReqStart = _isBoardReq ? Date.now() : 0;
+    if (_isBoardReq) _traceBoard("EXPO_BOARD_REQUEST", { url: finalUrl, at: _tReqStart });
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       // Fast-path: if the caller cancelled between retries, exit
       // immediately with an ABORTED_SUPERSEDED-tagged error.  This
@@ -992,13 +1026,32 @@ async function request<T>(
         // when the canonical publication has not changed.
         if (_isEtagParticipant && res.status === 304 && _prevEntry) {
           _prevEntry.ts = Date.now();
+          if (_isBoardReq) _traceBoard("EXPO_BOARD_RESPONSE", { status: 304, duration_ms: Date.now() - _tReqStart, cached: true });
           return _prevEntry.body as T;
         }
 
         let data: any = {};
         let parseFailed = false;
+        const _tParseStart = _isBoardReq ? Date.now() : 0;
         try { data = text ? JSON.parse(text) : {}; }
         catch { data = { detail: text }; parseFailed = true; }
+        if (_isBoardReq) {
+          const _boardVersion = res.headers?.etag || (data as any)?.board_version || (data as any)?.generation_id || null;
+          const _pickCount = Array.isArray((data as any)?.picks) ? (data as any).picks.length : (Array.isArray(data) ? data.length : -1);
+          _traceBoard("EXPO_BOARD_RESPONSE", {
+            status: res.status, duration_ms: Date.now() - _tReqStart,
+            bytes: text ? text.length : 0, board_version: _boardVersion,
+          });
+          _traceBoard("EXPO_BOARD_PARSE", {
+            duration_ms: Date.now() - _tParseStart, parsed_picks: _pickCount,
+            parse_failed: parseFailed,
+            prev_pick_count: _lastBoardPickCount, prev_board_version: _lastBoardVersion,
+          });
+          if (!parseFailed && _pickCount >= 0) {
+            _lastBoardPickCount = _pickCount;
+            _lastBoardVersion = _boardVersion as any;
+          }
+        }
         if (!res.ok) {
           // ── 401 auto-recover (2026-06-26) ───────────────────────
           // A 401 means our stored token is invalid — either the
@@ -2415,9 +2468,26 @@ export const api = {
     if (opts.venueScope)   p.set("venue_scope",   opts.venueScope);
     if (opts.contextScope) p.set("context_scope", opts.contextScope);
     const qs = p.toString(); const suffix = qs ? `?${qs}` : "";
+    const _t0 = Date.now();
     return request<HistoricalIntelligenceResponse>(
       `/picks/${pickId}/historical-intelligence${suffix}`,
-    );
+    ).then((r) => {
+      _traceBoard("EXPO_HI", {
+        pick_id: pickId,
+        duration_ms: Date.now() - _t0,
+        overall_n: (r as any)?.sample_size ?? null,
+        vs_opp_n: (r as any)?.opponent_summary?.n ?? null,
+        games: Array.isArray((r as any)?.games) ? (r as any).games.length : null,
+        status: (r as any)?.status ?? null,
+      });
+      return r;
+    }).catch((e) => {
+      _traceBoard("EXPO_HI", {
+        pick_id: pickId, duration_ms: Date.now() - _t0,
+        error: e?.message || String(e),
+      });
+      throw e;
+    });
   },
 };
 
