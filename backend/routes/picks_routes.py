@@ -1270,7 +1270,20 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         _decorate_with_espn_meta,
         _strip_for_lite,
     )
-    await _ensure_today_picks()
+    # P0 READ-PATH CLOSURE (2026-09-19) — Support-flagged root cause of
+    # Expo Go "Locks does not load" and >9s /picks/today responses.
+    # ``_ensure_today_picks()`` performs healer + count-matrix work
+    # that historically blocked the read path.  User requests must NEVER
+    # wait for it — the committed board is already the authoritative
+    # truth.  Schedule as a background task and return current
+    # committed truth immediately.  When the cached verdict is HEALTHY,
+    # the wrapper short-circuits in <1ms anyway, so this is a strict
+    # improvement (no regression when everything is warm).
+    import asyncio as _asyncio
+    try:
+        _asyncio.create_task(_ensure_today_picks())
+    except Exception:
+        pass
 
     # ── SESSION 2 · FROZEN BOARD SNAPSHOT (behind existing endpoint) ─
     # Single canonical Locks truth remains ``/api/picks/today``.  The
