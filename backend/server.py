@@ -6646,19 +6646,29 @@ async def on_startup():
         async def _nfl_player_weekly_loop():
             while True:
                 try:
+                    # P0-3 CLOSURE (2026-09-20) — the 2019-current 7-season
+                    # backfill spawned a persistent multiprocessing child
+                    # (pyarrow parallel parquet reader) that retained
+                    # ~2.6 GB RSS long after the load completed.  Support
+                    # flagged this as the "multi-GB fork/background
+                    # worker" contributor to container memory pressure.
+                    # Surgical fix: only refresh the CURRENT season each
+                    # cycle.  Historical seasons already in Mongo from
+                    # prior runs remain intact; a one-time
+                    # ``refresh_nfl_weekly(db, years=range(2019, y+1))``
+                    # from an admin script or a manual fill is still
+                    # available.  This drops the loop's peak RSS by ~7x.
                     cur_year = datetime.now(timezone.utc).year
-                    yrs = tuple(range(2019, cur_year + 1))
+                    yrs = (cur_year,)
                     r = await _nfl_weekly_refresh(db, years=yrs)
                     logger.info(
-                        "NFL player_weekly refresh: total_upserts=%s per_year=%s",
+                        "NFL player_weekly refresh (current-season only): total_upserts=%s per_year=%s",
                         r.get("total_upserts"),
                         {k: v.get("rows") if isinstance(v, dict) else v
                          for k, v in (r.get("per_year_counts") or {}).items()},
                     )
                 except Exception as e:
                     logger.warning("NFL player_weekly cycle failed: %s", e)
-                # Weekly cadence — same rhythm as the nflverse
-                # parquets update.
                 await asyncio.sleep(7 * 24 * 60 * 60)
 
         _deferred_task(_nfl_player_weekly_loop, DEFER_BASE * 12)
