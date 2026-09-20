@@ -119,6 +119,33 @@ export function swrCacheWrite<T>(key: string, data: T): void {
   if (DETAIL_PREFIXES.some((p) => key.startsWith(p))) _sweepDetail();
 }
 
+// ── Gate 2 P0 (2026-06) · Inflight promise map for TRUE coalescing ─────
+// When two components (mount + focus, or index screen + preloader) hit
+// the same key simultaneously, they must JOIN one underlying fetch
+// rather than fire two identical network requests.  This map holds the
+// promise from the FIRST caller; subsequent callers within the same
+// tick tree await it.  Cleared on completion (success or error).
+const _inflight: Map<string, Promise<unknown>> = new Map();
+
+export function swrInflightCount(): number {
+  return _inflight.size;
+}
+
+/** Coalesce concurrent fetches for the same key onto one promise. */
+export function swrCoalesce<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
+  const existing = _inflight.get(key) as Promise<T> | undefined;
+  if (existing) return existing;
+  const p = (async () => {
+    try {
+      return await fetcher();
+    } finally {
+      _inflight.delete(key);
+    }
+  })();
+  _inflight.set(key, p);
+  return p;
+}
+
 type UseSWROptions = {
   /** Ms until a cached snapshot is considered stale and background refresh runs on focus. */
   staleAfterMs?: number;   // default 15 000
@@ -157,7 +184,9 @@ export function useSWR<T>(
     if (!key) return;
     if (!silent) setLoading(true);
     try {
-      const next = await fetcher();
+      // GATE 2 P0 — TRUE coalescing: mount + focus + foreground firing
+      // the same identity JOIN one underlying network request.
+      const next = await swrCoalesce<T>(key, fetcher);
       if (!mountedRef.current) return;
       swrCacheWrite(key, next);
       lastFetchRef.current = Date.now();

@@ -3874,6 +3874,21 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # depend on freshly recomputed devig / signal decoration and
     # must always reflect the newest canonical state.
     if lite:
+        # ── GATE 2 P1 (2026-06) — BoardPickDTO projection ─────────────
+        # Slim the response for board consumption.  Preserves canonical
+        # truth (id / market / selection / line / odds / lock_score /
+        # probabilities / edge / tier / signal / imagery / streak) and
+        # drops proven detail-only + duplicate metadata.  Detail screens
+        # (Pick Breakdown, HI, Lab) call other endpoints for full data.
+        try:
+            from services.board_pick_dto import project_board_dto_list as _dto_project
+            if isinstance(_final_response, dict) and "picks" in _final_response:
+                _final_response = dict(_final_response)
+                _final_response["picks"] = _dto_project(_final_response["picks"])
+                _final_response["dto_version"] = "board_v2"
+        except Exception as _dto_err:
+            logger.debug("BoardPickDTO projection skipped: %s", _dto_err)
+
         try:
             from services.board_snapshot_cache import (
                 compute_board_version as _bsc_ver,
