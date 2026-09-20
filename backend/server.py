@@ -3315,7 +3315,7 @@ async def stats_summary(user: Annotated[UserPublic, Depends(current_user)]):
     the hero number equals the visible list across every sport tab.
     """
     from services.main_board_eligibility import main_board_lock_score_query
-    await _ensure_today_picks()
+    # P0 READ-PATH CLOSURE (2026-09-19) — read never owns refresh.
     today = _today_str()
     # Canonical Locks predicate — published_lock_score first, fall back
     # to legacy lock_score only when the canonical field is absent.

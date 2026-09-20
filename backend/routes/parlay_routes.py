@@ -86,7 +86,8 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         _ensure_today_picks, _today_str, _market_regex,
         _canonicalize_picks, _historical_winrates,
     )
-    await _ensure_today_picks()
+    # P0 READ-PATH CLOSURE (2026-09-19) — read never owns refresh.
+    # Bounded daily_refresh_loop is the sole owner of refresh work.
     is_high_risk = (mode or "").lower() == "high_risk"
     # "1-5H Today" is now a WINDOW overlay (not its own mode) — it works under
     # any active mode (Standard / Advanced / High Risk). Triggered whenever the
