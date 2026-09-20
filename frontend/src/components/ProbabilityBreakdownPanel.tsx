@@ -68,9 +68,23 @@ export function ProbabilityBreakdownPanel({ pickId }: { pickId: string }) {
     : data.classification === "FADE"    ? "#FCA5A5"        // red
     : COLORS.textPrimary;                                  // unknown — neutral
 
-  // Pretty-print enum tokens like LOCK_99 → "LOCK 99" so the pill
-  // never renders raw snake_case from the backend.
-  const classLabel = (data.classification || "").replace(/_/g, " ");
+  // GATE 3 P0 (2026-06) — semantic collision fix.
+  // ``data.classification`` is an INTERNAL probability tier
+  // (LOCK_99 / PREMIUM / GOOD / NORMAL / FADE).  Rendering it as
+  // "LOCK 99" made the pill look identical to the canonical published
+  // Perklocks Lock Score, which is confusing.  Map the enum to a
+  // clearly-distinct consumer label without changing the underlying
+  // probability math.
+  const _classConsumerLabel: Record<string, string> = {
+    LOCK_99: "ELITE TIER",
+    PREMIUM: "PREMIUM",
+    GOOD:    "GOOD",
+    NORMAL:  "NORMAL",
+    FADE:    "FADE",
+  };
+  const classLabel =
+    _classConsumerLabel[(data.classification || "").toUpperCase()]
+    || (data.classification || "").replace(/_/g, " ");
 
   // Simulator may be null on non-simulated sports/markets — collapse
   // the bar gracefully when that's the case. We rely on `sim_probability

@@ -27,6 +27,8 @@ import { SignalEnginePanel } from "@/src/components/SignalEnginePanel";
 import { getDisplayLockRounded } from "@/src/lib/lockScore";
 import { buildSlipText, shareSlip, saveSlipImage, copySlipText } from "@/src/lib/shareBetSlip";
 import { safeBack } from "@/src/utils/safeBack";
+import { factorPresentationList } from "@/src/lib/factorPresentation";
+
 
 export default function PickDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -303,29 +305,52 @@ export default function PickDetail() {
 
             <Text style={styles.sectionLabel}>FACTOR BREAKDOWN</Text>
             <View style={styles.factorsCard}>
-              {/* Defensive: alt-line picks (e.g. tennis Tommy Paul +0.5 Games)
-                  occasionally arrive without a populated `factors` map —
-                  Object.entries(undefined) was crashing the whole pick
-                  detail screen with "Cannot convert undefined value to
-                  object". Coalesce to {} so the section just renders
-                  empty rather than tanking the route. */}
-              {Object.entries(pick.factors || {}).map(([k, v]) => (
-                <View key={k} style={styles.factorRow}>
-                  <Text style={styles.factorName}>{k}</Text>
-                  <View style={styles.factorBarTrack}>
-                    <View style={[
-                      styles.factorBarFill,
-                      { width: `${v}%`, backgroundColor: gradeColor },
-                    ]} />
-                  </View>
-                  <Text style={[styles.factorValue, { color: gradeColor }]}>{Math.round(Number(v) || 0)}</Text>
-                </View>
-              ))}
-              {(!pick.factors || Object.keys(pick.factors).length === 0) && (
-                <Text style={[styles.factorName, { textAlign: "center", paddingVertical: 8 }]}>
-                  Factor breakdown unavailable for this pick.
-                </Text>
-              )}
+              {/* GATE 3 P1 (2026-06) — typed FactorPresentation replaces
+                  the previous raw ``Object.entries(pick.factors)`` +
+                  ``Number(v) || 0`` render.  Internal (``__``) keys and
+                  keys not in the allowlist never render to consumers. */}
+              {(() => {
+                const fps = factorPresentationList(pick.factors as any);
+                if (fps.length === 0) {
+                  return (
+                    <Text style={[styles.factorName, { textAlign: "center", paddingVertical: 8 }]}>
+                      Factor breakdown unavailable for this pick.
+                    </Text>
+                  );
+                }
+                return fps.map((fp) => {
+                  // Only draw the horizontal bar for values in a
+                  // legitimately 0-100 or 0-1 range; other units
+                  // (yards / counts / minutes) render the value only.
+                  const barPct =
+                    fp.numericValue != null && fp.range
+                      ? Math.max(
+                          0,
+                          Math.min(
+                            100,
+                            ((fp.numericValue - fp.range[0]) /
+                              (fp.range[1] - fp.range[0])) * 100,
+                          ),
+                        )
+                      : null;
+                  return (
+                    <View key={fp.key} style={styles.factorRow}>
+                      <Text style={styles.factorName}>{fp.label}</Text>
+                      {barPct != null && (
+                        <View style={styles.factorBarTrack}>
+                          <View style={[
+                            styles.factorBarFill,
+                            { width: `${barPct}%`, backgroundColor: gradeColor },
+                          ]} />
+                        </View>
+                      )}
+                      <Text style={[styles.factorValue, { color: gradeColor }]}>
+                        {fp.displayValue}
+                      </Text>
+                    </View>
+                  );
+                });
+              })()}
             </View>
 
             {/* Survivability Engine — only renders for MLB hit props */}
