@@ -138,7 +138,8 @@ async def picks_all(
         _canonicalize_picks,
     )
     from services.board_projection_service import BoardProjectionService
-    await _ensure_today_picks()
+    # P0 READ-PATH CLOSURE (2026-09-19) — Support-verified.
+    # Read paths NEVER own refresh/healing.  Daily loop owns refresh.
     raw = await db.picks.find(
         {"pick_date": _today_str()}, {"_id": 0},
     ).to_list(length=None)          # FULL canonical population
@@ -324,7 +325,7 @@ async def under_of_the_day(
         _ensure_today_picks, _today_str, _filter_in_play_window,
         _canonicalize_lock_score, _canonicalize_picks, _market_regex,
     )
-    await _ensure_today_picks()
+    # P0 READ-PATH CLOSURE — read never owns refresh.
     now = datetime.now(timezone.utc)
     cutoff = now + timedelta(hours=24)
     q: dict = {"pick_date": _today_str(), "is_under_lock": True,
@@ -427,7 +428,7 @@ async def pick_rollover(
         _ensure_today_picks, _today_str, _filter_in_play_window,
         _canonicalize_lock_score, _canonicalize_picks, _market_regex,
     )
-    await _ensure_today_picks()
+    # P0 READ-PATH CLOSURE — read never owns refresh.
 
     # ── 2026-07-27 STICKY ROLLOVER (bug: bets shuffled every visit) ────
     # Rollover is meant to be the "3 safest bets of the day" — it must
@@ -1270,20 +1271,15 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         _decorate_with_espn_meta,
         _strip_for_lite,
     )
-    # P0 READ-PATH CLOSURE (2026-09-19) — Support-flagged root cause of
-    # Expo Go "Locks does not load" and >9s /picks/today responses.
-    # ``_ensure_today_picks()`` performs healer + count-matrix work
-    # that historically blocked the read path.  User requests must NEVER
-    # wait for it — the committed board is already the authoritative
-    # truth.  Schedule as a background task and return current
-    # committed truth immediately.  When the cached verdict is HEALTHY,
-    # the wrapper short-circuits in <1ms anyway, so this is a strict
-    # improvement (no regression when everything is warm).
-    import asyncio as _asyncio
-    try:
-        _asyncio.create_task(_ensure_today_picks())
-    except Exception:
-        pass
+    # P0 READ-PATH CLOSURE (2026-09-19) — Support-verified root cause.
+    # Read paths NEVER own refresh, healing, or provider work.  The
+    # bounded daily_refresh_loop is the SOLE owner of refresh cadence.
+    # A previous "fire-and-forget" create_task variant was rejected by
+    # Support because it moves the overload into unbounded background
+    # tasks — every request would still trigger identical work.  We
+    # rely on the last-COMMITTED board + snapshot cache below.  If the
+    # snapshot is cold, the pipeline still runs but no user request
+    # dispatches its own refresh trigger.
 
     # ── SESSION 2 · FROZEN BOARD SNAPSHOT (behind existing endpoint) ─
     # Single canonical Locks truth remains ``/api/picks/today``.  The
