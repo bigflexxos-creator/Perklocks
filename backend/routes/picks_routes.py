@@ -1299,10 +1299,14 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         "stars_only": bool(stars_only), "lite": bool(lite),
     }
     _snap: Any = None
+    _sf_lock: Optional[asyncio.Lock] = None      # GATE 1: single-flight owner marker
+    _sf_owned: bool = False
     if lite:
         try:
             from services.board_snapshot_cache import (
                 get_snapshot as _bsc_get,
+                get_stale_snapshot as _bsc_stale,
+                get_lock as _bsc_lock,
             )
             _snap = _bsc_get(_snapshot_params)
             if _snap is not None:
@@ -1329,8 +1333,37 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 response.headers["X-Snapshot-Cache"] = "HIT"
                 response.headers["Cache-Control"] = "private, max-age=0, must-revalidate"
                 return _snap.response
+            # ── GATE 1 P0 (2026-06) — TRUE PER-CACHE-KEY SINGLE-FLIGHT ──
+            # Cache MISS.  Acquire the per-key lock; re-check cache
+            # AFTER acquisition so a stampede of 50 concurrent cold
+            # callers produces exactly ONE reconstruction.  Waiters
+            # serialize behind the owner and find HIT on re-check.
+            _sf_lock = _bsc_lock(_snapshot_params)
+            await _sf_lock.acquire()
+            _sf_owned = True
+            _snap = _bsc_get(_snapshot_params)
+            if _snap is not None:
+                # A waiter — owner just populated the cache.
+                response.headers["ETag"] = f'"{_snap.board_version}"'
+                response.headers["X-Board-Version"] = _snap.board_version
+                response.headers["X-Snapshot-Cache"] = "HIT-SF"
+                response.headers["Cache-Control"] = "private, max-age=0, must-revalidate"
+                try:
+                    _sf_lock.release()
+                except Exception:
+                    pass
+                _sf_owned = False
+                return _snap.response
+            # Stale-while-revalidate: if we have last-good for this
+            # key, we could optionally return it here and revalidate
+            # in the background.  Gate 1 keeps the owner in-band so
+            # waiters see immediate fresh truth; the STALE surface
+            # remains available via get_stale_snapshot() for the
+            # frontend to use in Gate 2.
         except Exception as _sc_err:
             logger.debug("snapshot cache lookup skipped: %s", _sc_err)
+            _sf_owned = False
+            _sf_lock = None
 
     # ── Slate-wide Signal Score percentile ranking (2026-07-17) ─────
     # Coverage sweep + percentile-rank pass. Ranks are persisted on
@@ -1358,11 +1391,15 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # `signal_score` are included as neutral (see min_signal branch
     # above) so the board is never empty just because ranking is
     # still catching up.
-    try:
-        from services.signal_engine import refresh_slate_signal_rank
-        asyncio.create_task(refresh_slate_signal_rank(db, _today_str()))
-    except Exception as _rank_err:
-        logger.warning("Signal-rank slate refresh skipped: %s", _rank_err)
+    # ── Slate-wide Signal Score percentile ranking (2026-07-17) ─────
+    # GATE 1 P0 (2026-06) — REMOVED from GET ownership.  Read paths
+    # never own maintenance.  ``refresh_slate_signal_rank`` is now
+    # invoked exclusively by:
+    #   • the daily_refresh_loop scheduler
+    #   • the board-generation commit path
+    #   • the POST /picks/signal-rank/refresh admin endpoint
+    # Freshly-ingested picks missing ``signal_score`` are treated as
+    # neutral 50 by the ``min_signal`` filter (existing behaviour).
     # ── Normalise the multi-select params to lists, merging with legacy ──
     def _split_csv(s: Optional[str]) -> list[str]:
         if not s:
@@ -3850,6 +3887,13 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             response.headers["Cache-Control"] = "private, max-age=0, must-revalidate"
         except Exception as _sc_err:
             logger.debug("snapshot cache write skipped: %s", _sc_err)
+
+    # ── GATE 1 P0 — release single-flight ownership AFTER cache write ──
+    if _sf_owned and _sf_lock is not None:
+        try:
+            _sf_lock.release()
+        except Exception:
+            pass
 
     return _final_response
 

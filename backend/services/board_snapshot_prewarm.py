@@ -31,8 +31,14 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger("lockscore.snapshot_prewarm")
 
-# Slightly under the snapshot TTL so the cache is always warm.
-_PREWARM_INTERVAL_SEC = int(os.environ.get("BOARD_SNAPSHOT_PREWARM_SEC", "12"))
+# GATE 1 P0 (2026-06) — retired dependency on the 12s prewarm/15s TTL
+# race.  Committed board_version is now the primary freshness
+# authority; wall-clock TTL is a 300s failsafe only.  The prewarmer
+# now runs on a long safety cadence (default 300s = same as the
+# failsafe TTL) so we do not endlessly rebuild identical snapshots
+# just because time elapsed.  Set BOARD_SNAPSHOT_PREWARM_SEC=0 to
+# disable the periodic loop entirely (startup warm still runs once).
+_PREWARM_INTERVAL_SEC = int(os.environ.get("BOARD_SNAPSHOT_PREWARM_SEC", "300"))
 _STARTUP_DELAY_SEC = 8  # wait for `_ensure_today_picks` to settle first
 
 # The prewarm filter matrix.  Keep this SHORT — every combo consumes
@@ -97,17 +103,31 @@ async def prewarm_loop_forever(user_public) -> None:
             any authenticated identity produces the same snapshot.
     """
     await asyncio.sleep(_STARTUP_DELAY_SEC)
+    # Startup priming — one sweep to populate cold caches.
+    try:
+        att, ok, errs = await _prime_once(user_public)
+        if errs:
+            logger.debug(
+                "prewarm startup sweep attempted=%d ok=%d errors=%d first=%s",
+                att, ok, len(errs), errs[0] if errs else "-",
+            )
+    except Exception as _cycle_err:
+        logger.debug("prewarm startup sweep raised: %s", _cycle_err)
+    # GATE 1 P0 — long-safety loop only.  Set interval=0 to disable.
+    if _PREWARM_INTERVAL_SEC <= 0:
+        logger.info("prewarm periodic loop disabled (interval=0)")
+        return
     while True:
         try:
+            await asyncio.sleep(_PREWARM_INTERVAL_SEC)
             att, ok, errs = await _prime_once(user_public)
             if errs:
                 logger.debug(
-                    "prewarm cycle done attempted=%d ok=%d errors=%d first=%s",
+                    "prewarm cycle attempted=%d ok=%d errors=%d first=%s",
                     att, ok, len(errs), errs[0] if errs else "-",
                 )
         except Exception as _cycle_err:
             logger.debug("prewarm cycle raised: %s", _cycle_err)
-        await asyncio.sleep(_PREWARM_INTERVAL_SEC)
 
 
 async def start_prewarm_task(app) -> None:
