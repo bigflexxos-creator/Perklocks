@@ -276,14 +276,24 @@ async def _refresh_league(
             return_exceptions=False,
         )
 
-        # Player + season-stats upserts (bounded by _SEM inside _get)
-        tasks = []
-        for team, roster in zip(teams, rosters):
-            for ath in roster:
-                tasks.append(
-                    _ingest_one_player(client, db, sport, sport_slug, league_slug, team, ath, season)
-                )
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Player + season-stats upserts — P0 STABILITY (2026-06):
+        # bounded_gather caps live coroutines at 16 so we don't
+        # allocate ~12 000 coroutine frames simultaneously (CFB).
+        from services.bounded_async import bounded_gather as _bgather
+
+        _pairs = [
+            (team, ath)
+            for team, roster in zip(teams, rosters)
+            for ath in roster
+        ]
+
+        async def _one_player(pair):
+            _team, _ath = pair
+            return await _ingest_one_player(
+                client, db, sport, sport_slug, league_slug, _team, _ath, season,
+            )
+
+        results = await _bgather(_pairs, _one_player, limit=16)
 
         # Injuries — separate pass per team
         inj_tasks = [

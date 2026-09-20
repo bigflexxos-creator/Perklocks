@@ -229,12 +229,19 @@ async def refresh_all(db: AsyncIOMotorDatabase, season: int | None = None) -> di
         for team, roster in zip(teams, roster_results):
             roster_pairs.append((team, roster))
 
-        # Then upsert every player + their stats in parallel (bounded by _SEM)
-        tasks = []
-        for team, roster in roster_pairs:
-            for row in roster:
-                tasks.append(_ingest_one_player(client, db, team, row, season))
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Then upsert every player + their stats — P0 STABILITY (2026-06):
+        # bounded_gather caps live coroutines at 16 to prevent
+        # allocating ~1 200 coroutine frames at once.
+        from services.bounded_async import bounded_gather as _bgather
+        _pairs = [
+            (team, row)
+            for team, roster in roster_pairs
+            for row in roster
+        ]
+        async def _one_mlb(pair):
+            _t, _r = pair
+            return await _ingest_one_player(client, db, _t, _r, season)
+        results = await _bgather(_pairs, _one_mlb, limit=16)
 
     ok = sum(1 for r in results if isinstance(r, tuple) and r[0])
     injured = sum(1 for r in results if isinstance(r, tuple) and r[1] == "injured")
