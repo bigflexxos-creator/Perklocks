@@ -226,9 +226,13 @@ async def refresh(db, *, max_players: Optional[int] = None) -> dict:
     tally = {"players_processed": 0, "splits": 0, "inserted": 0,
              "updated": 0, "skipped": 0, "errors": 0}
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        results = await asyncio.gather(
-            *[_ingest_one_player(client, db, p) for p in players],
-            return_exceptions=True,
+        # P0 STABILITY (2026-06) — bounded fan-out prevents thousands
+        # of coroutine frames from being allocated simultaneously.
+        from services.bounded_async import bounded_gather
+        results = await bounded_gather(
+            players,
+            lambda p: _ingest_one_player(client, db, p),
+            limit=16,
         )
     for r in results:
         if isinstance(r, Exception):

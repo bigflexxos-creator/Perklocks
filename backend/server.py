@@ -19,6 +19,20 @@ from starlette.middleware.cors import CORSMiddleware
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
+# ── P0 SERVER-STABILITY (2026-06 memory root fix) ──
+# Cap glibc malloc arenas + raise mmap threshold BEFORE any heavy
+# imports (pandas, pyarrow, sklearn).  This alone eliminates the
+# per-thread arena fragmentation that pushed baseline RSS to ~3 GB
+# on the previous fork.  Pure hygiene — zero behavioural change.
+try:
+    from services.memory_hygiene import apply_startup_tuning as _apply_mem_tuning  # noqa: E402
+    _apply_mem_tuning()
+except Exception as _mem_exc:                               # pragma: no cover
+    import logging as _lg
+    _lg.getLogger("lockscore.bootstrap").warning(
+        "memory_hygiene bootstrap failed: %s", _mem_exc
+    )
+
 from auth import (  # noqa: E402
     UserCreate, UserLogin, UserPublic, Token,
     hash_password, verify_password, create_access_token,
@@ -3563,6 +3577,14 @@ try:
     from routes import ops_routes
     app.include_router(ops_routes.router)
     logger.info("Ops observability routes mounted at /api/admin/ops/*")
+    # ── P0 SERVER-STABILITY — live memory diagnostics (2026-06) ────
+    # Read-only introspection; gated behind PL_DIAG_TOKEN query param.
+    try:
+        from routes import memory_diag_routes
+        app.include_router(memory_diag_routes.router)
+        logger.info("Memory diagnostics mounted at /api/_diag/memory/*")
+    except Exception as _e_mem_diag:
+        logger.warning("Memory diagnostics failed to mount: %s", _e_mem_diag)
     # ── Phase 4C finalization (2026-08-06) ────────────────────────
     # /api/admin/mlb/rejections — structured MLB rejection counters.
     try:
@@ -4794,6 +4816,14 @@ async def _historical_props_loop():
 
 @app.on_event("startup")
 async def on_startup():
+    # P0 SERVER-STABILITY — start the periodic malloc_trim loop.
+    # Runs once the event loop is up so we can create the trim task.
+    try:
+        from services.memory_hygiene import start_periodic_trim as _start_trim
+        _start_trim()
+    except Exception as _mem_exc:
+        logger.debug("memory_hygiene: trim loop start skipped: %s", _mem_exc)
+
     # Phase 3F-2 — every startup-created asyncio task goes
     # through the runtime task registry so shutdown can
     # signal + await each one.

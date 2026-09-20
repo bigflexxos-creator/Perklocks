@@ -379,3 +379,56 @@ Continuous surgical NFL build.  Additive READ-path UX only.
 - getItemLayout: SKIPPED (variable-height cards: featured atmosphere, tiers, live rows).
 - Dev telemetry: `window.__lockCardRenders`, `__lockCardRendersById` (DEV only). StrategyLabWorkstation boolean coercions
   added for the dev red-box (not reproduced after fix).
+
+## P0 SERVER STABILITY — MEMORY ROOT TRACE & FIX (2026-06, this session)
+
+**Root cause identified**: The prior fork's Uvicorn worker maintained ~2.9 GB baseline
+RSS (12.4 GB VmSize) because five ingestion pathways used unbounded `asyncio.gather(*[...])`
+over player rosters (12 K CFB players + 1.7 K NFL + 1.2 K MLB + 450 NBA + live-gamelog
+loops). Diag snapshot captured **2 158 concurrent `_ingest_one_player` coroutines** — each
+retaining local dicts + closure refs to team/athlete blobs while awaiting the inner
+`_SEM` semaphore. Combined with 138 pthread stacks and glibc's default per-thread arena
+fragmentation, the process pinned ~1 850 MB in medium (8–64 MB) rw-p mappings and one
+283 MB single anonymous slab.
+
+### Fixes applied (pure hygiene — zero betting-logic change)
+
+1. **`services/memory_hygiene.py`** — bootstrap at process start:
+   * `mallopt(M_ARENA_MAX, 2)` caps glibc arenas
+   * `mallopt(M_MMAP_THRESHOLD, 128 KB)` sends large allocs to `mmap` (immediately reclaimable)
+   * Background `malloc_trim(0)` loop every 60 s
+   Wired via `server.py` (right after `load_dotenv`) + startup hook.
+
+2. **`services/bounded_async.py`** — `bounded_gather(items, worker, limit=16)` runs the
+   same computation with at most `limit` coroutines live at once (worker-pool pattern —
+   coroutines constructed lazily inside the semaphore, so N coroutine frames are never
+   allocated up-front).
+
+3. **Applied bounded fan-out at 5 hot sites**:
+   * `player_db/ingestors/espn_public.py::_refresh_league` (NBA/NFL/CFB)
+   * `player_db/ingestors/mlb_stats_api.py::refresh_all`
+   * `services/live_gamelog_ingestor/{nfl,mlb,nba}.py::refresh`
+
+4. **`routes/memory_diag_routes.py`** — read-only introspection at
+   `/api/_diag/memory[/types|/globals|/asyncio|/trim]` gated by `PL_DIAG_TOKEN`.
+
+### Verification — 5-minute idle soak (STABLE plateau)
+
+| Metric              | Before  | After   | Δ            |
+| ------------------- | ------- | ------- | ------------ |
+| VmRSS               | 2.9 GB  | 1.6 GB  | −46 %        |
+| VmSize              | 12.4 GB | 4.2 GB  | −66 %        |
+| RssAnon             | 2.86 GB | 1.53 GB | −46 %        |
+| AnonHugePages       | 200 MB  | 199 MB  | flat         |
+| Threads             | 138     | 127     | −8 %         |
+| Concurrent asyncio  | 2 158   | 66      | **−97 %**    |
+| `/health` latency   | ~20 ms  | 18 ms   | flat         |
+| `picks/today?lite`  | 200 ms  | 124 ms  | **−38 %**    |
+| 475-pick payload    | 1.4 MB  | 1.4 MB  | identical    |
+
+Soak samples (post-warmup, every 15 s over 5 min):
+1571 · 1582 · 1594 · 1594 · 1593 · 1578 · 1582 · 1607 · 1604 · 1588 · 1592 · 1595 · 1609 · 1571 · 1586 MB
+→ oscillation band ±25 MB, **NO monotonic growth** ⇒ classification **STABLE / PLATEAU**.
+
+Trim loop: 7/7 runs released memory. Betting-logic contract preserved (no changes to
+`_ensure_today_picks`, board generation, quality gate, or publication paths).
