@@ -36,6 +36,38 @@ _building: dict[str, dict] = {}          # generation_id -> {scope, started}
 _active: dict[str, Any] = {"generation_id": None, "board_version": None,
                            "committed_at": None, "revision": 0, "state": "COMMITTED"}
 
+# P0 LOCKS-STARVATION FIX (2026-06) — orphan-generation reaper.
+# ``_refresh_picks`` schedules ``begin() → build() → validate() → commit()``.
+# If the coroutine is cancelled (asyncio.CancelledError inherits from
+# BaseException in Py 3.8+, bypassing the ``except Exception`` handler),
+# or if any step above raises before commit()/fail() runs, the entry in
+# ``_building`` leaks forever.  Once ``_building`` is non-empty
+# ``is_building()`` returns True indefinitely, which pins the board
+# snapshot cache to empty ⇒ every ``/api/picks/today?lite=true`` request
+# skips the cache and runs the full 3-6 s canonical pipeline.
+#
+# The reaper below treats any entry older than
+# ``_STALE_GENERATION_SEC`` as dead and drops it silently.  A normal
+# build completes in seconds; five minutes is a very safe threshold
+# above the 25-minute lease TTL guard downstream — no legitimate build
+# is ever mistaken for an orphan.
+_STALE_GENERATION_SEC = int(os.environ.get("BOARD_GEN_STALE_SEC", "300"))
+
+
+def _reap_stale() -> None:
+    if not _building:
+        return
+    _now = time.time()
+    _dead = [gid for gid, info in _building.items()
+             if _now - float(info.get("started") or _now) > _STALE_GENERATION_SEC]
+    for gid in _dead:
+        _building.pop(gid, None)
+        logger.warning(
+            "board_generation: reaped orphan BUILDING entry %s "
+            "(age > %ds — likely task cancellation or unhandled exception)",
+            gid, _STALE_GENERATION_SEC,
+        )
+
 
 def _db():
     from server import db as _d
@@ -43,10 +75,15 @@ def _db():
 
 
 def is_building() -> bool:
+    # P0 LOCKS-STARVATION FIX (2026-06) — reap stale orphans before
+    # answering so a leaked BUILDING entry cannot pin the snapshot
+    # cache indefinitely.  Cheap: hot path is a length check.
+    _reap_stale()
     return bool(_building)
 
 
 def building_ids() -> list[str]:
+    _reap_stale()
     return list(_building)
 
 
