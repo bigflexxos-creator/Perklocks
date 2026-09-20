@@ -53,7 +53,27 @@ type FeedPrefs = { sport?: string; sortKey?: SortKey; lineType?: LineType };
 // as current.  Restored data is flagged STALE until a fresh read lands.
 const PICKS_CACHE_KEY = "locks_picks_cache_v2";
 const PICKS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-type PicksCache = { sport: string; picks: Pick[]; ts: number; origin?: string; boardVersion?: string | null };
+// GATE 3 P0 (2026-06) — truthful last-good persistence.
+// A persisted board projection MUST NOT claim complete-canonical-truth.
+// ``is_partial``, ``stored_count``, ``source_total_count``,
+// ``saved_at`` and ``request_identity`` let any consumer of this cache
+// render an honest "cached last-good, N of M picks, saved Xm ago" state.
+type PicksCache = {
+  sport: string;
+  picks: Pick[];
+  ts: number;
+  origin?: string;
+  boardVersion?: string | null;
+  stored_count?: number;
+  source_total_count?: number;
+  is_partial?: boolean;
+  saved_at?: string;
+  request_identity?: {
+    sport: string;
+    line_type: string;
+    filters_hash: number;
+  };
+};
 
 // ── 2026-08-27 PERKLOCKS SURGICAL PERF FIX ─────────────────────────
 // Module-scope caches — survive tab-navigation unmounts (React
@@ -704,13 +724,32 @@ export default function LocksScreen() {
         try {
           let _origin = "";
           try { _origin = getBackendUrl(); } catch {}
+          // GATE 3 P0 (2026-06) — truthful last-good contract.
+          // A persisted board projection MUST NOT claim to be a
+          // complete canonical board.  The 200-pick slice is a
+          // best-effort fast-boot fallback; the ``is_partial`` +
+          // ``stored_count`` / ``source_total_count`` metadata lets
+          // any UI that hydrates from this cache render an honest
+          // "showing X of Y saved picks · updated Nm ago" surface
+          // when the network is unavailable.
+          const _stored = Math.min(fresh.length, 200);
           const cache: PicksCache = {
             sport: requestedSport,
             picks: fresh.slice(0, 200),
             ts: Date.now(),
             origin: _origin,
             boardVersion: _bv,
-          };
+            stored_count: _stored,
+            source_total_count: fresh.length,
+            is_partial: _stored < fresh.length,
+            saved_at: new Date().toISOString(),
+            request_identity: {
+              sport: requestedSport,
+              line_type: lt,
+              filters_hash: (typeof filters === "object" && filters)
+                ? JSON.stringify(filters).length : 0,
+            },
+          } as PicksCache;
           storage.setItem(PICKS_CACHE_KEY, JSON.stringify(cache));
         } catch { /* storage full / serialize err — silent */ }
       }
