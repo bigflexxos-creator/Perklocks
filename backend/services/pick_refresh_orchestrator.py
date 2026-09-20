@@ -397,24 +397,55 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     """Iteration 144 — committed-generation boundary for EVERY membership-
     changing refresh (scheduled loops + manual UPDATE).  Readers stay pinned
     to the active generation while this builds; the active pointer moves
-    once on commit; a failure leaves the active generation untouched."""
+    once on commit; a failure leaves the active generation untouched.
+
+    P0 LOCKS-STARVATION FIX (2026-06) — the outer ``try/finally`` below
+    guarantees that ``_building`` releases the generation entry even
+    when the wrapping asyncio Task is cancelled.  Before this guard a
+    task cancellation raised ``CancelledError`` (BaseException, not
+    Exception) which bypassed the existing ``except Exception`` block
+    and permanently pinned ``is_building()`` to True.  With
+    ``is_building()`` stuck the board snapshot cache refused to store
+    any snapshot, so every ``/api/picks/today?lite=true`` fell through
+    to the full 3-6 s pipeline.  ``fail()`` is idempotent (removes
+    ``_building[gid]`` if present) and safe to call from ``finally``.
+    """
     from services import board_generation as _bg
     _gid = await _bg.begin(scope=(sport_filter or "ALL").upper())
+    _committed_or_failed = False
     try:
-        _n = await _refresh_picks_build(date_str, sport_filter=sport_filter)
-    except Exception as _exc:
-        await _bg.fail(_gid, repr(_exc))
-        raise
-    try:
-        _count = int(_n or 0)
-    except Exception:
-        _count = 0
-    if not await _bg.validate(_gid, _count):
-        await _bg.fail(_gid, f"validation failed (scope={sport_filter or 'ALL'}, picks={_count})")
+        try:
+            _n = await _refresh_picks_build(date_str, sport_filter=sport_filter)
+        except Exception as _exc:
+            await _bg.fail(_gid, repr(_exc))
+            _committed_or_failed = True
+            raise
+        try:
+            _count = int(_n or 0)
+        except Exception:
+            _count = 0
+        if not await _bg.validate(_gid, _count):
+            await _bg.fail(_gid, f"validation failed (scope={sport_filter or 'ALL'}, picks={_count})")
+            _committed_or_failed = True
+            return _n
+        _bv, _count2, _events = await _bg.board_state()
+        await _bg.commit(_gid, _bv, _count2 or _count, _events)
+        _committed_or_failed = True
         return _n
-    _bv, _count2, _events = await _bg.board_state()
-    await _bg.commit(_gid, _bv, _count2 or _count, _events)
-    return _n
+    finally:
+        # If neither commit() nor fail() fired (e.g. asyncio task
+        # cancellation), release the generation entry defensively so
+        # ``is_building()`` cannot get pinned to True forever.
+        if not _committed_or_failed:
+            try:
+                await _bg.fail(_gid, "task cancelled before commit/fail")
+            except Exception:
+                # Last resort: mutate the module dict directly so the
+                # snapshot cache is never permanently starved.
+                try:
+                    _bg._building.pop(_gid, None)
+                except Exception:
+                    pass
 
 
 async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None) -> int:
