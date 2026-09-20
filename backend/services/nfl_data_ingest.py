@@ -123,10 +123,35 @@ def _download_parquet(year: int) -> bytes:
 
 
 def _rows_from_parquet(data: bytes) -> Iterable[dict]:
-    """Parse parquet bytes into filtered player-week dicts."""
+    """Parse parquet bytes into filtered player-week dicts.
+
+    P0 SERVER-STABILITY FIX (2026-09-20) — parquet column projection.
+    Previously ``pd.read_parquet`` materialised EVERY column (defensive
+    stats, kicking, punting, per-play EPAs, …) into a full DataFrame
+    and Python then discarded 60%+ of them.  On the 2019-current
+    backfill this drove the transient DataFrame RSS well above 1 GB.
+    Now we pass ``columns=`` so pyarrow reads ONLY whitelisted
+    columns from the parquet — the rest never touches memory.
+
+    ``pyarrow`` gracefully handles missing columns per-file (some
+    early-season nflverse parquets have fewer columns) by returning
+    only what exists, so we compute the intersection first.
+    """
     import pandas as pd
-    df = pd.read_parquet(io.BytesIO(data))
-    # Filter to columns we keep
+    import pyarrow.parquet as _pq
+
+    # Ask pyarrow directly for the file schema BEFORE materialising
+    # the DataFrame — costs a single metadata read (kilobytes).
+    try:
+        _pf = _pq.ParquetFile(io.BytesIO(data))
+        _available = set(_pf.schema.names)
+        _wanted = [c for c in _COLUMNS_TO_KEEP if c in _available]
+    except Exception:
+        _wanted = None    # fall back to full-column read
+
+    df = pd.read_parquet(io.BytesIO(data), columns=_wanted)
+    # Defensive: still filter in Python in case pyarrow ignores the
+    # ``columns=`` argument on a specific engine build.
     cols = [c for c in df.columns if c in _COLUMNS_TO_KEEP]
     df = df[cols].copy()
     # Filter out preseason if desired — keep REG + POST only
