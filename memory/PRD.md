@@ -24,3 +24,16 @@ Full report: `/app/memory/canonical_epoch_v2_closure_2026_06_21.md`.
 
 ## Prior — CFB Sign Fix + Soccer HI (still valid)
 `/app/memory/p0_universal_root_closure_final_2026_06_21.md`
+
+---
+
+## 2026-06-21 · Backend DATA_VERSION sync (surgical)
+- Support confirmed Expo stale-bundle root cause is external. Investigation CLOSED.
+- Preview QR (`exp://canonical-parity.preview.emergentagent.com`) is the sole physical test target.
+- Deployed snapshot (`bet-edge-ai-1.emergent.host`) remains intentionally frozen — DO NOT republish.
+- `backend/server.py` `DATA_VERSION` bumped from `2026.06.11-soccer-shots-sot-assists-wired-v49` → `2026.06.21-canonical-epoch-v2-signfix` to align `/api/version` with the current Canonical Parity frontend.
+- Verified on Preview:
+  - `GET /api/version` → `data_version: 2026.06.21-canonical-epoch-v2-signfix`
+  - Profile screen shows Build/Source/Backend all pointing at Canonical Parity.
+- NOT touched: Canonical Epoch logic, board generation, DB, API origins, Metro config.
+
