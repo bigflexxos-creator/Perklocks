@@ -1,0 +1,6 @@
+"""Parlay 3.0 — one-source-of-truth engine.
+
+Import boundary:
+    from services.parlay.mode_policy import ModePolicy, resolve_mode, ...
+    from services.parlay.feasibility import compute_funnel, FeasibilityReport, ...
+"""

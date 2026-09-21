@@ -479,30 +479,45 @@ async def pick_rollover(
             from services.rollover_official_slate import (
                 get_official_slate as _ros_get, _pregame_invalid_reason as _ros_invalid,
             )
+            from services.rollover_frozen_view import build_frozen_views as _ros_views
             _official_slate = await _ros_get(db, _today_str())
             if _official_slate and _official_slate.get("legs"):
                 _leg_ids = [l.get("canonical_pick_id") for l in _official_slate["legs"] if l.get("canonical_pick_id")]
                 _leg_docs = {d["id"]: d async for d in db.picks.find({"id": {"$in": _leg_ids}}, {"_id": 0})}
                 _now_dt = datetime.now(timezone.utc)
+                # Root Closure (2026-06-21): a PICK_MISSING mutable row is
+                # NOT evidence to repair the slate — the frozen wager
+                # truth stands.  ``_ros_invalid`` now returns None for
+                # missing rows; only explicit off-board/void/no-bet with
+                # provenance triggers repair.
                 _official_repair = any(
                     _ros_invalid(_leg_docs.get(l.get("canonical_pick_id")), _now_dt)
                     for l in _official_slate["legs"] if not l.get("invalidated")
                 )
                 if not _official_repair:
-                    _ordered = [_leg_docs[i] for i in _leg_ids if i in _leg_docs]
-                    if _ordered:
+                    # Build the response from the FROZEN LEG snapshot.  Wager
+                    # truth (selection/market/line/odds/book/probability/lock
+                    # score) comes from the leg; only status/actual/result
+                    # come from the live doc.  This is what makes Rollover
+                    # truly immutable across board regens / line moves /
+                    # score changes / cache clears / restarts.
+                    _frozen_views = _ros_views(_official_slate, _leg_docs)
+                    if _frozen_views:
                         return {
-                            "picks": _canonicalize_picks(_ordered),
-                            "pick":  _canonicalize_lock_score(_ordered[0]),
+                            "picks": _canonicalize_picks(_frozen_views),
+                            "pick":  _canonicalize_lock_score(_frozen_views[0]),
                             "composite_rank": None,
-                            "total_evaluated": len(_ordered),
+                            "total_evaluated": len(_frozen_views),
                             "scoped_to_today": True,
                             "rollover_version": "v6-official-slate",
                             "selector_version": _official_slate.get("selector_version"),
                             "sticky": True,
                             "slate": {k: _official_slate.get(k) for k in
-                                      ("slate_id", "slate_date", "version", "frozen_at", "board_version", "leg_count")},
-                            "survivability": {"mode": "official_slate"},
+                                      ("slate_id", "slate_date", "version", "frozen_at",
+                                       "board_version", "leg_count", "frozen_wager_version")},
+                            "survivability": {"mode": "official_slate",
+                                              "frozen_wager_version":
+                                              _official_slate.get("frozen_wager_version") or 1},
                         }
         except Exception as _ros_err:
             logger.debug("official rollover slate read skipped: %s", _ros_err)
@@ -825,6 +840,7 @@ async def pick_rollover(
                 freeze_official_slate as _ros_freeze,
                 reconcile_official_slate as _ros_reconcile,
             )
+            from services.rollover_frozen_view import build_frozen_views as _ros_views
             if _official_slate and _official_repair:
                 _official_slate = await _ros_reconcile(
                     db, _official_slate, [p for p in candidates if p.get("id")],
@@ -841,14 +857,17 @@ async def pick_rollover(
                     db, _today_str(), [{**p, "rollover_ev_score": p.get("composite_rank")} for p in top],
                     selector_version=_SELECTOR_VERSION, board_version=_bv,
                 )
-            # Serve the OFFICIAL membership (never the transient recompute).
+            # Serve the OFFICIAL membership from the FROZEN LEG snapshot.
+            # Root Closure (2026-06-21): never rehydrate wager truth from
+            # mutable db.picks — build the response from leg[] and layer
+            # only settlement runtime info from the live doc.
             _leg_ids = [l.get("canonical_pick_id") for l in (_official_slate or {}).get("legs", [])
                         if l.get("canonical_pick_id") and not l.get("invalidated")]
             if _leg_ids:
                 _leg_docs = {d["id"]: d async for d in db.picks.find({"id": {"$in": _leg_ids}}, {"_id": 0})}
-                _ordered = [_leg_docs[i] for i in _leg_ids if i in _leg_docs]
-                if _ordered:
-                    top = [{**d, "composite_rank": round(_ev_score(d), 2)} for d in _ordered]
+                _frozen_views = _ros_views(_official_slate, _leg_docs)
+                if _frozen_views:
+                    top = [{**d, "composite_rank": round(_ev_score(d), 2)} for d in _frozen_views]
         except Exception as _ros_err:
             logger.debug("official rollover slate freeze skipped: %s", _ros_err)
     if top:

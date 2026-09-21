@@ -489,17 +489,30 @@ def parlay_survival(legs: list[dict], correlation_haircut: bool = True) -> float
 
 
 def damage_control_ok(current_legs: list[dict], candidate: dict, *,
-                     high_risk: bool = False) -> tuple[bool, float, float]:
+                     high_risk: bool = False,
+                     policy_max_rel: float | None = None,
+                     policy_max_abs: float | None = None) -> tuple[bool, float, float]:
     """Returns (ok, current_survival, new_survival).
 
     Rejects candidate when adding it drops survival too aggressively.
+
+    Root Closure — Parlay 3.0 (2026-06-21): callers may pass explicit
+    ``policy_max_rel`` / ``policy_max_abs`` from ``ModePolicy`` so all
+    risk-budget decisions come from ONE authority.  When those args are
+    None we fall back to the legacy per-mode constants for BC.
     """
     current = parlay_survival(current_legs)
     proposed = parlay_survival(current_legs + [candidate])
     abs_drop = current - proposed
     rel_drop = abs_drop / max(current, 1e-9)
-    max_rel = MAX_REL_DROP_HIGH_RISK if high_risk else MAX_REL_DROP_STANDARD
-    max_abs = MAX_ABS_DROP_HIGH_RISK if high_risk else MAX_ABS_DROP_STANDARD
+    if policy_max_rel is not None:
+        max_rel = float(policy_max_rel)
+    else:
+        max_rel = MAX_REL_DROP_HIGH_RISK if high_risk else MAX_REL_DROP_STANDARD
+    if policy_max_abs is not None:
+        max_abs = float(policy_max_abs)
+    else:
+        max_abs = MAX_ABS_DROP_HIGH_RISK if high_risk else MAX_ABS_DROP_STANDARD
     ok = (rel_drop <= max_rel) and (abs_drop <= max_abs)
     return ok, current, proposed
 
@@ -748,7 +761,8 @@ def build_one_parlay(pool: list[dict], *, target_legs: int, high_risk: bool,
                     randomness: float = 0.0,
                     single_sport_mode: bool = False,
                     rng_salt: int = 0,
-                    synergy_map: dict | None = None) -> list[dict]:
+                    synergy_map: dict | None = None,
+                    policy: object | None = None) -> list[dict]:
     """Build a single parlay greedily.
 
     1. Start with locked_picks (if any) + seed_pick (if provided).
@@ -787,7 +801,11 @@ def build_one_parlay(pool: list[dict], *, target_legs: int, high_risk: bool,
             )
             if not div_ok:
                 continue
-            dmg_ok, _, _ = damage_control_ok(legs, cand, high_risk=high_risk)
+            dmg_ok, _, _ = damage_control_ok(
+                legs, cand, high_risk=high_risk,
+                policy_max_rel=getattr(policy, "max_relative_drop_per_leg", None),
+                policy_max_abs=getattr(policy, "max_absolute_drop_per_leg", None),
+            )
             if not dmg_ok:
                 continue
             s = score_leg(
@@ -835,7 +853,8 @@ def build_top_parlays(pool: list[dict], *, target_legs: int, high_risk: bool,
                      single_sport_mode: bool = False,
                      refresh_nonce: int = 0,
                      avoid_signatures: set[tuple] | None = None,
-                     synergy_map: dict | None = None) -> list[dict]:
+                     synergy_map: dict | None = None,
+                     policy: object | None = None) -> list[dict]:
     """Generate ~N candidate parlays, score them, return Top 3 labelled.
 
     `rank` lets the frontend "refresh" cycle through next-best candidates
@@ -899,8 +918,16 @@ def build_top_parlays(pool: list[dict], *, target_legs: int, high_risk: bool,
                                 seed_pick=seed, locked_picks=locked_picks,
                                 randomness=randomness,
                                 single_sport_mode=single_sport_mode,
-                                rng_salt=refresh_nonce)
-        min_legs = 5 if high_risk else 2
+                                rng_salt=refresh_nonce,
+                                policy=policy)
+        # Root Closure — Parlay 3.0: use policy.min_useful_legs (partial
+        # ticket support) when a policy is provided.  This is what
+        # allows HIGH_RISK to return a 6-of-10 truthful card instead of
+        # 0 when only 6 dependency-safe legs are available.
+        if policy is not None:
+            min_legs = int(getattr(policy, "min_useful_legs", 5 if high_risk else 2))
+        else:
+            min_legs = 5 if high_risk else 2
         if len(legs) < min_legs:
             continue
         sig = tuple(sorted(L.get("id") for L in legs if L.get("id")))

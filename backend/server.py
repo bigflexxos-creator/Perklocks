@@ -5286,6 +5286,18 @@ async def on_startup():
     except Exception as _lli_err:
         logger.warning("learning_log index skipped: %s", _lli_err)
 
+    # ── 2026-06-21 Rollover Official Slate uniqueness ────────────────
+    # ROOT CLOSURE — Rollover True Immutability Part A.  A DB-level
+    # unique index on (slate_date, scope) guarantees only ONE official
+    # slate can exist per product day even under concurrent workers.
+    # The previous try/except around insert_one was a race-prone
+    # soft-guard; this makes it authoritative.
+    try:
+        from services.rollover_official_slate import ensure_slate_indexes
+        await ensure_slate_indexes(db)
+    except Exception as _rsi_err:
+        logger.warning("rollover_slates index skipped: %s", _rsi_err)
+
     # ── 2026-07-29 Learning snapshots index ──────────────────────────
     # (Migrated to Phase 3C registry — this block is now a no-op kept
     # for reference.  learning_snapshots.learning_generated_idx and

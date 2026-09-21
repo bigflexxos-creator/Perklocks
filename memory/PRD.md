@@ -37,3 +37,13 @@ Full report: `/app/memory/canonical_epoch_v2_closure_2026_06_21.md`.
   - Profile screen shows Build/Source/Backend all pointing at Canonical Parity.
 - NOT touched: Canonical Epoch logic, board generation, DB, API origins, Metro config.
 
+
+
+---
+
+## 2026-06-21 · Rollover True Immutability + Parlay 3.0 Root Closure
+- **Rollover**: Frozen slate v2 with FULL wager snapshot (line/odds/book/WP/Lock/publication_version) + DB unique index on (slate_date, scope) + PICK_MISSING no longer auto-invalidates + frozen-view reader (`services/rollover_frozen_view.py`) serves wager truth from `legs[]` — never from mutable `db.picks`. Migration `scripts.migrate_rollover_slates_frozen_wager_v2` idempotent, only backfills fields provably recoverable from FROZEN events; never manufactures historical truth.
+- **Parlay 3.0**: Single `ModePolicy` authority (`services/parlay/mode_policy.py`) + Feasibility Engine (`services/parlay/feasibility.py`) with structured reason codes. HIGH_RISK MLB 10/15/20 now returns truthful 6-of-10/6-of-15/6-of-20 partial cards instead of empty state. Saved parlay leg snapshot marks `frozen_wager_version=2`.
+- 17-test regression suite passes: `tests/test_rollover_immutability_and_parlay30.py`.
+- Full memo: `memory/rollover_immutability_and_parlay30_closure_2026_06_21.md`.
+- PRODUCTION PUBLISHED: NO.
