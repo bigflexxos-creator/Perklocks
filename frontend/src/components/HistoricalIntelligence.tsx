@@ -625,49 +625,143 @@ function GameLogsTab({ data }: { data: HistoricalIntelligenceResponse }) {
 function VsOppTab({ data }: { data: HistoricalIntelligenceResponse }) {
   const opp = data.opponent_summary;
   const oppName = data.pick?.opponent || "opponent";
+  const line = data.current_threshold;
+  const sideRaw = (data.scope?.side || "over").toLowerCase();
+  const sideLabel =
+    sideRaw === "under" ? "UNDER" :
+    sideRaw === "cover" ? "COVER" :
+    sideRaw === "ml" ? "MONEYLINE" : "OVER";
+
   if (!opp || opp.n === 0) {
     return (
       <View style={styles.emptyPad}>
-        <Text style={styles.dim}>NO PRIOR MATCHUPS vs {oppName}</Text>
+        <Text style={styles.vsHead}>VS {oppName.toUpperCase()}</Text>
+        <Text style={[styles.dim, { marginTop: 8 }]}>NO VERIFIED PRIOR MEETINGS</Text>
+        <Text style={[styles.dim, { marginTop: 4, fontSize: 11 }]}>
+          The current opponent has no proven historical matchup with the
+          selected subject in the available history.
+        </Text>
       </View>
     );
   }
+
   const denom = opp.hits + opp.misses;
+  const n = opp.n;
+  const smallSample = n < 3;
+  const games = opp.games || [];
+
   return (
     <View style={{ marginTop: 10 }}>
       <Text style={styles.vsHead}>VS {oppName.toUpperCase()}</Text>
-      <Text style={styles.vsBig}>
-        {denom > 0 ? `${opp.hits}/${denom}` : `${opp.n} obs`}
+      <Text style={[styles.dim, { marginTop: 2, fontSize: 11 }]}>
+        {n === 1 ? "1 VERIFIED PRIOR MEETING"
+                 : `${n} VERIFIED PRIOR MEETINGS`}
       </Text>
-      <Text style={styles.vsPct}>{fmtPct(opp.hit_rate)}   ·   n={opp.n}</Text>
-      <View style={styles.vsQuant}>
-        <QuantChip label="MEAN"   value={fmtNum(opp.mean, 1)} />
-        <QuantChip label="MEDIAN" value={fmtNum(opp.median, 1)} />
-        <QuantChip label="STDDEV" value={fmtNum(opp.stddev, 2)} />
-      </View>
-      {opp.games && (
-        <View style={{ marginTop: 10 }}>
-          {opp.games.map((g: HistoricalObservation, i: number) => {
-            // Derive HIT / MISS / PUSH vs the CURRENT line when the
-            // observation carries no precomputed result (same rule the
-            // summary uses; missing actual stays "—", never a MISS).
+      <Text style={[styles.dim, { marginTop: 6, fontSize: 11 }]}>
+        Evaluated vs today's line: <Text style={{ color: COLORS.textPrimary, fontWeight: "800" }}>
+          {sideLabel}{line !== null && line !== undefined ? ` ${line}` : ""}
+        </Text>
+      </Text>
+
+      {/* Meeting rows — score + total + result vs current line */}
+      {games.length > 0 && (
+        <View style={{ marginTop: 12 }}>
+          {games.map((g: any, i: number) => {
+            // Derive HIT/MISS/PUSH vs today's line when the observation
+            // carries no precomputed result.  Missing actual stays "—".
             let res: string | undefined = g.result || undefined;
-            if (!res && g.actual != null && data.current_threshold != null) {
-              const side = (data.scope?.side || "over").toLowerCase();
-              if (g.actual === data.current_threshold) res = "PUSH";
-              else res = ((g.actual > data.current_threshold) === (side !== "under")) ? "HIT" : "MISS";
+            if (!res && g.actual != null && line != null) {
+              if (g.actual === line) res = "PUSH";
+              else res = ((g.actual > line) === (sideRaw !== "under")) ? "HIT" : "MISS";
             }
+            const ctx = g.context || {};
+            const subjScore = ctx.subject_score ?? ctx.team_score ?? ctx.gf ?? null;
+            const oppScore  = ctx.opponent_score ?? ctx.ga ?? null;
+            const subjectLabel = data.entity_name || "subject";
             return (
-              <View key={i} style={styles.vsRow}>
-                <Text style={styles.vsRowDate}>{fmtDate(g.date)}</Text>
-                <Text style={styles.vsRowActual}>{fmtNum(g.actual, 1)}</Text>
-                <Text style={[styles.vsRowResult,
-                  res === "HIT" && { color: COLORS.neonGreen },
-                  res === "MISS" && { color: COLORS.electricBlaze },
-                ]}>{res || "—"}</Text>
+              <View key={i} style={{
+                marginBottom: 10, padding: 10, borderRadius: 8,
+                backgroundColor: res === "HIT" ? COLORS.successBg
+                              : res === "MISS" ? COLORS.dangerSurface
+                              : COLORS.surface,
+                borderWidth: 1,
+                borderColor: COLORS.borderMuted,
+              }}>
+                <Text style={{ color: COLORS.textSecondary, fontSize: 11, letterSpacing: 0.5 }}>
+                  {fmtDate(g.date)}   ·   {(g.home_away || "").toUpperCase()}
+                </Text>
+                {subjScore != null && oppScore != null && (
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 6 }}>
+                    <Text style={{ color: COLORS.textPrimary, fontSize: 13 }} numberOfLines={1}>
+                      {subjectLabel}
+                    </Text>
+                    <Text style={{ color: COLORS.textPrimary, fontSize: 13, fontWeight: "800" }}>
+                      {subjScore}
+                    </Text>
+                  </View>
+                )}
+                {subjScore != null && oppScore != null && (
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 2 }}>
+                    <Text style={{ color: COLORS.textPrimary, fontSize: 13 }} numberOfLines={1}>
+                      {g.opponent_name || oppName}
+                    </Text>
+                    <Text style={{ color: COLORS.textPrimary, fontSize: 13, fontWeight: "800" }}>
+                      {oppScore}
+                    </Text>
+                  </View>
+                )}
+                <View style={{ height: 1, backgroundColor: COLORS.borderMuted, marginVertical: 8 }} />
+                <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+                  <Text style={{ color: COLORS.textSecondary, fontSize: 11 }}>
+                    {sideRaw === "under" || sideRaw === "over" ? "FINAL TOTAL" : "ACTUAL"}
+                  </Text>
+                  <Text style={{ color: COLORS.textPrimary, fontSize: 15, fontWeight: "900" }}>
+                    {fmtNum(g.actual, 1)}
+                  </Text>
+                </View>
+                {res && (
+                  <Text style={{ marginTop: 6, fontSize: 12, fontWeight: "800",
+                    color: res === "HIT" ? COLORS.neonGreen
+                         : res === "MISS" ? COLORS.electricBlaze
+                         : COLORS.textSecondary }}>
+                    {res === "HIT" ? "✓" : res === "MISS" ? "✕" : "◇"} {sideLabel}
+                    {line !== null && line !== undefined ? ` ${line}` : ""} — {res}
+                  </Text>
+                )}
               </View>
             );
           })}
+        </View>
+      )}
+
+      {/* Summary — but only distribution metrics that are meaningful */}
+      <View style={{ marginTop: 8, padding: 10, borderRadius: 8,
+        backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.borderMuted }}>
+        <Text style={{ color: COLORS.textSecondary, fontSize: 11, letterSpacing: 1 }}>
+          H2H VS CURRENT LINE
+        </Text>
+        <Text style={styles.vsBig}>
+          {denom > 0 ? `${opp.hits} / ${denom} ${sideLabel}` : `${opp.n} obs`}
+        </Text>
+        <Text style={styles.vsPct}>{fmtPct(opp.hit_rate)}</Text>
+        <View style={[styles.vsQuant, { marginTop: 10 }]}>
+          <QuantChip label="AVERAGE" value={fmtNum(opp.mean, 1)} />
+          {n >= 3 && <QuantChip label="MEDIAN" value={fmtNum(opp.median, 1)} />}
+          {n >= 3 && <QuantChip label="STDDEV" value={fmtNum(opp.stddev, 2)} />}
+        </View>
+      </View>
+
+      {smallSample && (
+        <View style={{ marginTop: 10, padding: 10, borderRadius: 8,
+          borderWidth: 1, borderColor: COLORS.borderMuted,
+          backgroundColor: COLORS.pushSurface }}>
+          <Text style={{ color: COLORS.textPrimary, fontSize: 12, fontWeight: "800" }}>
+            ⚠ SMALL SAMPLE
+          </Text>
+          <Text style={{ color: COLORS.textSecondary, fontSize: 11, marginTop: 4 }}>
+            Only {n === 1 ? "1 verified prior meeting" : `${n} verified prior meetings`}.
+            Use H2H as supporting context, not a strong trend.
+          </Text>
         </View>
       )}
     </View>

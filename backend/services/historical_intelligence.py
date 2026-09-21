@@ -63,6 +63,7 @@ class HistoricalQuery:
     season:             Optional[int] = None
     context_scope:      Optional[str] = None   # sport-specific (surface, RHP/LHP, …)
     side:               str = "over"       # "over" | "under" | "cover" | "ml"
+    event_date:         Optional[str] = None   # as-of gate: history strictly BEFORE this ISO date
 
 
 @dataclass
@@ -309,31 +310,135 @@ def _summarize(obs: list[HistoricalObservation],
 
 def _opp_matches(obs_opp_id: Optional[str], obs_opp_name: Optional[str],
                  target_id: Optional[str], target_name: Optional[str]) -> bool:
-    """Match a historical observation's opponent against today's opponent.
-    Handles abbreviations vs full names (e.g., "BUF" vs "Buffalo Bills")."""
+    """VERIFIED H2H identity contract — FAIL-CLOSED.
+
+    A historical observation may enter VS OPP ONLY when the historical
+    opponent can be proven to be today's canonical opponent through one
+    of the three authoritative tiers below.  Fuzzy / token-overlap /
+    substring / mascot / abbreviation-guess matching is BANNED for
+    verified H2H — it produced the SMU vs Missouri State canary bug
+    where "Baylor Bears" and "Florida State Seminoles" were falsely
+    counted as prior meetings because they shared the tokens "bears"
+    and "state" respectively.
+
+    TIER 1 — CANONICAL ID EXACT MATCH
+        obs_opp_id == target_id (both non-empty, case-insensitive)
+
+    TIER 2 — EXACT NORMALIZED NAME MATCH
+        Trim + lowercase + collapse whitespace/punctuation.
+        Both sides must be non-empty and equal.
+
+    TIER 3 — VERIFIED LEGACY ALIAS (sport-scoped registries)
+        Names like "Nott'm Forest" ↔ "Nottingham Forest" are accepted
+        ONLY via ``services.soccer_team_identity.canonical_team_key``
+        (or the analogous authority for other sports if one is added).
+        Any alias must resolve UNAMBIGUOUSLY to exactly one canonical
+        team; ambiguous or purely-generic tokens ("State", "United",
+        "City", "FC", "Bears") are NOT aliases.
+
+    NEVER accept identity based solely on:
+        · shared word / token overlap
+        · substring containment
+        · mascot / city / conference sharing
+        · abbreviation guess
+        · fuzzy similarity
+
+    If identity cannot be established through Tier 1-3, return False
+    and let the caller emit ``NO VERIFIED PRIOR MEETINGS`` (or
+    ``IDENTITY UNVERIFIED`` when appropriate).
+    """
     def _norm(s: Optional[str]) -> str:
-        return (s or "").strip().lower()
-    tid = _norm(target_id); tname = _norm(target_name)
-    oid = _norm(obs_opp_id); oname = _norm(obs_opp_name)
-    if tid and oid and tid == oid: return True
+        # Collapse whitespace, strip punctuation, lowercase.  Empty
+        # unless we have real content to compare.
+        if not s:
+            return ""
+        out = str(s).strip().lower()
+        # Remove punctuation & collapse multi-space.
+        for ch in (".", ",", "'", "\u2019", '"', "\u201c", "\u201d"):
+            out = out.replace(ch, "")
+        while "  " in out:
+            out = out.replace("  ", " ")
+        return out.strip()
+
+    tid = _norm(target_id)
+    oid = _norm(obs_opp_id)
+    tname = _norm(target_name)
+    oname = _norm(obs_opp_name)
+
+    # ─── TIER 1 — canonical ID exact match ──────────────────────────
+    if tid and oid and tid == oid:
+        return True
+
+    # ─── TIER 2 — exact normalized name match ───────────────────────
+    if tname and oname and tname == oname:
+        return True
+
+    # ─── TIER 3 — verified alias (sport-scoped identity registries) ─
+    # Only wired for sports that maintain an EXPLICIT alias registry
+    # where every mapping is unambiguous.  Football / MLB / Tennis
+    # rely on Tier 1 + Tier 2 for their canonical provider identity.
     if tname and oname:
-        if tname == oname: return True
-        # Substring — "buffalo bills" contains "buffalo"
-        if tname in oname or oname in tname: return True
-        # Abbreviation matching: strip spaces and compare
-        tnc = tname.replace(" ", "").replace(".", "")
-        onc = oname.replace(" ", "").replace(".", "")
-        if len(onc) <= 4 and onc in tnc: return True
-        if len(tnc) <= 4 and tnc in onc: return True
-        # Any word overlap of 4+ chars (Bills / Broncos / Cowboys / etc)
-        t_words = {w for w in tname.split() if len(w) >= 4}
-        o_words = {w for w in oname.split() if len(w) >= 4}
-        if t_words & o_words: return True
-    # Cross-field: today has full name, observation has abbreviation-only
-    if tname and oid:
-        oid_clean = oid.replace(" ", "")
-        if len(oid_clean) <= 4 and oid_clean in tname.replace(" ", ""):
-            return True
+        try:
+            from services.soccer_team_identity import canonical_team_key
+            tk = canonical_team_key(tname)
+            ok = canonical_team_key(oname)
+            if tk and ok and tk == ok:
+                return True
+        except Exception:
+            pass
+        # NFL — nflverse abbreviations ↔ canonical franchise names.
+        # Provider observations (nfl_player_weekly / legacy_games)
+        # emit 3-letter codes like "BUF"; picks emit "Buffalo Bills".
+        # Every mapping in ``_TEAM_ABBR`` is 1-to-1 and unambiguous —
+        # unknown values pass through and return False from Tier 2.
+        try:
+            from services.nfl_matchup_intelligence import _TEAM_ABBR
+            # forward map: full → abbr
+            t_abbr = _TEAM_ABBR.get(tname)
+            o_abbr = _TEAM_ABBR.get(oname)
+            # reverse map: abbr → full
+            rev = {v.lower(): k for k, v in _TEAM_ABBR.items()}
+            t_full = rev.get(tname.upper().lower()) or rev.get(tname)
+            o_full = rev.get(oname.upper().lower()) or rev.get(oname)
+            # Match if any of the resolved forms line up.
+            if t_abbr and o_abbr and t_abbr == o_abbr:
+                return True
+            if t_full and o_full and t_full == o_full:
+                return True
+            if t_abbr and o_full and t_abbr.lower() == oname.lower():
+                return True
+            if o_abbr and t_full and o_abbr.lower() == tname.lower():
+                return True
+            # Cross: target full name vs observation abbrev, both keyed
+            # via the registry as authoritative alias.
+            if t_abbr and oname.upper() == t_abbr:
+                return True
+            if o_abbr and tname.upper() == o_abbr:
+                return True
+        except Exception:
+            pass
+
+    # Cross-field ID vs name: NFL adapter emits opp_id as the abbrev
+    # (e.g. "BUF") — this is a Tier-1-authoritative canonical code.
+    # Match if the observation's opponent_id equals today's opponent
+    # canonical abbrev (looked up via the registry).
+    if oid and tname:
+        try:
+            from services.nfl_matchup_intelligence import _TEAM_ABBR
+            t_abbr = _TEAM_ABBR.get(tname)
+            if t_abbr and t_abbr.lower() == oid.lower():
+                return True
+        except Exception:
+            pass
+    if tid and oname:
+        try:
+            from services.nfl_matchup_intelligence import _TEAM_ABBR
+            o_abbr = _TEAM_ABBR.get(oname)
+            if o_abbr and o_abbr.lower() == tid.lower():
+                return True
+        except Exception:
+            pass
+
     return False
 
 
@@ -353,6 +458,43 @@ async def query_historical(db, q: HistoricalQuery) -> HistoricalResponse:
     else:
         try:
             all_obs = await adapter.fetch_observations(db, q) or []
+            # ─── Event de-duplication (2026-06-21) ─────────────────
+            # One real historical game must count ONCE regardless of
+            # provider redundancy.  Preferred key: canonical event_id.
+            # Fallback: (date + normalized opponent name).  Merges
+            # provenance so downstream statistics see exactly N unique
+            # historical events.
+            _by_key: dict[str, HistoricalObservation] = {}
+            for o in all_obs:
+                key: str
+                if o.event_id:
+                    key = f"eid:{o.event_id}"
+                else:
+                    _opp = str(o.opponent_name or "").strip().lower()
+                    key = f"date:{o.date or ''}|opp:{_opp}"
+                if key in _by_key:
+                    # Duplicate — merge provenance strings, keep first.
+                    prev = _by_key[key]
+                    prov_a = prev.provenance
+                    prov_b = o.provenance
+                    if prov_a and prov_b and prov_a != prov_b:
+                        try:
+                            prev.provenance = f"{prov_a}+{prov_b}"
+                        except Exception:
+                            pass
+                    continue
+                _by_key[key] = o
+            all_obs = list(_by_key.values())
+            # ── As-of safety: today's fixture may never enter its own
+            # history.  Filter observations whose date matches the
+            # current pick's event date AND same opponent (the current
+            # pick's own row leaking back through generic Game Logs).
+            try:
+                if q.event_date:
+                    _cur_day = str(q.event_date)[:10]
+                    all_obs = [o for o in all_obs if (o.date or "")[:10] < _cur_day]
+            except Exception:
+                pass
             _src = sorted({str(o.provenance) for o in all_obs if o.provenance})
             provenance.extend(_src[:3] if _src else (["NO RECENT HISTORY"] if not all_obs else ["verified match history"]))
             status = HI_STATUS_WITH_DATA if all_obs else HI_STATUS_EMPTY
