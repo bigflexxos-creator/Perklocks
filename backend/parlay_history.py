@@ -119,15 +119,25 @@ async def save_parlay(db, *, user_id: str, legs: list[dict],
             "league": p.get("league"),
             "event": p.get("event"),
             "event_id": p.get("event_id"),
+            "canonical_event_id": p.get("canonical_event_id") or p.get("event_id"),
             "event_time": p.get("event_time"),
             "market": p.get("market"),
             "selection": p.get("selection"),
             "line": p.get("line"),
+            # Root Closure — Parlay 3.0 (2026-06-21):
+            # SAVED PARLAY WAGER FREEZE.  Same principle as Rollover
+            # official slate: the wager the user tapped is IMMUTABLE.
+            # We freeze sportsbook/book_odds/lock/wp/edge here so a
+            # later mutation of the underlying db.picks row cannot
+            # alter what the user actually bet.
+            "sportsbook": p.get("sportsbook") or p.get("book") or p.get("bookmaker"),
             "book_odds": int(p.get("book_odds")),
+            "published_odds": p.get("published_odds"),
             "provider": p.get("provider"),
             "lock_score": p.get("lock_score"),
             "published_lock_score": p.get("published_lock_score"),
             "win_probability": p.get("win_probability"),
+            "published_probability": p.get("published_probability"),
             "edge_percent": p.get("edge_percent"),
             "magic_final": p.get("magic_final"),
             "apex_lock": p.get("apex_lock"),
@@ -136,6 +146,7 @@ async def save_parlay(db, *, user_id: str, legs: list[dict],
             "decision_evidence_id": p.get("decision_evidence_id"),
             "is_alt": bool(p.get("is_alt")),
             "status": "pending",  # filled later by resolver
+            "frozen_wager_version": 2,
         })
     now = datetime.now(timezone.utc).isoformat()
     # Phase 8AE frozen correlation classification — best-effort, never fatal.
@@ -166,6 +177,7 @@ async def save_parlay(db, *, user_id: str, legs: list[dict],
         "payout": None,
         "selector_version": PARLAY_SELECTOR_VERSION,
         "frozen_at": now,
+        "frozen_wager_version": 2,
         "correlation_snapshot": correlation_snapshot,
     }
     await db.parlay_history.insert_one(doc)

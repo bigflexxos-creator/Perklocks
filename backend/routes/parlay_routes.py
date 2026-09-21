@@ -80,6 +80,16 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     from parlay_optimizer import (
         build_top_parlays, parlay_to_payload, is_eligible_leg,
     )
+    # ── Parlay 3.0 (2026-06-21) — ONE ModePolicy / Feasibility authority.
+    from services.parlay.mode_policy import (
+        resolve_mode as _resolve_policy, clamp_target_legs as _clamp_target,
+    )
+    from services.parlay.feasibility import (
+        compute_funnel as _compute_funnel,
+        STATUS_READY as _FZ_READY,
+        STATUS_PARTIAL_ONLY as _FZ_PARTIAL,
+        STATUS_INSUFFICIENT as _FZ_INSUFF,
+    )
     # Lazy import every helper from server.py used in this handler.
     # See /picks/today for the rationale (circular-import avoidance).
     from server import (
@@ -260,6 +270,33 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         pool = [p for p in pool if float(p.get("edge_percent") or 0) > 0]
         ev_gated_out = _before - len(pool)
 
+    # ── Parlay 3.0 (2026-06-21) — ONE authoritative ModePolicy ────────
+    # Resolve the caller's mode into a single ModePolicy object.  This
+    # is now the ONLY authority for lock floor, edge policy, risk
+    # budget, market-family caps, and partial-ticket floors — the same
+    # policy flows through the route, the optimizer, and the DTO.
+    _policy = _resolve_policy(mode, advanced_sub=advanced_sub_norm,
+                              window_hours=window_hours)
+    _target_clamped = _clamp_target(_policy, legs)
+    # Compute the REAL feasibility funnel BEFORE the optimizer runs.
+    # If HIGH_RISK NFL/MLB can only support a 6-leg dependency-safe
+    # ticket at target 10, the report says PARTIAL_ONLY and the route
+    # lowers the effective target BEFORE burning CPU on impossible builds.
+    _feasibility = _compute_funnel(pool, policy=_policy,
+                                   requested_target=_target_clamped)
+    _requested_target = _target_clamped
+    _effective_target = _target_clamped
+    if _feasibility.status == _FZ_PARTIAL:
+        _effective_target = max(_policy.min_useful_legs,
+                                _feasibility.max_feasible_legs)
+    elif _feasibility.status == _FZ_INSUFF:
+        # Fall through to the existing empty-state block, but stamp
+        # structured reason codes so the frontend can render truthful copy.
+        pass
+    # From here forward every leg-target decision uses the policy-aware
+    # effective target so partial builds are truthful.
+    target_legs = _effective_target
+
     # ── P0 FINAL SURGICAL REPAIR (2026-08-25) — ELITE-LOCK TRACE ──────
     # Track how every published >=95 canonical Lock traverses the funnel.
     # Silent drops of elite Locks are the demonstrated defect this
@@ -353,6 +390,7 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         single_sport_mode=is_single_sport,
         refresh_nonce=int(refresh_nonce or 0),
         synergy_map=synergy_map,
+        policy=_policy,
     )
 
     # ─── AUTO-EXPAND WINDOW SAFETY NET ────────────────────────────
@@ -395,6 +433,7 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
                 single_sport_mode=is_single_sport,
                 refresh_nonce=int(refresh_nonce or 0),
                 synergy_map=synergy_map,
+                policy=_policy,
             )
             if fb_top:
                 top = fb_top
@@ -448,20 +487,33 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
             "window_pool":        len(pool),
             "optimizer_eligible": _eligible_count,
             "target_legs":        target_legs,
+            "requested_target":   _requested_target,
+            "effective_target":   _effective_target,
             "window_hours":       window_hours,
             "mode":               mode,
+            "mode_key":           _policy.key,
             "advanced_sub":       advanced_sub_norm if is_advanced else None,
             "elite_lock_trace":   _elite_trace,
+            "feasibility":        _feasibility.as_dict(),
         }
         return {
             "parlay": None,
             "parlays": [],
             "reason": (
                 f"Not enough qualifying picks{hint_str} to build a "
-                f"{target_legs}-leg parlay — canonical={canonical_pool_count}, "
-                f"window={len(pool)}, "
-                f"optimizer-eligible={_eligible_count if _eligible_count is not None else 'n/a'}."
+                f"{_requested_target}-leg {_policy.display_name} parlay — "
+                f"canonical={canonical_pool_count}, "
+                f"mode_eligible={_feasibility.mode_eligible_count}, "
+                f"unique_events={_feasibility.unique_events}, "
+                f"max_feasible={_feasibility.max_feasible_legs}."
             ),
+            "reason_codes": _feasibility.reason_codes,
+            "feasibility_status": _feasibility.status,
+            "mode_key": _policy.key,
+            "mode_display": _policy.display_name,
+            "requested_target_legs": _requested_target,
+            "effective_target_legs": _effective_target,
+            "feasibility": _feasibility.as_dict(),
             "diagnostic": diag,
             "rank": rank,
             "locked_ids": [p.get("id") for p in locked_picks],
@@ -576,6 +628,17 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     except Exception as _tr_err:
         logger.warning("elite trace enrichment (success) failed: %s", _tr_err)
     legacy = payloads[1] if len(payloads) > 1 else payloads[0]
+    # Root Closure — Parlay 3.0: attach truthful per-card partial-success
+    # info so the UI can render "X OF Y TARGET LEGS" whenever the
+    # feasibility funnel required a lowered effective target.
+    for _card in payloads:
+        actual_n = int(_card.get("leg_count") or 0)
+        _card["requested_target_legs"] = _requested_target
+        _card["effective_target_legs"] = _effective_target
+        _card["actual_legs"] = actual_n
+        _card["is_partial"] = actual_n < _requested_target
+        _card["mode_key"] = _policy.key
+        _card["mode_display"] = _policy.display_name
     return {
         "parlay": {
             "legs": legacy["legs"],
@@ -593,4 +656,11 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         "auto_expanded_to": auto_expanded_to,
         "sport_mode": mode_lower,
         "elite_lock_trace": _elite_trace,
+        # Parlay 3.0 additions
+        "mode_key": _policy.key,
+        "mode_display": _policy.display_name,
+        "requested_target_legs": _requested_target,
+        "effective_target_legs": _effective_target,
+        "feasibility_status": _feasibility.status,
+        "feasibility": _feasibility.as_dict(),
     }
