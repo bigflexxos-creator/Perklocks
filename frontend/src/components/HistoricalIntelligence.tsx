@@ -40,8 +40,16 @@ function fmtNum(v: number | null | undefined, digits = 1): string {
 }
 function fmtDate(iso?: string | null): string {
   if (!iso) return "—";
-  const s = iso.slice(0, 10);
-  return s.replace(/^\d{4}-/, "").replace("-", "/");
+  // ── §9 mobile readability — always render date WITH year so users
+  // can distinguish current-season games from prior-year history.
+  // Format: "YY M/D" (e.g. "24 9/14") — 6-8 chars, fits column width
+  // without hiding the year like the previous "MM/DD" did.
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return iso.slice(0, 10);
+  const yy = m[1].slice(2);
+  const mm = String(parseInt(m[2], 10));
+  const dd = String(parseInt(m[3], 10));
+  return `${yy} ${mm}/${dd}`;
 }
 
 // ─── Sport/market → game-log column config ─────────────────────────
@@ -52,11 +60,67 @@ type LogColumn = {
   render: (o: HistoricalObservation) => string;
 };
 
+function _shortTeam(name?: string | null): string {
+  // ── §9 mobile readability — surgical name projection that
+  // preserves team identity ("Illinois Fighting Illini" stays
+  // recognisable as "Illinois", never "Illinois Fig").  Strategy:
+  //   1. Return the primary school name (drop mascot suffix) when the
+  //      combined name is long.
+  //   2. Preserve compact names verbatim (e.g. "TCU", "USC", "LSU").
+  //   3. Never truncate mid-word — that produced "Illinois Fig",
+  //      "Nebraska Cor", "Maryland Ter", "Western Illi".
+  if (!name) return "—";
+  const n = name.trim();
+  if (n.length <= 12) return n;
+  // Common NCAA / NFL mascot suffixes — trim greedily from the end
+  // and re-check the school-only length.
+  const MASCOTS = [
+    "Fighting Illini", "Thundering Herd", "Crimson Tide",
+    "Fighting Irish", "Horned Frogs", "Tar Heels", "Blue Devils",
+    "Yellow Jackets", "Demon Deacons", "Wolf Pack", "Wolverines",
+    "Volunteers", "Commodores", "Golden Bears", "Golden Gophers",
+    "Golden Hurricane", "Golden Eagles", "Boilermakers", "Cornhuskers",
+    "Buckeyes", "Wildcats", "Bulldogs", "Longhorns", "Sooners",
+    "Aggies", "Gators", "Seminoles", "Hurricanes", "Gamecocks",
+    "Razorbacks", "Rebels", "Cougars", "Buffaloes", "Trojans",
+    "Bruins", "Spartans", "Hoosiers", "Badgers", "Hawkeyes",
+    "Cyclones", "Jayhawks", "Terrapins", "Panthers", "Bearcats",
+    "Broncos", "Ducks", "Beavers", "Cavaliers", "Chanticleers",
+    "Mountaineers", "Owls", "Bobcats", "Warhawks", "Tigers", "Jaguars",
+    "Sun Devils", "Mustangs", "Red Raiders", "Miners", "Zips",
+    "Rockets", "Blazers", "Hilltoppers", "Blue Raiders", "Sycamores",
+    "Redbirds", "Flames", "Cardinals", "Rams", "Ravens", "Falcons",
+    "Chiefs", "Chargers", "Bengals", "Steelers", "Browns", "Colts",
+    "Titans", "Texans", "Cowboys", "Giants", "Eagles", "Redskins",
+    "Commanders", "Vikings", "Packers", "Lions", "Bears",
+    "49ers", "Seahawks", "Cardinals", "Bills", "Dolphins", "Patriots",
+    "Jets", "Buccaneers", "Saints",
+    // Soccer club suffixes
+    "FC", "United", "City", "Athletic", "Rovers", "Wanderers",
+    "Sporting Club",
+  ];
+  for (const m of MASCOTS) {
+    if (n.endsWith(" " + m)) {
+      const trimmed = n.slice(0, n.length - m.length - 1).trim();
+      if (trimmed.length <= 14 && trimmed.length > 0) return trimmed;
+    }
+  }
+  // Long school name (no mascot suffix). Use first 12 chars but ONLY
+  // at a word boundary so we don't emit "Illinois Fig".
+  const cutAt12 = n.slice(0, 12);
+  const lastSpace = cutAt12.lastIndexOf(" ");
+  if (lastSpace >= 6) return cutAt12.slice(0, lastSpace);
+  // No safe boundary → return full name; the UI row will truncate
+  // gracefully via numberOfLines/ellipsizeMode rather than destructive
+  // mid-word slice.
+  return n;
+}
+
 function logColumnsFor(sport: string, family: string): LogColumn[] {
-  const dateCol: LogColumn = { key: "date", label: "DATE", width: 54,
+  const dateCol: LogColumn = { key: "date", label: "DATE", width: 62,
     render: (o) => fmtDate(o.date) };
-  const oppCol: LogColumn = { key: "opp", label: "OPP", width: 78,
-    render: (o) => (o.opponent_name || "—").slice(0, 12) };
+  const oppCol: LogColumn = { key: "opp", label: "OPP", width: 100,
+    render: (o) => _shortTeam(o.opponent_name) };
   const haCol: LogColumn = { key: "ha", label: "H/A", width: 34,
     render: (o) => (o.home_away || "—").toUpperCase().slice(0, 1) };
   const actualCol = (label: string, digits = 0): LogColumn => ({
@@ -391,15 +455,17 @@ function CurrentLineHero({
   const sideLetter =
     side === "under" ? "U" : side === "cover" ? "C" : side === "ml" ? "ML" : "O";
   const denom = summary.hits + summary.misses;
+  // ── §9 mobile readability: give the entity/opponent line room to
+  // breathe across TWO lines so canonical team identity survives.
   return (
     <View style={styles.hero}>
-      <View>
+      <View style={{ flex: 1, paddingRight: 8 }}>
         <Text style={styles.heroLabel}>CURRENT LINE</Text>
         <Text style={styles.heroLine}>
           {line !== null ? `${sideLetter} ${line}` : "—"} {" "}
           <Text style={styles.heroFamily}>{familyLabel.toUpperCase()}</Text>
         </Text>
-        <Text style={styles.heroEntity} numberOfLines={1}>
+        <Text style={styles.heroEntity} numberOfLines={2} ellipsizeMode="tail">
           {entity}
           {opponent ? ` vs ${opponent}` : ""}
         </Text>
@@ -497,7 +563,8 @@ function GameLogsTab({ data }: { data: HistoricalIntelligenceResponse }) {
         {cols.map((c) => (
           <Text key={c.key}
             style={[styles.logHeadText, { width: c.width || 60 }]}
-            numberOfLines={1}>{c.label}</Text>
+            numberOfLines={1}
+            ellipsizeMode="tail">{c.label}</Text>
         ))}
       </View>
       <ScrollView style={{ maxHeight: 340 }} nestedScrollEnabled>
@@ -513,7 +580,8 @@ function GameLogsTab({ data }: { data: HistoricalIntelligenceResponse }) {
                   c.key === "result" && g.result === "HIT" && { color: COLORS.neonGreen, fontWeight: "800" },
                   c.key === "result" && g.result === "MISS" && { color: COLORS.electricBlaze, fontWeight: "800" },
                 ]}
-                numberOfLines={1}>
+                numberOfLines={1}
+                ellipsizeMode="tail">
                 {c.render(g)}
               </Text>
             ))}
@@ -737,7 +805,7 @@ const styles = StyleSheet.create({
   },
   heroLine: { color: COLORS.textPrimary, fontSize: 22, fontWeight: "800" },
   heroFamily: { color: COLORS.textSecondary, fontSize: 12, fontWeight: "600" },
-  heroEntity: { color: COLORS.textSecondary, fontSize: 12, marginTop: 4, maxWidth: 220 },
+  heroEntity: { color: COLORS.textSecondary, fontSize: 12, marginTop: 4 },
   heroStat: { alignItems: "flex-end" },
   heroBig: { color: COLORS.textPrimary, fontSize: 22, fontWeight: "800" },
   heroPct: { color: COLORS.textSecondary, fontSize: 12, fontWeight: "700", marginTop: 1 },

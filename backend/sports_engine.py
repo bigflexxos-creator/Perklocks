@@ -3105,7 +3105,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         # CFB engine/publication version markers — used
                         # by the stale-pick safety net to distinguish
                         # current legitimate rows from pre-fix legacy.
-                        ml_pick["cfb_engine_version"]      = "cfb_sp_game.v2.2026-06-12"
+                        ml_pick["cfb_engine_version"]      = "cfb_sp_game.v3.2026-06-signfix"
                         ml_pick["cfb_publication_version"] = "cfb_publication.v2.2026-06-12"
                         ml_pick["cfb_generated_at"]        = datetime.now(timezone.utc).isoformat()
                         # factor_sources aids Magic Tier Policy
@@ -3952,7 +3952,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                                     total_pick["data_quality"]            = _dq_str_t or None
                                     total_pick["model_probability"]       = round(float(best["mp"]), 4)
                                     total_pick["simulator_probability"]   = round(float(best["mp"]), 4)
-                                    total_pick["cfb_engine_version"]      = "cfb_sp_game.v2.2026-06-12"
+                                    total_pick["cfb_engine_version"]      = "cfb_sp_game.v3.2026-06-signfix"
                                     total_pick["cfb_publication_version"] = "cfb_publication.v2.2026-06-12"
                                     total_pick["cfb_generated_at"]        = datetime.now(timezone.utc).isoformat()
                                     _fs_t: list = list(total_pick.get("factor_sources") or [])
@@ -4375,7 +4375,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         _sp_pick["data_quality"]               = _dq_str or None
                         _sp_pick["model_probability"]          = round(float(mp), 4)
                         _sp_pick["simulator_probability"]      = round(float(mp), 4)
-                        _sp_pick["cfb_engine_version"]         = "cfb_sp_game.v2.2026-06-12"
+                        _sp_pick["cfb_engine_version"]         = "cfb_sp_game.v3.2026-06-signfix"
                         _sp_pick["cfb_publication_version"]    = "cfb_publication.v2.2026-06-12"
                         _sp_pick["cfb_generated_at"]           = datetime.now(timezone.utc).isoformat()
                         _fs: list = list(_sp_pick.get("factor_sources") or [])

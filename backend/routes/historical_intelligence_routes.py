@@ -192,9 +192,12 @@ def _resolve_entity(pick: dict, sport: str, family: Optional[str]
             pick.get("market") or "", sport)
     if not team_name:
         team_name = pick.get("team")
-    # Game-level totals ("Total Goals Over 2.5", "Total Over 8.5") don't
-    # name a team — fall back to home_team so we surface real history.
-    if not team_name and family == "total":
+    # Game-level totals / BTTS / double-chance / handicap do NOT name a
+    # single team in the market string — always prefer home_team so we
+    # surface real history for the fixture.  Overrides any noise like
+    # ``team="Yes"`` that came from copying the selection into the
+    # team field on BTTS-style publishers.
+    if family in ("total", "btts", "double_chance", "handicap"):
         home = pick.get("home_team")
         if not home:
             home, _ = _parse_event_teams(pick.get("event"))
