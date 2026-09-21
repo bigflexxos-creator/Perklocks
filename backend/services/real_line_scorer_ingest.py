@@ -280,8 +280,22 @@ async def _ingest_player_scorer_row(
         # identity conflict; leave opp_team=None (UNKNOWN, not guessed)
     matchup = None
     if opp_team:
+        # PHASE-E CONSUMER WIRING (2026-06 §A) — pass `as_of=commence_time`
+        # so universal history filters out any post-publication matches
+        # (§38 pregame safety); pass league so multi-provider dispatch
+        # can filter to the current competition where appropriate.
+        _commence_iso = row.get("commence_time")
+        _as_of = None
+        if _commence_iso:
+            try:
+                from datetime import datetime, timezone
+                _as_of = datetime.fromisoformat(str(_commence_iso).replace("Z", "+00:00"))
+            except Exception:
+                _as_of = None
         matchup = await resolve_soccer_player_matchup(
             db, player_name=lookup_name, opponent_team=opp_team,
+            as_of=_as_of,
+            canonical_competition_id=league,
         )
 
     bridge = compute_soccer_scorer_factors_sync(

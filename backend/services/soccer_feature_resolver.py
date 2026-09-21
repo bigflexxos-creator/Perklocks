@@ -311,15 +311,97 @@ async def resolve_soccer_player_prior(
 
 async def resolve_soccer_player_matchup(
     db, *, player_name: str, opponent_team: str,
+    as_of=None,
+    canonical_competition_id: Optional[str] = None,
 ) -> Optional[dict]:
     """Return H2H matchup dossier for player-vs-opponent, or None.
 
-    Uses `mls_player_matchup_history` — the existing MLS matchup
-    store populated by prior History backfill work.  Structure:
-    ``{player_name, by_opponent: [ ... ], total_events, refreshed_at}``.
+    Phase-E consumer wiring (2026-06):
+      * Primary path — universal history dispatcher
+        (``services.soccer_universal_history.get_player_matchup_history``)
+        so ALL configured/provider-supported leagues are covered (EPL /
+        La Liga / Bundesliga / Serie A / MLS / …), NOT MLS-only.
+      * Fallback — the legacy ``mls_player_matchup_history`` store, so
+        no previously-working MLS behaviour regresses.
+      * ``as_of`` is propagated to universal history so pregame
+        evidence never leaks post-publication data (§38 as-of safety).
+      * ``events`` counts REAL appearances (missing minutes stay
+        ``None`` per §35, never coerced to zero).
+      * Small samples surface truthfully (``events=1`` remains an
+        uncertainty-limited signal downstream via existing scorer
+        authority weighting — this function does not artificially
+        inflate authority for 1/1 samples).
+
+    Returns aggregate ``{opponent, events, goals, assists, shots,
+    shots_on_target, xg, xa, source, rows}`` — or ``None`` when neither
+    path finds any history AND provider status is definitively
+    NO_MATCHES.  A provider failure surfaces via ``source`` being
+    stamped ``"universal_provider_failure"`` — callers can inspect
+    and treat as unavailable (missing != zero).
     """
     if not (player_name and opponent_team):
         return None
+
+    # ── PRIMARY: universal history dispatcher ──────────────────────
+    try:
+        from services.soccer_universal_history import (
+            get_player_matchup_history,
+            STATUS_FULL, STATUS_NO_MATCHES,
+            STATUS_PARTIAL, STATUS_PROVIDER_FAILURE,
+            STATUS_UNAVAILABLE,
+        )
+        res = await get_player_matchup_history(
+            canonical_player_id=player_name.strip().lower(),
+            canonical_opponent_id=opponent_team,
+            canonical_competition_id=canonical_competition_id,
+            as_of=as_of, limit=25,
+        )
+        if res.status in (STATUS_FULL, STATUS_PARTIAL) and res.rows:
+            # Aggregate raw player appearances.  Missing per-row fields
+            # stay `None` in raw rows — we only sum values that are
+            # actually present (never coerce None → 0 in the sum).
+            events = len(res.rows)
+            def _sum(k):
+                s = 0.0
+                seen = False
+                for r in res.rows:
+                    v = r.get(k)
+                    if isinstance(v, (int, float)):
+                        s += float(v)
+                        seen = True
+                return s if seen else None
+            return {
+                "opponent":        opponent_team,
+                "events":          events,
+                "goals":           _sum("goals")           or 0.0,
+                "assists":         _sum("assists")         or 0.0,
+                "shots":           _sum("shots")           or 0.0,
+                "shots_on_target": _sum("shots_on_target") or 0.0,
+                "xg":              _sum("xg"),
+                "xa":              _sum("xa"),
+                "source":          f"universal:{res.provenance}",
+                "provider_status": res.status,
+                "as_of":           res.as_of,
+                "rows":            res.rows,
+            }
+        # PROVIDER_FAILURE surfaces distinctly from NO_MATCHES so
+        # callers can treat it as unavailable, not zero (§7).
+        if res.status == STATUS_PROVIDER_FAILURE:
+            return {
+                "opponent":  opponent_team,
+                "events":    0,
+                "goals":     None, "assists": None,
+                "shots":     None, "shots_on_target": None,
+                "xg":        None, "xa": None,
+                "source":    "universal_provider_failure",
+                "provider_status": res.status,
+                "error":     res.error,
+            }
+    except Exception:
+        # Never crash the evidence path — fall through to legacy MLS.
+        pass
+
+    # ── FALLBACK: legacy MLS-only store (preserves prior behaviour) ──
     try:
         row = await db.mls_player_matchup_history.find_one({
             "player_name": {"$regex": f"^{player_name.strip()}$", "$options": "i"},
@@ -329,8 +411,6 @@ async def resolve_soccer_player_matchup(
     if not row:
         return None
     bo = row.get("by_opponent")
-    # by_opponent can be a list of dicts OR a dict keyed by opponent —
-    # accept both shapes.
     match_data: Optional[dict] = None
     if isinstance(bo, list):
         for item in bo:
