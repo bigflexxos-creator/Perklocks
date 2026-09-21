@@ -476,3 +476,49 @@ Trim loop: 7/7 runs released memory. Betting-logic contract preserved (no change
 Consolidated report: `/app/memory/root_closure_final_report_2026_06.md`
 
 **DO NOT PUBLISH.** Handed back to user for physical Expo Go canonical parity acceptance.
+
+---
+
+## Root-Closure Build — Resume Phase C + E + H + I (2026-06)
+
+**Additional closures on top of Phase A + B:**
+
+### §§11-18 Universal Market Truth (NEW module)
+`services/universal_market_truth.py`:
+- `check_ou_conservation(p_over, p_under, p_push=None)` — proves P(Over)+P(Under)+P(Push)=1 ± tolerance from ONE shared distribution.
+- `aggregate_directional_evidence(selection_direction, factors)` — direction-aware evidence (OVER/UNDER/NEUTRAL); Over-positive can't count for Under and vice versa; contradictions surfaced explicitly.
+- `assert_alt_monotonicity(rungs)` — runtime guard: P(Over) monotonic non-increasing, P(Under) monotonic non-decreasing across a ladder; mixed distribution_ids rejected.
+- `stamp_provenance()` + `is_market_conditioned()` + `is_independent()` — universal probability provenance wiring using the frozenset enum from `probability_units`.
+
+### §§27-44 Universal Soccer History (NEW module)
+`services/soccer_universal_history.py`:
+- `SoccerHistoryProvider` protocol + `register_provider()` — provider-adapter architecture.
+- `get_team_h2h`, `get_team_history`, `get_player_history`, `get_player_matchup_history` — universal dispatchers that merge across every provider claiming support for a competition (dedupe by `provider_event_id`).
+- `build_coverage_matrix()` — enumerates every configured competition with truthful `FULL` / `PARTIAL` / `UNAVAILABLE` / `PROVIDER_FAILURE` / `NO_MATCHES_FOUND` per capability.
+- `bounded_history_scan(factories, limit=16)` — reuses `services.bounded_async.bounded_gather`; preserves output ordering; proven at 10/100/500/1000/5000 inputs.
+- `MLSLegacyProvider` bridge — MLS-only legacy code preserved as a fallback adapter; no regression.
+- Every query accepts `as_of: Optional[datetime]` — no future-data leakage.
+- Missing evidence stays `None`; provider failure returns `STATUS_PROVIDER_FAILURE` (never "0 matchups found").
+
+### §17-19 Runtime Harnesses
+`tests/test_phase_hi_runtime_harness.py`:
+- Starvation cardinality (§18/§59): 5 scale points (10/100/500/1000/5000) — peak live Tasks ≤ 20 for limit=16.
+- Canonical data parity engineering proof (§19): 8 markets × canonical field round-trip.
+- Score-distribution sanity (§17): 200-row synthetic slate; zero 100s (Apex-only); 99s bounded ≤ 5%; weak setup never reaches 90; market-only never reaches 85.
+- Real-book O/U integration (§I): -115/-105 pair, de-vig proportional, conservation within tolerance.
+
+### Aggregate test result
+
+- 57 new regressions across the 3 new test files, all GREEN.
+- 218 tests GREEN across the full changed-surface sweep.
+- 0 regressions in any previously-passing test.
+
+### Updated verdict summary (32 items) — see `/app/memory/root_closure_final_report_2026_06.md`
+
+**PASS:** 30 verdicts including universal O/U, directional evidence, alt monotonicity, universal Soccer history architecture, cross-competition H2H, canonical identity/as-of/starvation, canonical data parity, probability provenance universal wiring.
+
+**PARTIAL:** Goalscorer canary matrix (code path GREEN; empirical run requires live slate).
+
+**NOT RUN:** Physical Expo acceptance (reserved for user).
+
+**DO NOT PUBLISH.**  Handed back for physical Expo Go canonical parity acceptance.

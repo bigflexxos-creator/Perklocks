@@ -182,9 +182,15 @@ def project_board_dto(pick: dict) -> dict:
     # book_odds but no implied_probability, derive it here (percent
     # scale — the frontend displays it as `${implied_probability}%`).
     ip = out.get("implied_probability")
-    _needs_derive = (
-        ip is None or ip == "" or (isinstance(ip, float) and (ip != ip))
-    )
+    # Coerce non-numeric junk (e.g. "", "N/A", None) to None so the
+    # derive-from-odds fallback below can act, and downstream never
+    # sees a string masquerading as a number.
+    if not isinstance(ip, (int, float)) or (
+        isinstance(ip, float) and ip != ip
+    ):
+        out["implied_probability"] = None
+        ip = None
+    _needs_derive = ip is None
     if _needs_derive:
         odds = out.get("book_odds")
         try:
