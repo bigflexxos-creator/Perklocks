@@ -432,3 +432,47 @@ Soak samples (post-warmup, every 15 s over 5 min):
 
 Trim loop: 7/7 runs released memory. Betting-logic contract preserved (no changes to
 `_ensure_today_picks`, board generation, quality gate, or publication paths).
+
+---
+
+## Final Universal Root-Closure Build — 2026-06 (Phase A + B + Partial D)
+
+**Closed this run:**
+
+1. **Physical Soccer impossibility card** (Newcastle @ Coventry Over 7.5 · +3500 · undefined% · -1348% edge · Lock 85.4 PLAYABLE) — root causes fixed at 4 sites; deterministic regression fixture GREEN.
+
+2. **Canonical probability unit contract** — new `services/probability_units.py` module: `to_fraction`, `to_percent`, `implied_probability_from_odds`, `edge_percentage_points` with `EDGE_CLAMP_MAX_PP=100`. Magnitude inference (`if x > 1: x /= 100`) banned at authority boundaries.
+
+3. **Universal publication impossibility guard** — `canonical_publication_boundary` now rejects rows with:
+   * `IMPOSSIBLE_IMPLIED_PROBABILITY` (missing/non-finite while real odds present, or disagreement > 5pp with odds)
+   * `IMPOSSIBLE_EDGE_MAGNITUDE` (non-finite or `|edge| > 100 pp`)
+   * `IMPOSSIBLE_WIN_PROBABILITY` (non-finite or outside `[0, 100.5]`)
+
+4. **CFB Evidence Authority** — 2 failing tests now GREEN.
+   * `_MARKET_ANCHOR_KEYS` switched from exact-set to prefix match (`sportsbook implied` / `book implied` / `market implied` / `devig implied`) so `"Sportsbook Implied Prob"` and every alias is excluded from evidence-based scoring.
+   * Added `_independent_evidence_count` + `_market_anchor_count` tracking.
+   * After UEA/BQ authorities run, §7 market-only cap (`final ≤ 84.5` when count==0 && market>0) and §8 mid-band evidence bonus (`log1p(count)*0.85` max 2.5pp, applied only below 90 to preserve elite-tier parity).
+
+5. **Soccer Goalscorer final-writer neutralized** — `quality_gate._apply_elite_scorer_anchor` no longer overwrites `win_probability` / `edge_percent` / `lock_score` / `lock_score_v2` / `lock_score_peak`. Static anchor is now EVIDENCE-only via `elite_scorer_anchor_rate`. 88 ceiling removed. COLD-tag suppression preserved.
+
+6. **Soccer xG final-writer neutralized** — `sportdb_xg_totals.enrich_totals_pick_with_xg` no longer mutates `lock_score` / `lock_score_v2`. Emits structured `sportdb_xg_evidence` payload for authoritative chain instead.
+
+7. **BoardPickDTO** — retains `implied_probability`; derives from `book_odds` when missing.
+
+8. **Frontend LockPickCard** — guards `win_probability`, `edge_percent` (with `|edge|>100` sanity check), `implied_probability`, `book_odds` against `undefined`/`NaN`/`Infinity`.
+
+**Test results (this run):**
+* Phase A regressions: 17/17 GREEN (`test_phase_a_probability_units.py`)
+* CFB evidence: 4/4 GREEN (was 2 failing)
+* NFL/MLB/CFB/Lock authority regression sweep: 140+ GREEN, 0 regressions
+* Live-HTTP tests (elite goalscorer, iter115, iter143 parity): require live slate — deferred to physical Expo acceptance
+
+**Explicitly deferred (marked NOT PASSED in consolidated report per user rule):**
+* Universal Soccer history for all supported leagues (§§27-44) — MLS-only path unchanged, architectural migration is dedicated follow-up
+* Universal O/U conservation + directional evidence + alt monotonicity (§§13-18) — foundation ready, per-sport wiring deferred
+* Goalscorer canary matrix empirical evaluation (§23) — code path fixed, live evaluation deferred
+* Score-distribution measurement (§64) + starvation harness (§59) — require running slate
+
+Consolidated report: `/app/memory/root_closure_final_report_2026_06.md`
+
+**DO NOT PUBLISH.** Handed back to user for physical Expo Go canonical parity acceptance.

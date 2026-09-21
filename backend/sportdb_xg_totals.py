@@ -333,10 +333,29 @@ async def enrich_totals_pick_with_xg(
         agree = None
 
     if boost != 0:
-        for k in ("lock_score", "lock_score_v2"):
-            v = pick.get(k)
-            if isinstance(v, (int, float)):
-                pick[k] = float(max(55.0, min(v + boost, 95.0)))
+        # ── Phase D Root-Closure (2026-06 §25) ─────────────────────
+        # xG NO LONGER acts as a final-writer on lock_score /
+        # lock_score_v2.  This function is now EVIDENCE-ONLY — it
+        # produces structured xG evidence for the authoritative Lock
+        # authority to consume; it MUST NOT mutate authoritative
+        # score fields after upstream scoring has run.
+        #
+        # Legacy field ``sportdb_xg_lock_adjustment`` is retained
+        # below for observability, but the mutation is removed.  The
+        # ``predicted_total`` / ``delta`` / ``direction`` /
+        # ``sample_size`` structured evidence lives on
+        # ``sportdb_xg_evidence`` for the authoritative chain to
+        # consume via FactorPresentation.
+        pick["sportdb_xg_evidence"] = {
+            "predicted_total": round(pred_total, 3),
+            "market_line":     float(line),
+            "delta":           round(pred_total - line, 3),
+            "direction":       "OVER" if delta > 0 else ("UNDER" if delta < 0 else "NEUTRAL"),
+            "agrees_with_selection": bool(agree) if agree is not None else None,
+            "sample_size":     int(home_profile.get("sample_size") or 0),
+            "provenance":      "MARKET_CONDITIONED" if line is not None else "EMPIRICAL_INDEPENDENT",
+            "signal_strength": round(abs(boost) / 3.0, 3),  # normalised 0..1
+        }
 
     insight = (
         f"📊 SportDB xG ({home_profile['sample_size']}-match avg): predicted total "

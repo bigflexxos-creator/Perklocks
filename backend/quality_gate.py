@@ -729,64 +729,49 @@ def _apply_display_cap(pick: dict) -> None:
 
 
 def _apply_elite_scorer_anchor(pick: dict) -> None:
-    """Anchor goalscorer pick probability on real per-match scoring rate.
+    """PHASE-D ROOT CLOSURE (2026-06 final):
+    NEUTRALIZED as a final-writer authority.  This function used to
+    overwrite ``win_probability`` / ``edge_percent`` / ``lock_score`` /
+    ``lock_score_v2`` / ``lock_score_peak`` with a static per-player
+    anchor rate (88 ceiling) — that was a competing Lock-authority
+    writer for Soccer scorer markets and the confirmed root cause of
+    the "Newcastle @ Coventry Over 7.5 · Lock 85.4 · edge -1348%"
+    physical impossibility card (double-scaling of already-percentage
+    edge values in downstream code paths).
 
-    When a known elite scorer (Mbappé / Haaland / Kane / Messi / Salah …)
-    is on the card for an Anytime / Score-or-Assist market, override the
-    model's win_probability with the real-world rate from
-    ELITE_SCORER_ANCHORS, recompute edge against the book's implied
-    probability, and re-set lock_score to a sane value (= anchor × 100,
-    capped at 88). Also suppress the misleading "COLD" tag drawn from
-    the pre-fix poisoned pick history.
+    Per §20/§21/§22 of the Root-Closure spec:
+      • Static named-player scoring rates cannot be final Win Expected
+        or Lock authority.
+      • Player name alone contributes ZERO direct Lock points.
+      • ELITE_SCORER_ANCHORS is now EVIDENCE-only — it stamps
+        ``elite_scorer_anchor_rate`` (per-match hit-rate hint) on the
+        pick for the authoritative scorer chain / evidence engine to
+        consume; it never rewrites final probability or Lock.
+
+    The COLD-tag suppression side-effect (independent of the scoring
+    override) is preserved because the underlying pick-history
+    poisoning issue is orthogonal to the authority conflict.
     """
     sport = (pick.get("sport") or "").lower()
     market = (pick.get("market") or "")
     if sport != "soccer" or not _SOCCER_GOALSCORER_FAMILY_RE.search(market):
         return
 
-    # v3 goal-scorer picks own their own λ_player / λ_team math and
-    # publish `edge_percent=None` deliberately (no real book line).
-    # Overriding win_probability with a naive per-match rate would
-    # undo the correlated Monte-Carlo output; recomputing edge would
-    # fabricate a number the engine refused to publish. Skip.
-    if (pick.get("source") == "goal_scorer_v3"
-            or pick.get("odds_source") == "model_derived"):
-        # Still suppress the misleading cold tag / mark as anchored for UI.
-        pick["suppress_cold_tag"] = True
-        pick["player_elite_anchored"] = True
-        return
-
     player = _extract_player_from_pick(pick)
     anchor = _elite_anchor_rate(player, market)
-    if anchor is None:
-        return
 
-    is_anytime = bool(_SOCCER_ANYTIME_SCORER_RE.search(market))
-    if is_anytime:
-        prev_wp = _coerce_float(pick.get("win_probability"))
-        anchor_stored = anchor * 100 if (prev_wp is not None and prev_wp > 1.5) else anchor
-        pick["win_probability"] = anchor_stored
+    # If a known elite player is on the card, expose the per-match hit
+    # rate as EVIDENCE ONLY — do NOT rewrite Win Expected / edge /
+    # Lock Score.  Downstream authorities (soccer_player_authority,
+    # evidence engine) consume this hint through the FactorPresentation
+    # allowlist; player name alone MUST NOT direct-boost Lock points.
+    if anchor is not None:
+        pick.setdefault("elite_scorer_anchor_rate", float(anchor))
         pick.setdefault("anchor_source", []).append(
-            f"elite_scorer:{player}={anchor:.2f}"
+            f"elite_scorer_evidence_only:{player}={anchor:.2f}"
         )
-        implied = _coerce_float(pick.get("implied_probability"))
-        if implied is None:
-            odds = _coerce_float(pick.get("book_odds"))
-            if odds is not None:
-                implied = (
-                    abs(odds) / (abs(odds) + 100)
-                    if odds <= -100 else 100 / (odds + 100)
-                )
-        if implied is not None:
-            if implied > 1.5:
-                implied = implied / 100.0
-            pick["edge_percent"] = round((anchor - implied) * 100, 2)
-            new_lock = round(min(88.0, anchor * 100), 1)
-            for ls in ("lock_score", "lock_score_v2", "lock_score_peak"):
-                if isinstance(pick.get(ls), (int, float)):
-                    pick[ls] = new_lock
-
-    # Always suppress false cold tag for elites.
+    # Suppress the misleading "COLD" tag drawn from the pre-fix
+    # poisoned pick history (streak-chip UX only; not a scoring signal).
     pick["suppress_cold_tag"] = True
     pick["player_elite_anchored"] = True
     # CRITICAL (2026-06-30 user audit): the streak chip ("COLD · 15L")

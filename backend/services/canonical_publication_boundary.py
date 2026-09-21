@@ -159,6 +159,12 @@ class RejectionReason(str, enum.Enum):
     # actionable Locks candidates — they carry a book_odds computed
     # from the model, not an observed sportsbook offering.
     MODEL_LINE_NOT_REAL_OFFERING   = "MODEL_LINE_NOT_REAL_OFFERING"
+    # Phase A Root-Closure (2026-06) — universal publication
+    # IMPOSSIBILITY guard.  Rejects rows whose numeric fields cannot
+    # be truthfully rendered (undefined%, NaN, ±inf, absurd magnitudes).
+    IMPOSSIBLE_IMPLIED_PROBABILITY = "IMPOSSIBLE_IMPLIED_PROBABILITY"
+    IMPOSSIBLE_EDGE_MAGNITUDE      = "IMPOSSIBLE_EDGE_MAGNITUDE"
+    IMPOSSIBLE_WIN_PROBABILITY     = "IMPOSSIBLE_WIN_PROBABILITY"
 
 
 # Verified real-sportsbook odds sources.  ANY producer that intends to
@@ -395,6 +401,83 @@ def evaluate_publication(pick: dict) -> BoundaryVerdict:
         # ── Rule 5 — synthetic edge ──
         if _has_edge_synth(pick):
             reasons.append(RejectionReason.SYNTHETIC_EDGE.value)
+
+        # ── Phase A Root-Closure — Universal Impossibility Guard ────
+        # Reject rows whose numeric truth cannot be rendered without
+        # producing "undefined%", "NaN%", "Infinity%", or absurd
+        # ±1000% edge magnitudes on the client.  This is the runtime
+        # wire for §§4-6 (Publication Impossibility Guard).
+        #
+        # We use canonical helpers from ``services.probability_units``
+        # so unit semantics are unambiguous; magnitude-inference
+        # (``if x > 1: x /= 100``) is BANNED at this boundary.
+        try:
+            from services.probability_units import (
+                is_finite_number, implied_probability_from_odds,
+                EDGE_CLAMP_MAX_PP,
+            )
+            # (a) implied_probability truth — when book_odds is present
+            #     and REAL, implied_probability MUST be finite (or
+            #     absent — the DTO layer will derive from odds).
+            _bo = pick.get("book_odds")
+            _ip = pick.get("implied_probability")
+            _has_real_odds = _has_book_odds(pick) and line_state == "REAL"
+            if _has_real_odds and _ip is not None:
+                if not is_finite_number(_ip):
+                    reasons.append(
+                        RejectionReason.IMPOSSIBLE_IMPLIED_PROBABILITY.value
+                    )
+                else:
+                    # implied_probability semantics accept either
+                    # fraction [0,1] or percent [0,100]; anything else
+                    # is impossible.
+                    _ipf = float(_ip)
+                    if not (0.0 <= _ipf <= 100.5):
+                        reasons.append(
+                            RejectionReason.IMPOSSIBLE_IMPLIED_PROBABILITY.value
+                        )
+                    else:
+                        # Disagreement w/ book_odds beyond a 2 pp
+                        # tolerance is also impossible (unit mixing).
+                        _from_odds = implied_probability_from_odds(_bo)
+                        if _from_odds is not None:
+                            # Coerce to fraction for comparison.
+                            _ip_frac = _ipf / 100.0 if _ipf > 1.001 else _ipf
+                            if abs(_ip_frac - _from_odds) > 0.05:
+                                reasons.append(
+                                    RejectionReason.IMPOSSIBLE_IMPLIED_PROBABILITY.value
+                                )
+            # (b) edge_percent must be finite AND within ±EDGE_CLAMP_MAX_PP.
+            _ep = pick.get("edge_percent")
+            if _ep is not None:
+                if not is_finite_number(_ep):
+                    reasons.append(
+                        RejectionReason.IMPOSSIBLE_EDGE_MAGNITUDE.value
+                    )
+                elif abs(float(_ep)) > EDGE_CLAMP_MAX_PP:
+                    reasons.append(
+                        RejectionReason.IMPOSSIBLE_EDGE_MAGNITUDE.value
+                    )
+            # (c) win_probability must be finite and within either
+            #     [0,1] (fraction) or [0,100] (percent).
+            for _wpk in ("win_probability", "model_probability"):
+                _wp = pick.get(_wpk)
+                if _wp is None:
+                    continue
+                if not is_finite_number(_wp):
+                    reasons.append(
+                        RejectionReason.IMPOSSIBLE_WIN_PROBABILITY.value
+                    )
+                    break
+                _wpf = float(_wp)
+                if not (0.0 <= _wpf <= 100.5):
+                    reasons.append(
+                        RejectionReason.IMPOSSIBLE_WIN_PROBABILITY.value
+                    )
+                    break
+        except Exception:
+            # Never crash publication on the guard — defense-in-depth.
+            pass
 
         # ── Rule 5.5 — MODEL_UNAVAILABLE authority (Phase 5 wiring) ──
         # A pick whose (sport, market_family) is registered

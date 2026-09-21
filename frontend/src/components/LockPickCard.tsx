@@ -578,7 +578,13 @@ function LockPickCardImpl({ pick, featured: featuredProp = false }: { pick: Pick
         />
         <HeroBadge
           icon="📊"
-          value={`${pick.win_probability}%`}
+          value={
+            typeof pick.win_probability === "number" &&
+            !isNaN(pick.win_probability) &&
+            isFinite(pick.win_probability)
+              ? `${pick.win_probability}%`
+              : "—"
+          }
           label="WIN"
           sub="EXPECTED"
           color={COLORS.textPrimary}
@@ -587,13 +593,19 @@ function LockPickCardImpl({ pick, featured: featuredProp = false }: { pick: Pick
         <HeroBadge
           icon="⚡"
           value={
-            typeof pick.edge_percent === "number" && !isNaN(pick.edge_percent)
+            typeof pick.edge_percent === "number" &&
+            !isNaN(pick.edge_percent) &&
+            isFinite(pick.edge_percent) &&
+            Math.abs(pick.edge_percent) <= 100
               ? `${pick.edge_percent > 0 ? "+" : ""}${pick.edge_percent}%`
               : "—"
           }
           label="EDGE"
           sub={
-            typeof pick.edge_percent === "number" && !isNaN(pick.edge_percent)
+            typeof pick.edge_percent === "number" &&
+            !isNaN(pick.edge_percent) &&
+            isFinite(pick.edge_percent) &&
+            Math.abs(pick.edge_percent) <= 100
               ? "VALUE"
               : "UNAVAILABLE"
           }
@@ -603,11 +615,25 @@ function LockPickCardImpl({ pick, featured: featuredProp = false }: { pick: Pick
       </View>
 
       <View style={styles.secondaryRow}>
-        <Metric label="IMPLIED" value={`${pick.implied_probability}%`} color={COLORS.textSecondary} />
+        <Metric
+          label="IMPLIED"
+          value={
+            typeof pick.implied_probability === "number" &&
+            !isNaN(pick.implied_probability) &&
+            isFinite(pick.implied_probability)
+              ? `${pick.implied_probability}%`
+              : "—"
+          }
+          color={COLORS.textSecondary}
+        />
         <View style={styles.secondaryDivider} />
         <Metric
           label="ODDS"
-          value={pick.book_odds > 0 ? `+${pick.book_odds}` : `${pick.book_odds}`}
+          value={
+            typeof pick.book_odds === "number" && !isNaN(pick.book_odds)
+              ? pick.book_odds > 0 ? `+${pick.book_odds}` : `${pick.book_odds}`
+              : "—"
+          }
           color={COLORS.textPrimary}
         />
       </View>
