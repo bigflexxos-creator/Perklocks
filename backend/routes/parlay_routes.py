@@ -354,6 +354,7 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
     # window/eligibility checks downstream will still reject a pinned
     # pick if it doesn't fit the current parlay window.
     locked_picks: list[dict] = []
+    pin_report: list[dict] = []
     if locked_ids:
         wanted_ids = [s.strip() for s in locked_ids.split(",") if s.strip()]
         if wanted_ids:
@@ -364,9 +365,39 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
                 "status": {"$in": ["pending", "open", None]},
                 **_canon_filt,  # canonical publication required
             }
-            locked_picks = await db.picks.find(
+            locked_picks_raw = await db.picks.find(
                 _pin_q, {"_id": 0},
             ).to_list(length=len(wanted_ids))
+            # Universal Closure (2026-06-21): every pin is validated
+            # through the mode + dependency + canonical + real-odds
+            # authorities.  Rejected pins are surfaced with a
+            # machine-readable reason code so the frontend can show
+            # PIN_CONFLICT with actionable copy.
+            from services.parlay.pins_and_alternates import (
+                validate_pin as _validate_pin, PIN_ACCEPTED as _PIN_OK,
+            )
+            for _pick in locked_picks_raw:
+                _status, _reason, _msg = _validate_pin(
+                    _pick, _policy, existing_legs=locked_picks,
+                )
+                pin_report.append({
+                    "pick_id": _pick.get("id"),
+                    "status": _status,
+                    "reason_code": _reason,
+                    "message": _msg,
+                })
+                if _status == _PIN_OK:
+                    locked_picks.append(_pick)
+            # Any wanted_id not returned by the DB query is reported too.
+            _returned = {p.get("id") for p in locked_picks_raw}
+            for _wid in wanted_ids:
+                if _wid not in _returned:
+                    pin_report.append({
+                        "pick_id": _wid,
+                        "status": "PIN_CONFLICT",
+                        "reason_code": "NOT_CANONICAL",
+                        "message": "This wager is no longer available on the current board.",
+                    })
 
     # ─── Load learned parlay synergy map ───
     synergy_map: dict = {}
@@ -517,6 +548,7 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
             "diagnostic": diag,
             "rank": rank,
             "locked_ids": [p.get("id") for p in locked_picks],
+            "pin_report": pin_report,
             "window_hours": window_hours,
             "sport_mode": mode_lower,
         }
@@ -557,36 +589,23 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         for c in payloads
     ]
     canonical_pool = _canonicalize_picks(pool)
+    # Universal Closure (2026-06-21) — alternates ranked by mode +
+    # dependency + diversification + joint-survival impact, NOT just
+    # standalone Lock score.  See services.parlay.pins_and_alternates.
+    from services.parlay.pins_and_alternates import rank_alternates as _rank_alts
     for idx, card in enumerate(payloads):
         used_events = used_event_ids_per_card[idx]
         used_ids = used_pick_ids_per_card[idx]
-        alternates = [
+        alternates_pool = [
             p for p in canonical_pool
             if p.get("id") not in used_ids
             and p.get("event_id") not in used_events
         ]
-        # ── P0 FINAL SURGICAL REPAIR (2026-08-25) ─────────────────
-        # Rank alternates by canonical published_lock_score first
-        # (immutable), legacy lock_score as tiebreaker. Prevents a
-        # mutable-score drift from pushing an authentic 96-lock
-        # canonical alternate below a runtime-inflated 88.
-        def _alt_rank(p: dict) -> tuple:
-            try:
-                pls = float(p.get("published_lock_score") or 0)
-            except (TypeError, ValueError):
-                pls = 0.0
-            try:
-                ls = float(p.get("lock_score") or 0)
-            except (TypeError, ValueError):
-                ls = 0.0
-            return (-pls, -ls)
-        alternates.sort(key=_alt_rank)
-        # MAIN 40 · Iter 4 (2026-06-05) — thin alternate legs too.
-        # Before: 5 alternates × ~14 KB = ~70 KB per parlay card × 3 cards
-        # = 210 KB of duplicated pick documents.  Alternates now share the
-        # same display-only DTO shape as the primary legs so consumers
-        # can round-trip via GET /api/picks/{canonical_pick_id}.
-        card["alternates"] = [_thin(p) for p in alternates[:5]]
+        current_legs = list(card.get("legs") or [])
+        ranked = _rank_alts(current_legs, alternates_pool, policy=_policy,
+                            max_return=5)
+        # Thin the ranked alternates the same way as primary legs.
+        card["alternates"] = [_thin(p) for p in ranked]
         card["alternates_count"] = len(card["alternates"])
     # Persist this parlay slate into history so the learning loop has
     # data to settle and aggregate from. Cheap — dedupes by signature.
@@ -652,6 +671,7 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         "parlays": payloads,
         "rank": rank,
         "locked_ids": [p.get("id") for p in locked_picks],
+        "pin_report": pin_report,
         "window_hours": window_hours,
         "auto_expanded_to": auto_expanded_to,
         "sport_mode": mode_lower,
@@ -663,4 +683,18 @@ async def pick_parlay(user: Annotated[UserPublic, Depends(current_user)],
         "effective_target_legs": _effective_target,
         "feasibility_status": _feasibility.status,
         "feasibility": _feasibility.as_dict(),
+        # Regenerate determinism (Universal Closure): the same canonical
+        # generation + filters + refresh_nonce=0 must return the SAME
+        # base ticket set.  refresh_nonce > 0 requests controlled
+        # diversity — the caller passes the previous ticket fingerprint
+        # to `avoid_signatures` to search the next qualified build.
+        "regenerate": {
+            "refresh_nonce": int(refresh_nonce or 0),
+            "deterministic_base": (int(refresh_nonce or 0) == 0),
+            "ticket_fingerprints": [
+                # sorted tuple of leg ids per card
+                sorted([L.get("id") for L in (c.get("legs") or []) if L.get("id")])
+                for c in payloads
+            ],
+        },
     }
