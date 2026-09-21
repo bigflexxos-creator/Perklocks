@@ -131,6 +131,16 @@ class BoardVersionHeaderMiddleware(BaseHTTPMiddleware):
                 gid = active.get("generation_id") or None
                 if gid:
                     response.headers["X-Canonical-Generation-Id"] = str(gid)
+                # ─── ORDERED integer revision (2026-06-21 v2) ──────
+                # ``board_generation._active["revision"]`` is a monotone
+                # non-decreasing integer that advances by +1 on every
+                # real (non-no-op) commit.  This is the ONE authoritative
+                # ordering signal the client uses to distinguish a
+                # LATE stale response from a genuine advance — opaque
+                # hashes cannot answer that question.
+                rev = active.get("revision")
+                if rev is not None:
+                    response.headers["X-Canonical-Revision"] = str(int(rev))
         except Exception:
             pass
         return response

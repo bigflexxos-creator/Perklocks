@@ -23,40 +23,57 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useFocusEffect } from "expo-router";
 import {
-  getCurrentBoardVersion,
-  subscribeBoardVersion,
-} from "@/src/lib/boardFreshness";
+  getCurrentEpoch,
+  isEpochCurrent,
+  subscribeCanonicalEpoch,
+} from "@/src/lib/canonicalEpoch";
 
 type Snapshot<T> = {
   data: T;
   ts: number;         // last successful load millis
-  // ─── Universal freshness stamp (2026-06-21) ─────────────────────
-  // Board version reported by the response that produced ``data``.
-  // On any subsequent read, if ``getCurrentBoardVersion()`` has
-  // advanced past this stamp, the entry is treated as stale and a
-  // silent refetch is forced regardless of ``ts``/TTL windows.
-  // May be null for cold-boot AsyncStorage-hydrated entries that
-  // predate this contract — those are also treated as stale the
-  // moment the first live response reports any board_version.
-  bv?: string | null;
+  // ─── Ordered canonical stamp (2026-06-21 v2) ────────────────────
+  // Snapshot of ``getCurrentEpoch()`` at write time.  On dep-change
+  // and on cache-hit reads we compare the stamp's ``revision`` to
+  // the current authority.  Missing stamp = pre-contract or
+  // AsyncStorage-hydrated legacy row (treated as last-good only,
+  // never as CURRENT).
+  epoch?: {
+    origin: string;
+    revision: number;
+    boardVersion: string;
+    generationId: string;
+  } | null;
 };
 
 // ── Universal freshness sweeper (2026-06-21) ─────────────────────
-// One-time subscription: whenever ``noteBoardVersion`` observes a
-// NEWER version, every cache entry stamped with the previous version
-// (or missing a stamp entirely — pre-contract or AsyncStorage-hydrated)
-// is deleted so the next read pulls fresh canonical truth.  Runs
-// synchronously — the memory cost is a single pass over ``_cache``.
+// One-time subscription: whenever the CanonicalEpoch ADVANCES (rev
+// N → N+1) we clear stamped entries whose recorded revision is
+// strictly LESS than the new one.  Entries with a null stamp
+// (legacy / cross-boot AsyncStorage rows) are also swept — they
+// cannot claim to be current under the ordered contract.  Entries
+// stamped at exactly N+1 (already written under the new authority)
+// are preserved.
 let _sweeperInstalled = false;
 function _installBoardVersionSweeper(): void {
   if (_sweeperInstalled) return;
   _sweeperInstalled = true;
-  subscribeBoardVersion((next, previous) => {
+  subscribeCanonicalEpoch((next, previous) => {
     let swept = 0;
     for (const [k, v] of _cache.entries()) {
-      // Missing stamp OR older stamp → stale.  New stamp equal to
-      // ``next`` (already written under the fresh version) is kept.
-      if (v.bv !== next) {
+      const stampRev = v.epoch?.revision;
+      const stampOrigin = v.epoch?.origin;
+      const originChanged = !!(previous && previous.origin !== next.origin);
+      const originMismatch = stampOrigin && stampOrigin !== next.origin;
+      if (
+        // No stamp — pre-contract row, cannot be current.
+        stampRev === undefined || stampRev === null ||
+        // Origin changed — every prior stamp is by definition
+        // from a different cache space.
+        originChanged ||
+        originMismatch ||
+        // Ordered comparison — legitimate stale rows.
+        stampRev < next.revision
+      ) {
         _cache.delete(k);
         swept++;
       }
@@ -65,11 +82,9 @@ function _installBoardVersionSweeper(): void {
       try {
         // eslint-disable-next-line no-console
         console.log(
-          `[freshness] board_version advanced ${previous || "(none)"} → ${next}; swept ${swept} stale cache entries`,
+          `[freshness] canonical epoch advanced rev ${previous?.revision ?? "(none)"} → ${next.revision}; swept ${swept} stale cache entries`,
         );
       } catch {}
-      // Persist the sweep to the AsyncStorage LKG snapshot so a
-      // subsequent cold boot doesn't reload the same stale rows.
       _schedulePersist();
     }
   });
@@ -130,6 +145,13 @@ export function swrCacheClear(): void {
   _cache.clear();
 }
 
+/** Delete a single cache entry.  Used by the shared consumer registry
+ *  to invalidate a specific resource key right before triggering a
+ *  mounted-consumer revalidation. */
+export function swrCacheDelete(key: string): void {
+  _cache.delete(key);
+}
+
 /** Read the current cached snapshot for `key` (returns undefined if absent). */
 export function swrCacheRead<T>(key: string): T | undefined {
   const snap = _cache.get(key) as Snapshot<T> | undefined;
@@ -162,14 +184,21 @@ function _sweepDetail(): void {
 }
 
 export function swrCacheWrite<T>(key: string, data: T): void {
-  // Stamp every write with the current known board_version so future
-  // invalidation sweeps can identify which entries carry stale
-  // canonical truth.  A null stamp means the entry was written before
-  // ANY board_version had been observed this boot (cold-boot dep-only
-  // fetch race) — the first advance signal will discard it, matching
-  // the same-as-stale behavior for pre-contract AsyncStorage rows.
-  const bv = getCurrentBoardVersion();
-  _cache.set(key, { data, ts: Date.now(), bv });
+  // Stamp every write with a snapshot of the CURRENT CanonicalEpoch
+  // so the revision-ordered sweeper can distinguish CURRENT vs
+  // LAST-GOOD entries on any subsequent read.  A null stamp is
+  // acceptable pre-boot (before the first response arrives) — the
+  // very first advance will discard it via the sweeper.
+  const cur = getCurrentEpoch();
+  const epoch = cur
+    ? {
+        origin: cur.origin,
+        revision: cur.revision,
+        boardVersion: cur.boardVersion,
+        generationId: cur.generationId,
+      }
+    : null;
+  _cache.set(key, { data, ts: Date.now(), epoch });
   if (_persistable(key)) _schedulePersist();
   if (DETAIL_PREFIXES.some((p) => key.startsWith(p))) _sweepDetail();
 }
@@ -268,21 +297,21 @@ export function useSWR<T>(
       setData(cached);
       setLoading(false);
       lastFetchRef.current = _cache.get(key)?.ts ?? 0;
-      // ─── Universal freshness gate (2026-06-21) ─────────────────
-      // If the cache entry was written under an OLDER board_version
-      // than the currently observed one, force a silent refresh
-      // regardless of ``staleAfterMs``.  This is what closes the
-      // Preview↔Expo drift window WITHOUT waiting for the arbitrary
-      // 15 s TTL — the moment ANY canonical response has updated the
-      // in-memory board_version, every stamped detail/HI cache row
-      // becomes fetch-on-next-read.
+      // ─── Ordered epoch gate (2026-06-21 v2) ─────────────────────
+      // If the cache entry was written under an OLDER revision (or
+      // no stamp) than the currently observed authority, force a
+      // silent refresh regardless of ``staleAfterMs``.  This closes
+      // the Preview↔Expo drift window WITHOUT waiting for the
+      // arbitrary 15 s TTL — the moment ANY canonical response has
+      // advanced the in-memory revision, every stamped detail/HI
+      // cache row becomes fetch-on-next-read.  A LATE stale response
+      // (revision < current) cannot regress the authority.
       const entry = _cache.get(key);
-      const cur = getCurrentBoardVersion();
-      const stampBehind = !!(cur && entry && entry.bv !== cur);
+      const stampRev = entry?.epoch?.revision;
+      const stampBehind = !isEpochCurrent(stampRev ?? undefined);
       if (stampBehind) {
         void run(true);
       } else if (Date.now() - lastFetchRef.current >= staleAfterMs) {
-        // Silent background refresh only if data is older than staleAfterMs.
         void run(true);
       }
     } else {

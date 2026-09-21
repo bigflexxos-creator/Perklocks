@@ -225,7 +225,20 @@ export default function PickDetail() {
               </View>
 
               <View style={styles.bento}>
-                <BentoCell label="BOOK IMPLIED" value={`${pick.implied_probability}%`} muted />
+                <BentoCell
+                  label="BOOK IMPLIED"
+                  value={
+                    // ── Canonical implied guard (2026-06-21 v2) ──
+                    // Never render "undefined%" — a missing implied
+                    // probability collapses to canonical "—" so the
+                    // cell keeps its layout without lying.
+                    (typeof pick.implied_probability === "number" &&
+                     Number.isFinite(pick.implied_probability))
+                      ? `${pick.implied_probability.toFixed(2)}%`
+                      : "—"
+                  }
+                  muted
+                />
                 <BentoCell
                   label="BOOK ODDS"
                   value={pick.book_odds > 0 ? `+${pick.book_odds}` : `${pick.book_odds}`}

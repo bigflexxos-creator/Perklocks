@@ -64,6 +64,15 @@ type PicksCache = {
   ts: number;
   origin?: string;
   boardVersion?: string | null;
+  // ─── Canonical epoch stamp (2026-06-21 v2) ───────────────────
+  // Ordered integer + fingerprint captured at write time.  A
+  // restore MUST NOT identify this cache as CURRENT unless the
+  // stamped revision matches the live authority for the stamped
+  // origin — otherwise the cache is last-good only (visual paint
+  // while a fresh fetch runs) and never resurrects across an
+  // advance.
+  canonicalRevision?: number | null;
+  canonicalGenerationId?: string | null;
   stored_count?: number;
   source_total_count?: number;
   is_partial?: boolean;
@@ -279,13 +288,41 @@ export default function LocksScreen() {
         if (c.origin && _origin && c.origin !== _origin) return;
         // Only rehydrate if we don't already have fresh picks in memory.
         if (picksRef.current.length > 0) return;
+        // ─── Ordered epoch gate (2026-06-21 v2) ─────────────────────
+        // If the persisted cache's stamped revision is BEHIND the
+        // live authority, it's LAST-GOOD only: paint it (so the tab
+        // isn't empty on cold boot with a slow network) but mark
+        // slateStale=true so the header labels it "STALE" and the
+        // active refresh replaces it as soon as it lands.
+        let _isLastGoodOnly = false;
+        try {
+          const _epochMod: any = require("@/src/lib/canonicalEpoch");
+          const _live = _epochMod.getCurrentEpoch();
+          if (_live &&
+              typeof c.canonicalRevision === "number" &&
+              c.canonicalRevision < _live.revision) {
+            _isLastGoodOnly = true;
+          }
+          // Origin change also demotes to last-good only.
+          if (_live && c.origin && c.origin !== _live.origin) {
+            _isLastGoodOnly = true;
+          }
+        } catch { /* module unavailable — proceed */ }
         // Hydrate the canonical SWR resource (persisted last-good → live cache).
         if (!_picksMem.get(c.sport)) _picksMem.set(c.sport, { picks: c.picks, ts: c.ts || Date.now() });
         setPicks(c.picks);
         setBoardVersion(c.boardVersion ?? null);
         setLastLoadedAt(c.ts ? new Date(c.ts) : null);
-        setSlateStale(true);
+        setSlateStale(true); // persisted rows are never authoritative
         lastLoadedForSportRef.current = c.sport;
+        if (_isLastGoodOnly) {
+          // Nudge a fresh fetch immediately — do NOT wait for TTL /
+          // pull-to-refresh.  The active canonical epoch tells us
+          // this cache is behind, so the shared consumer registry
+          // + SWR sweeper will already fire; force a load() here
+          // to guarantee the visible slate replaces itself.
+          setTimeout(() => { try { (load as any)?.({ silent: true, requestedSport: c.sport }); } catch {} }, 0);
+        }
       } catch { /* corrupt cache — ignore */ }
     })();
     return () => { cancelled = true; };
@@ -705,6 +742,24 @@ export default function LocksScreen() {
         perfMark.end({ n: fresh.length, staleGeneration: _grev });
         return true;
       }
+      // ─── Global CanonicalEpoch ordered guard (2026-06-21 v2) ─────
+      // Even when ``acceptedRevisionRef`` is in-sync, a LATE stale
+      // response can arrive whose ``_grev`` matches a prior accept
+      // but the GLOBAL authority has advanced further via another
+      // endpoint (/api/version ping, HI response, rollover fetch).
+      // Refuse to commit any response that is strictly BEHIND the
+      // global CanonicalEpoch.revision — this is the ordering
+      // safety-net that closes the multi-authority race described
+      // in Root Cause #1 without inventing sport-specific hacks.
+      try {
+        const _epochMod: any = require("@/src/lib/canonicalEpoch");
+        const _live = _epochMod.getCurrentEpoch();
+        if (_live && _committed && _grev > 0 && _grev < _live.revision) {
+          ok = true;
+          perfMark.end({ n: fresh.length, staleVsGlobal: _grev, live: _live.revision });
+          return true;
+        }
+      } catch { /* module unavailable — proceed */ }
       if (fresh.length === 0 && picksRef.current.length > 0 && sameFilter) {
         // Session 9 taxonomy — this is STALE_FALLBACK, NOT a network error.
         setErrorKind(ErrorKind.STALE_FALLBACK);
@@ -733,12 +788,24 @@ export default function LocksScreen() {
           // "showing X of Y saved picks · updated Nm ago" surface
           // when the network is unavailable.
           const _stored = Math.min(fresh.length, 200);
+          // Stamp the persisted cache with the CanonicalEpoch that was
+          // authoritative at write time — restore reads gate on this.
+          let _canRev: number | null = null;
+          let _canGid: string | null = null;
+          try {
+            const _epoch = (require("@/src/lib/canonicalEpoch") as any)
+              .getCurrentEpoch();
+            _canRev = _epoch ? _epoch.revision : null;
+            _canGid = _epoch ? _epoch.generationId : null;
+          } catch { /* module unavailable at cold boot */ }
           const cache: PicksCache = {
             sport: requestedSport,
             picks: fresh.slice(0, 200),
             ts: Date.now(),
             origin: _origin,
             boardVersion: _bv,
+            canonicalRevision: _canRev,
+            canonicalGenerationId: _canGid,
             stored_count: _stored,
             source_total_count: fresh.length,
             is_partial: _stored < fresh.length,
@@ -800,12 +867,24 @@ export default function LocksScreen() {
       ok = false;
       perfMark.end({ errorKind: kind });
     } finally {
-      if (myToken === latestLoadTokenRef.current) {
+      // ─── Single-flight refresh ownership release (2026-06-21 v2) ─
+      // Every terminal path (SUCCESS / ERROR / TIMEOUT / ABORT /
+      // SUPERSEDED) MUST release ownership.  If a superseding load()
+      // has already claimed ownership, we skip our own state writes
+      // — but if no active owner exists we FORCIBLY clear the
+      // ``refreshing`` flag to satisfy the invariant "no active
+      // owner → refreshing is false".
+      const stillOwner = (myToken === latestLoadTokenRef.current);
+      if (stillOwner) {
         setLoading(false);
         setRefreshing(false);
-        // Release the controller — a subsequent load() will make a
-        // fresh one.  Only clear if it's still OUR controller (a
-        // newer load() may have replaced inflightControllerRef by now).
+        if (inflightControllerRef.current === controller) {
+          inflightControllerRef.current = null;
+        }
+      } else {
+        // Superseded — the newer load() owns the visible state now.
+        // Do NOT touch UI state.  BUT: if the AbortController we
+        // installed is still lingering (rare race), release it.
         if (inflightControllerRef.current === controller) {
           inflightControllerRef.current = null;
         }
@@ -927,6 +1006,29 @@ export default function LocksScreen() {
     });
     return unsub;
   }, [sport, lineType, sortKey, filters, sortDir, load, loadCooldown]);
+
+  // ─── Canonical epoch revalidation (2026-06-21 v2) ────────────────
+  // Register Locks as a mounted canonical consumer.  When the
+  // CanonicalEpoch advances (N → N+1) via any endpoint (/api/version
+  // ping, HI response, rollover fetch), the shared registry invokes
+  // our revalidate callback exactly ONCE per target revision.  We
+  // silently reload the board — the epoch-ordered guard inside
+  // ``load()`` guarantees a stale N response cannot then overwrite
+  // the N+1 truth we're now fetching.
+  useEffect(() => {
+    let unregister: (() => void) | null = null;
+    let mounted = true;
+    import("@/src/lib/canonicalConsumers").then((m) => {
+      if (!mounted) return;
+      unregister = m.registerCanonicalConsumer("locks-board", () => {
+        void load(sport, lineType, sortKey, filters, sortDir);
+      });
+    }).catch(() => {});
+    return () => {
+      mounted = false;
+      if (unregister) try { unregister(); } catch {}
+    };
+  }, [sport, lineType, sortKey, filters, sortDir, load]);
 
   const onRefresh = () => {
     setRefreshing(true);

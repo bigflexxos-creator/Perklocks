@@ -1,30 +1,26 @@
 # PerksLocks — Product Requirements (Live Delta 2026-06-21)
 
-## Universal Preview ↔ Expo Go Canonical Freshness Contract — CLOSED (unpublished)
+## Canonical Epoch v2 Contract — CLOSED (unpublished)
 
-**Scope**: One shared client-side freshness contract that applies to every canonical surface (Locks, Pick Breakdown, Historical Intelligence, Rollover, Parlay, My Bets, Lab, Analytics) across every sport (MLB, NFL, CFB, Soccer, Tennis, NBA). Fixes the observed Preview↔Expo Go stale-data drift WITHOUT sport-specific hacks, WITHOUT manual AsyncStorage clears, and WITHOUT touching sport / model math.
+Ordered-revision authority. Origin-bound. Single-flight refresh. Shared consumer registry that revalidates mounted React state on advance. Late N responses after N+1 are `stale` and IGNORED — authority never regresses.
 
-### Mechanism
-Server-side: `BoardVersionHeaderMiddleware` stamps `X-Canonical-Version` on every canonical GET response, sourced from `board_generation.active()`. Cross-process resync every 8 s. CORS `expose_headers` includes it so browsers can read it.
+Six root defects closed:
+1. Opaque hash used as ordered version → replaced with integer `revision`.
+2. Locks tab caches outside SWR → stamped with `CanonicalEpoch`.
+3. Cache deletion didn't refresh mounted state → shared consumer registry.
+4. Refresh single-flight → `targetRevision` guard + explicit ownership release.
+5. `/api/version` no-cache + `canonical_epoch` in body.
+6. Origin now part of the epoch key.
 
-Client-side (shared web + Expo Go code path): `api.ts::_fetchWithTimeout` pushes every observed header into `boardFreshness.noteBoardVersion()`. That observer persists the last-known value to AsyncStorage (`board_version_v1`) and fires subscribers only when a NEWER version appears. The `useSWR` cache stamps every entry with the current version at write time; on advance it sweeps every entry whose stamp lags and force-refetches on next read.
+**Tests targeted at shared contract only: 31 (6 backend + 25 frontend). PASS.**
 
-### Result
-- Same fingerprint appears on every canonical surface at any moment.
-- Preview and Expo Go converge on identical truth after any rescore/republish.
-- Offline last-good preserved — sweep only runs when the network returns.
-- Zero sport-specific patches; zero endpoint-specific hacks.
+Full sport / model suites intentionally NOT rerun.
 
-### Tests
-- Backend contract 6/6 pass (`test_universal_canonical_freshness_contract.py`)
-- Frontend contract 14/14 pass (`__tests__/universal_canonical_freshness.runner.js`)
-- Prior P0 regression suite 25/25 remains green.
-
-### Handoff
 Handed back for one physical Expo Go check. NOT published.
-Full report: `/app/memory/universal_freshness_contract_closure_2026_06_21.md`.
+
+Full report: `/app/memory/canonical_epoch_v2_closure_2026_06_21.md`.
 
 ---
 
 ## Prior — CFB Sign Fix + Soccer HI (still valid)
-See `/app/memory/p0_universal_root_closure_final_2026_06_21.md`.
+`/app/memory/p0_universal_root_closure_final_2026_06_21.md`

@@ -318,6 +318,33 @@ export function HistoricalIntelligence({
 
   useEffect(() => { void load(); }, [pickId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ─── Canonical epoch revalidation (2026-06-21 v2) ────────────────
+  // Register this MOUNTED consumer so a CanonicalEpoch advance
+  // (revision N → N+1) revalidates the visible history exactly once
+  // per (pickId, sample, venue, targetRevision).  Deletes the SWR
+  // cache row and re-fetches — the on-screen React state updates
+  // in-place; no remount, no stale flash.  Deduplication lives in
+  // the registry (see canonicalConsumers.ts).
+  useEffect(() => {
+    let alive = true;
+    let unregister: (() => void) | null = null;
+    import("@/src/lib/canonicalConsumers").then((m) => {
+      if (!alive) return;
+      const key = `historical-intelligence|${pickId}|${sample}|${venue}`;
+      unregister = m.registerCanonicalConsumer(key, () => {
+        // Clear the SWR cache row so a subsequent read is fresh, and
+        // trigger a mounted re-fetch to update on-screen state.
+        try {
+          import("@/src/lib/useSWR").then((s) => {
+            s.swrCacheDelete(key);
+          }).catch(() => {});
+        } catch {}
+        void load();
+      });
+    }).catch(() => {});
+    return () => { alive = false; if (unregister) try { unregister(); } catch {} };
+  }, [pickId, sample, venue, load]);
+
   const onSample = useCallback((s: SampleScope) => {
     setSample(s); void load({ sample: s });
   }, [load]);
