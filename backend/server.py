@@ -168,7 +168,7 @@ except Exception as _lab_mount_err:
 # on the frontend for the consumer logic.
 #
 # Format: YYYY.MM.DD-N
-DATA_VERSION = "2026.06.11-soccer-shots-sot-assists-wired-v49"
+DATA_VERSION = "2026.06.21-canonical-epoch-v2-signfix"
 SERVER_STARTED_AT = datetime.now(timezone.utc)
 
 # ── Block 2C-cont Issue-6 (2026-08): real deploy-identifier surfacing ─
