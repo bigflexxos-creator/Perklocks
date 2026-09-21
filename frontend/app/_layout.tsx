@@ -61,15 +61,19 @@ export default function RootLayout() {
     // Parlay · My Bets · Profile) so warm tabs paint instantly after a
     // cold boot and remain navigable offline.
     import("@/src/lib/useSWR").then((m) => m.swrHydrateFromStorage()).catch(() => {});
-    // ── Universal Canonical Freshness (2026-06-21) ──
-    // Restore the last observed board_version so a cold boot with
-    // stale AsyncStorage caches auto-reconciles the moment the first
-    // API response reveals the current canonical version.
-    import("@/src/lib/boardFreshness").then((m) => m.hydrateBoardVersion()).catch(() => {});
-    // Reconcile canonical version on background→foreground for every
-    // sport / surface (Locks, detail, HI, rollover, parlay, my-bets,
-    // lab, analytics).  Cheap version-ping + shared cache sweeper.
+    // ── Universal Canonical Freshness (2026-06-21 v2) ──
+    // Restore the last observed CanonicalEpoch (origin + revision +
+    // boardVersion + generationId) so a cold boot with stale
+    // AsyncStorage caches auto-reconciles the moment the first API
+    // response reveals the current authoritative epoch.
+    import("@/src/lib/canonicalEpoch").then((m) => m.hydrateCanonicalEpoch()).catch(() => {});
+    // Reconcile canonical epoch on background→foreground via a tiny
+    // no-cache ``/api/version`` ping.  Cheap version-ping + shared
+    // registry sweep applies universally across every sport / surface.
     import("@/src/lib/appStateFreshness").then((m) => m.installAppStateFreshnessReconciler()).catch(() => {});
+    // Ensure the shared consumer registry is imported so its
+    // one-time subscription to the epoch advance stream is wired.
+    import("@/src/lib/canonicalConsumers").catch(() => {});
     return () => clearTimeout(h);
   }, []);
 

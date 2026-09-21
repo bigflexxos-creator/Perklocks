@@ -211,31 +211,28 @@ def _deploy_metadata_from_env() -> dict:
 
 
 @api.get("/version")
-async def get_version():
+async def get_version(response: Response):
     """Public endpoint — no auth required. Phones poll this on launch and on
     tab focus to detect when the server has shipped new data they should
     rehydrate.
+
+    Canonical epoch probe — MUST NEVER be served from an intermediary
+    cache.  Enriched with the ordered CanonicalEpoch payload so a client
+    can reconcile after a background→foreground / origin change / cold
+    boot without touching any other endpoint.
 
     Field semantics (Block 2C-cont Issue-6):
 
       data_version         SOURCE-CODE constant bumped on real backend
                            releases → RELIABLE deploy signal for the
                            StaleBuildBanner mismatch check.
-
-      server_started_at    Process-start time.  RUNTIME marker only —
-                           advances on any crash / pod / supervisor
-                           restart, so MUST NOT be treated as deploy
-                           age.  Retained for back-compat.
-
-      runtime_started_at   Explicit alias of server_started_at with
-                           truthful naming.  Prefer this on new
-                           consumers.
-
+      server_started_at    Process-start time.  RUNTIME marker only.
+      runtime_started_at   Explicit alias of server_started_at.
       deploy_metadata      Present ONLY when the runtime exposes a
-                           real deploy identifier
-                           (deploy_id / git_commit_sha /
-                           deploy_timestamp / release id).  Absent
-                           when the environment provides nothing.
+                           real deploy identifier.
+      canonical_epoch      {revision, board_version, generation_id,
+                           committed_at} — the client's authoritative
+                           ordering trio (revision is int, monotone).
     """
     payload = {
         "data_version": DATA_VERSION,
@@ -251,6 +248,29 @@ async def get_version():
     md = _deploy_metadata_from_env()
     if md:
         payload["deploy_metadata"] = md
+    # ─── CanonicalEpoch (2026-06-21 v2) ────────────────────────────
+    # Ordered integer ``revision`` + opaque ``board_version`` + long
+    # ``generation_id``.  This trio is the client's authoritative
+    # ordering signal — revision decides, version + generation_id
+    # confirm.  Also emitted as X-Canonical-Revision / -Version /
+    # -Generation-Id headers by the middleware for transport reads.
+    try:
+        from services import board_generation
+        active = board_generation.active() or {}
+        payload["canonical_epoch"] = {
+            "revision":        int(active.get("revision") or 0),
+            "board_version":   str(active.get("board_version") or ""),
+            "generation_id":   str(active.get("generation_id") or ""),
+            "committed_at":    active.get("committed_at"),
+        }
+    except Exception:
+        payload["canonical_epoch"] = None
+    # Epoch probe must NOT be intermediary-cached.  Application
+    # last-good caches on other endpoints remain untouched — this
+    # header is scoped to /api/version only.
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
     return payload
 
 
@@ -3690,6 +3710,7 @@ app.add_middleware(
     expose_headers=[
         "X-Canonical-Version",
         "X-Canonical-Generation-Id",
+        "X-Canonical-Revision",
         "X-Board-Version",
         "X-Generation-Id",
         "X-Request-ID",

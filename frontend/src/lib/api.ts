@@ -1,7 +1,7 @@
 import { storage } from "@/src/utils/storage";
 import { Platform } from "react-native";
 import Constants from "expo-constants";
-import { noteBoardVersion } from "@/src/lib/boardFreshness";
+import { noteCanonicalEpoch } from "@/src/lib/canonicalEpoch";
 
 // ═══════════════════════════════════════════════════════════════════
 // Expo/Native freshness closure — 2026-08-22
@@ -851,22 +851,42 @@ async function _fetchWithTimeout(
     const boardVersion = res.headers.get("x-board-version")
       || res.headers.get("X-Board-Version")
       || undefined;
-    // ─── Universal Canonical Freshness (2026-06-21) ────────────────
-    // ``X-Canonical-Version`` is the SINGLE globally monotonic
-    // freshness fingerprint (sourced from ``board_generation.active()``
-    // via the ``BoardVersionHeaderMiddleware``).  Every canonical
-    // response carries it.  We push it into the freshness observer
-    // here — the ONE central point so every path (Locks, detail, HI,
-    // rollover, parlay, my-bets, lab, analytics) participates in the
-    // same monotonic invalidation contract on both Preview (web) and
-    // Expo Go (native).  Distinct from the endpoint-scoped
-    // ``X-Board-Version`` above — that stays owned by cursor pinning.
-    // Never blocks the response; failure is invisible to the caller.
+    // ─── Ordered CanonicalEpoch capture (2026-06-21 v2) ────────────
+    // Every response carries ``X-Canonical-Revision`` (integer,
+    // monotone), ``X-Canonical-Version`` (opaque hash) and
+    // ``X-Canonical-Generation-Id`` (long id).  We route them through
+    // ``noteCanonicalEpoch`` which:
+    //   · rev > current    → advance   (sweep + subscribers notified)
+    //   · rev === current  → same / invariant_violation
+    //   · rev < current    → STALE — IGNORED (no state change)
+    //   · origin change    → origin_change  (sweep + adopt fresh)
+    // Origin binds to the RESOLVED base URL so a preview→prod host
+    // rotation cannot silently combine caches from two API origins.
+    // Failure here MUST NEVER break the response.
     const canonicalVersion = res.headers.get("x-canonical-version")
       || res.headers.get("X-Canonical-Version")
       || undefined;
+    const canonicalRevisionRaw = res.headers.get("x-canonical-revision")
+      || res.headers.get("X-Canonical-Revision")
+      || undefined;
+    const canonicalGenerationId = res.headers.get("x-canonical-generation-id")
+      || res.headers.get("X-Canonical-Generation-Id")
+      || undefined;
     try {
-      if (canonicalVersion) noteBoardVersion(canonicalVersion);
+      if (canonicalRevisionRaw !== undefined) {
+        const resolvedOrigin = (() => {
+          try {
+            const u = new URL(url);
+            return `${u.protocol}//${u.host}`;
+          } catch { return url; }
+        })();
+        noteCanonicalEpoch({
+          origin:       resolvedOrigin,
+          revision:     canonicalRevisionRaw,
+          boardVersion: canonicalVersion,
+          generationId: canonicalGenerationId,
+        });
+      }
     } catch { /* observer failures are non-fatal */ }
     return { ok: res.ok, status: res.status, text, etag, boardVersion };
   } finally {
