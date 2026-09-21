@@ -146,7 +146,13 @@ HIGH_RISK = ModePolicy(
     default_target_legs=10,
     min_useful_legs=5,               # partial: 5-of-10 target is a valid card
     lock_floor=70.0,                 # lowest admission floor
-    min_edge_pct=1.0,                # sanity floor to filter obvious junk
+    # ── Universal Closure (2026-06-21): HIGH_RISK is a HIGH-VARIANCE /
+    # HIGH-PAYOUT mode, NOT an EV-oriented mode.  ADVANCED_HIGH_EV
+    # explicitly exists for EV.  Edge is now used as a RANKING input
+    # (via score_leg's edge_component), not as a hard admission gate.
+    # The old +1 % edge veto starved legitimate low-edge high-lock
+    # chalk-ladder alts that HIGH_RISK should be free to combine.
+    min_edge_pct=None,
     positive_edge_required=False,
     max_relative_drop_per_leg=0.55,  # ← bigger risk budget than before
     max_absolute_drop_per_leg=0.35,  # ← was 0.30, expanded so 12+ legs feasible

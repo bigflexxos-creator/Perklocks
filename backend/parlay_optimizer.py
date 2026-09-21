@@ -399,9 +399,13 @@ def is_eligible_leg(pick: dict, bucket_map: dict, *, high_risk: bool = False) ->
     # lock (75); Advanced.EV/Safer keep their stricter contract at
     # the route level via ``lock_floor_val``.
     min_lock = 75.0 if high_risk else 85.0   # canonical Board floor
-    # Standard mode: edge is scored, not gated.  High-risk keeps a
-    # small positive-edge sanity floor to filter obvious junk.
-    min_edge = 1.0 if high_risk else None
+    # Parlay 3.0 Universal Closure (2026-06-21): edge is a RANKING
+    # signal, not a hard admission gate for STANDARD or HIGH_RISK.
+    # ADVANCED_HIGH_EV enforces its own positive-edge gate at the
+    # route layer (see routes/parlay_routes.py).  Removing the +1 %
+    # HIGH_RISK edge veto was one of the identified starvation sources
+    # in the P0 audit.
+    min_edge = None
 
     # Alt-prop carve-out (added 2026-06-23 per user spec "Add ALT
     # picks to the Parlay Optimizer's eligible legs"). Chalk-ladder
@@ -547,15 +551,32 @@ def diversification_ok(current_legs: list[dict], candidate: dict,
                     if (L.get("event") or "") == (candidate.get("event") or ""))
     if same_event >= MAX_SAME_GAME:
         return False, "Max 2 legs from same game"
-    # ─── Same-game-parlay (SGP) HARD BLOCK for correlated sports ───
-    # MLB / UFC / Tennis are one-event-per-pick sports — any two legs from the
-    # same event are dangerously correlated (Team A ML + Team A Hitter Over =
-    # one positive outcome, not two independent). Soccer allows up to 2 because
-    # there are legit independent angles (Total Goals + Anytime Scorer can both
-    # land on different scoring events). For everything else, hard-block.
-    cand_sport = (candidate.get("sport") or "").lower()
-    if cand_sport in ("mlb", "ufc", "tennis", "nba", "nfl", "nhl") and same_event >= 1:
-        return False, f"Same-game blocked ({cand_sport})"
+    # ── Universal Dependency Authority (Parlay 3.0 Universal Closure) ──
+    # Same-event / same-player dependency is now classified by ONE
+    # authority (``services.parlay.dependency.classify_pair``).  The
+    # authority fail-closes any pair that yields SAME_EVENT_UNSUPPORTED
+    # or UNKNOWN_DEPENDENCY across every currently supported sport
+    # (MLB / NFL / NBA / NHL / UFC / Tennis / CFB / Soccer) — replacing
+    # the previous scattered per-sport branches.  Cross-event pairs
+    # return INDEPENDENT_ENOUGH and continue through the diversification
+    # + market-family + player-block gates below.
+    try:
+        from services.parlay.dependency import (
+            classify_against_ticket as _classify_against,
+            SAME_EVENT_UNSUPPORTED as _DEP_SAME, UNKNOWN_DEPENDENCY as _DEP_UNK,
+        )
+        _dep = _classify_against(candidate, current_legs)
+        if _dep in (_DEP_SAME, _DEP_UNK):
+            return False, f"dependency:{_dep.lower()}"
+    except Exception:
+        # Defensive fallback: keep the historical same-event hard block
+        # so we never open the flood-gates on failure of the dep engine.
+        cand_sport = (candidate.get("sport") or "").lower()
+        same_event_legacy = sum(1 for L in current_legs
+                                if (L.get("event") or "") == (candidate.get("event") or ""))
+        if cand_sport in ("mlb", "ufc", "tennis", "nba", "nfl", "nhl", "cfb",
+                          "soccer") and same_event_legacy >= 1:
+            return False, f"Same-game blocked ({cand_sport})"
     # Market-family cap — prevent the "all Win-or-Draw" monoculture.
     # Without this, soccer high-risk parlays would consist of 5 W-or-D
     # picks because they have the highest lock scores. User spec: "high
@@ -614,15 +635,23 @@ def diversification_ok(current_legs: list[dict], candidate: dict,
 # PARLAY HEALTH GRADE
 # ──────────────────────────────────────────────────────────────────────────
 
-def parlay_health(legs: list[dict], bucket_map: dict) -> dict:
+def parlay_health(legs: list[dict], bucket_map: dict, *,
+                  policy: object | None = None) -> dict:
     """Return health summary: grade A-F + components.
 
-    Composite from:
-      • Survival (35 %)
-      • Avg edge (25 %)
-      • Avg bucket ROI (20 %)
-      • Correlation cleanliness (10 %)
-      • Variance / stability (10 %)
+    Universal Closure (2026-06-21): when ``policy`` is provided we use
+    the policy's per-mode ``health_weights`` so ticket health is
+    evaluated relative to the SELECTED mode's intent.  HIGH_RISK
+    down-weights raw survival (a 15-leg parlay's raw survival is
+    naturally tiny — that's the ticket goal, not a defect).  Fallback
+    to the legacy fixed weights for BC when no policy is supplied.
+
+    Weight keys (must sum to ~1.0):
+      * survival        — raw joint survival probability
+      * edge            — average per-leg edge
+      * roi             — bucket historical ROI
+      * correlation     — cross-event / cross-market diversification
+      * stability       — mixed-confidence variance across legs
     """
     if not legs:
         return {"grade": "F", "score": 0.0, "components": {}}
@@ -645,29 +674,37 @@ def parlay_health(legs: list[dict], bucket_map: dict) -> dict:
     correlation_score -= event_dupes * 15
     correlation_score = max(0.0, correlation_score)
 
-    # Variance / stability: lower variance in win-probs = more stable.
+    # Variance / stability
     win_probs = [float(L.get("win_probability") or 0) for L in legs]
     if len(win_probs) > 1:
         mean = sum(win_probs) / len(win_probs)
         var = sum((p - mean) ** 2 for p in win_probs) / len(win_probs)
         std = math.sqrt(var)
-        stability_score = max(0.0, 100.0 - std * 4.0)  # std of 25 → 0
+        stability_score = max(0.0, 100.0 - std * 4.0)
     else:
         stability_score = 70.0
 
-    # Survival component: 50 % → 50 points, 25 % → 25 points
     survival_component = min(100.0, survival * 100.0)
-    # Edge component
     edge_component = min(100.0, max(0.0, (avg_edge + 2.0) * 8.0))
-    # ROI component
     roi_component = min(100.0, max(0.0, (avg_roi * 100.0 + 10.0) * (100.0 / 30.0)))
 
+    # ── Universal Closure — per-mode weights when policy supplied ──
+    default_weights = {
+        "survival":    0.35, "edge":        0.25, "roi":         0.20,
+        "correlation": 0.10, "stability":   0.10,
+    }
+    weights = default_weights
+    if policy is not None:
+        pw = getattr(policy, "health_weights", None)
+        if isinstance(pw, dict) and pw:
+            weights = pw
+
     composite = (
-        0.35 * survival_component
-        + 0.25 * edge_component
-        + 0.20 * roi_component
-        + 0.10 * correlation_score
-        + 0.10 * stability_score
+        weights.get("survival",    0.0) * survival_component
+        + weights.get("edge",        0.0) * edge_component
+        + weights.get("roi",         0.0) * roi_component
+        + weights.get("correlation", 0.0) * correlation_score
+        + weights.get("stability",   0.0) * stability_score
     )
 
     grade = "F"
@@ -686,6 +723,8 @@ def parlay_health(legs: list[dict], bucket_map: dict) -> dict:
         "diversification_pct": round(100.0 - sport_concentration * 100.0, 1),
         "correlation_score": round(correlation_score, 1),
         "stability_score": round(stability_score, 1),
+        "health_weights": dict(weights),
+        "mode_key": getattr(policy, "key", None) if policy is not None else None,
     }
 
 
@@ -826,8 +865,8 @@ def build_one_parlay(pool: list[dict], *, target_legs: int, high_risk: bool,
 
         # ── No filler legs: candidate must improve overall parlay quality.
         if legs:
-            cur_health = parlay_health(legs, bucket_map)
-            new_health = parlay_health(legs + [best_cand], bucket_map)
+            cur_health = parlay_health(legs, bucket_map, policy=policy)
+            new_health = parlay_health(legs + [best_cand], bucket_map, policy=policy)
             # Allow up to a quality drop for diversity. We're more lenient
             # in high-risk mode (user wants 10-20 legs even if each adds
             # variance) than in standard mode (user wants tight 2-5 legs).
@@ -934,7 +973,7 @@ def build_top_parlays(pool: list[dict], *, target_legs: int, high_risk: bool,
         if sig in seen_signatures:
             continue
         seen_signatures.add(sig)
-        health = parlay_health(legs, bucket_map)
+        health = parlay_health(legs, bucket_map, policy=policy)
         candidates.append({
             "legs": legs,
             "health": health,
