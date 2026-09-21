@@ -425,6 +425,11 @@ async def historical_intelligence(
         venue_scope=venue_scope,
         context_scope=context_scope,
         side=_resolve_side(market),
+        # ── As-of safety (2026-06-21): only history STRICTLY BEFORE
+        # today's fixture may enter Historical Intelligence.  Prevents
+        # a current pick's own game leaking back into its H2H.
+        event_date=(pick.get("event_time") or pick.get("commence_time")
+                    or pick.get("event_date") or None),
     )
     try:
         resp = await query_historical(db, q)
