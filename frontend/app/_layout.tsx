@@ -61,6 +61,15 @@ export default function RootLayout() {
     // Parlay · My Bets · Profile) so warm tabs paint instantly after a
     // cold boot and remain navigable offline.
     import("@/src/lib/useSWR").then((m) => m.swrHydrateFromStorage()).catch(() => {});
+    // ── Universal Canonical Freshness (2026-06-21) ──
+    // Restore the last observed board_version so a cold boot with
+    // stale AsyncStorage caches auto-reconciles the moment the first
+    // API response reveals the current canonical version.
+    import("@/src/lib/boardFreshness").then((m) => m.hydrateBoardVersion()).catch(() => {});
+    // Reconcile canonical version on background→foreground for every
+    // sport / surface (Locks, detail, HI, rollover, parlay, my-bets,
+    // lab, analytics).  Cheap version-ping + shared cache sweeper.
+    import("@/src/lib/appStateFreshness").then((m) => m.installAppStateFreshnessReconciler()).catch(() => {});
     return () => clearTimeout(h);
   }, []);
 

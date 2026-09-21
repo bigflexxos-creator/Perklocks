@@ -1,34 +1,30 @@
 # PerksLocks — Product Requirements (Live Delta 2026-06-21)
 
-## P0 Physical Acceptance Root Closure — COMPLETE (unpublished)
+## Universal Preview ↔ Expo Go Canonical Freshness Contract — CLOSED (unpublished)
 
-**Scope**: Universal closure of the two P0 physical-acceptance failures reported after the CFB Totals + Intelligence audit.
+**Scope**: One shared client-side freshness contract that applies to every canonical surface (Locks, Pick Breakdown, Historical Intelligence, Rollover, Parlay, My Bets, Lab, Analytics) across every sport (MLB, NFL, CFB, Soccer, Tennis, NBA). Fixes the observed Preview↔Expo Go stale-data drift WITHOUT sport-specific hacks, WITHOUT manual AsyncStorage clears, and WITHOUT touching sport / model math.
 
-### Failures Closed
+### Mechanism
+Server-side: `BoardVersionHeaderMiddleware` stamps `X-Canonical-Version` on every canonical GET response, sourced from `board_generation.active()`. Cross-process resync every 8 s. CORS `expose_headers` includes it so browsers can read it.
 
-**A. Intelligence / H2H Cross-Sport Canonical Parity (was OPEN)**
-- One universal endpoint `GET /api/picks/{id}/historical-intelligence` proven to deliver GAME LOGS + VS OPP + SPLITS + DISTRIBUTION across MLB, NFL, CFB, Soccer, Tennis with real data, real entity, real opponent, real provenance.
-- Soccer team identity aliases extended (Nott'm Forest, Ipswich, Newcastle, Bournemouth, Brighton + 15 EPL short forms).
-- Soccer HI adapter now uses `canonical_team_key` — provider display names in `soccer_matches` (Man United / Nott'm Forest) resolve against canonical pick names.
-- BTTS / total / handicap / double-chance entity leak fixed — `team="Yes"` publisher noise no longer becomes the query entity.
-- Mobile readability: dates carry year (`25 10/25`); no more "Illinois Fig" mid-word slice; hero row renders across 2 lines.
-- Same `buildApiUrl` code path on Preview (web) and Expo Go (native); `served_by` fingerprint on every Intelligence response for cross-surface parity.
+Client-side (shared web + Expo Go code path): `api.ts::_fetchWithTimeout` pushes every observed header into `boardFreshness.noteBoardVersion()`. That observer persists the last-known value to AsyncStorage (`board_version_v1`) and fires subscribers only when a NEWER version appears. The `useSWR` cache stamps every entry with the current version at write time; on advance it sweeps every entry whose stamp lags and force-refetches on next read.
 
-**B. CFB Totals Sign Inversion Runtime Closure (was PENDING RUNTIME)**
-- Code fix in `cfb_game_model.py:249-250` preserved.
-- Engine version bumped `v2.2026-06-12` → `v3.2026-06-signfix` across `sports_engine.py` (3 sites).
-- 210 CFB picks retired, 183 rescored in-place via corrected SP+ math + refreshed `published_*` snapshot fields.
-- Northwestern @ Indiana Total O47.5: **96.69 % → 47.17 %** WP; LS **98 → 56**. Grade → PASS (math dictates).
-- List ↔ Detail parity proven for all target fixtures. No stale generation surviving in cache / snapshot / published_reader hydrate.
+### Result
+- Same fingerprint appears on every canonical surface at any moment.
+- Preview and Expo Go converge on identical truth after any rescore/republish.
+- Offline last-good preserved — sweep only runs when the network returns.
+- Zero sport-specific patches; zero endpoint-specific hacks.
 
 ### Tests
-
-66 focused pass — 4 NEW P0 regressions (`tests/test_p0_root_closure_signfix_and_soccer_hi.py`) + 27 HI + 16 phase suites + 12 chalk / apex / phase-6 + 3 cfb_total_sign_flip locks. Zero regressions.
-
-### Guardrails Honoured
-
-NHL / UFC untouched. MLB history / NFL models / Soccer & Tennis scoring / ITF 95+ policy / Magic-APEX contract / ≥85 Locks floor — all untouched. No LS forcing. Zero provider refresh. Zero production publish.
+- Backend contract 6/6 pass (`test_universal_canonical_freshness_contract.py`)
+- Frontend contract 14/14 pass (`__tests__/universal_canonical_freshness.runner.js`)
+- Prior P0 regression suite 25/25 remains green.
 
 ### Handoff
+Handed back for one physical Expo Go check. NOT published.
+Full report: `/app/memory/universal_freshness_contract_closure_2026_06_21.md`.
 
-Handed back for physical iPhone / Expo Go acceptance. Full report in `/app/memory/p0_universal_root_closure_final_2026_06_21.md`.
+---
+
+## Prior — CFB Sign Fix + Soccer HI (still valid)
+See `/app/memory/p0_universal_root_closure_final_2026_06_21.md`.

@@ -3682,6 +3682,19 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # ── Expose canonical-freshness + cursor-pinning headers to
+    # browsers (Preview / Expo Go web).  Without this, ``res.headers.get()``
+    # returns null for every non-CORS-safelisted header, breaking the
+    # universal freshness contract on web.  Native (Expo Go on iOS/Android)
+    # is unaffected — RN fetch bypasses CORS entirely.
+    expose_headers=[
+        "X-Canonical-Version",
+        "X-Canonical-Generation-Id",
+        "X-Board-Version",
+        "X-Generation-Id",
+        "X-Request-ID",
+        "ETag",
+    ],
 )
 
 
@@ -3746,6 +3759,27 @@ app.add_middleware(_ReliabilityMiddleware)
 # (version, refresh-status) skip the gzip overhead.
 from starlette.middleware.gzip import GZipMiddleware
 app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=5)
+
+
+# ─── Universal canonical-freshness fingerprint (2026-06-21) ────────────
+# Stamps ``X-Board-Version`` (and ``X-Generation-Id`` when available) on
+# every canonical GET response — `/api/picks/*`, `/api/rollover/*`,
+# `/api/parlay/*`, `/api/my-bets/*`, `/api/version`, `/api/lab/*`,
+# `/api/analytics/*`, `/api/me/*`, `/api/historical-intelligence/*`.
+#
+# This is the SINGLE monotonic signal the Preview↔Expo Go client
+# freshness contract uses: SWR / AsyncStorage entries carry the
+# board_version they were written under; the client discards any entry
+# whose stamp is older than the newest ``X-Board-Version`` observed on
+# any response.  Preserves per-endpoint semantics (ETag/304 still works,
+# body shape is unchanged) — this header is additive.
+try:
+    from middlewares.board_version_header import BoardVersionHeaderMiddleware
+    app.add_middleware(BoardVersionHeaderMiddleware)
+except Exception as _bvh_exc:  # pragma: no cover — never break startup
+    import logging as _l
+    _l.getLogger("lockscore").warning(
+        "board_version_header middleware not registered: %s", _bvh_exc)
 
 
 # ─── Outermost resilience layer (2026-06-28) ────────────────────────────

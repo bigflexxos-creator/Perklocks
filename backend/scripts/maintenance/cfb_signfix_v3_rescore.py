@@ -365,6 +365,30 @@ async def main():
               f"LS {s['ls_before']:>5.1f} → {s['ls_after']:>5.1f}   "
               f"ExpTotal={s['exp_total']:.1f} ExpMargin={s['exp_margin']:+.1f}")
 
+    # ── Advance the universal canonical freshness fingerprint ──
+    # After ANY in-place mutation of canonical rows, the global
+    # ``board_version`` MUST advance so every client (Preview + Expo
+    # Go) discards the caches that carry the stale numbers.
+    #
+    # ``compute_board_version()`` hashes ``max(updated_at/last_seen_at)``
+    # across the active picks — so we bump ``updated_at`` on every
+    # rescored row first, THEN commit.  Without this bump the
+    # fingerprint won't advance even though the numbers changed.
+    if stats["rescored"] > 0:
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            await db.picks.update_many(
+                {"cfb_engine_version": NEW_VERSION},
+                {"$set": {"updated_at": now_iso, "last_seen_at": now_iso}},
+            )
+            from services import board_generation
+            gen_id = await board_generation.begin(scope="CFB_SIGNFIX_V3")
+            bver, pcount, ecount = await board_generation.board_state()
+            ok = await board_generation.commit(gen_id, bver, pcount, ecount)
+            print(f"\n  board_generation.commit: gen_id={gen_id} board_version={bver} pick_count={pcount} event_count={ecount} ok={ok}")
+        except Exception as exc:
+            print(f"\n  board_generation.commit failed (non-fatal): {exc}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

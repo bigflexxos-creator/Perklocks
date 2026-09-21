@@ -22,11 +22,59 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useFocusEffect } from "expo-router";
+import {
+  getCurrentBoardVersion,
+  subscribeBoardVersion,
+} from "@/src/lib/boardFreshness";
 
 type Snapshot<T> = {
   data: T;
   ts: number;         // last successful load millis
+  // ─── Universal freshness stamp (2026-06-21) ─────────────────────
+  // Board version reported by the response that produced ``data``.
+  // On any subsequent read, if ``getCurrentBoardVersion()`` has
+  // advanced past this stamp, the entry is treated as stale and a
+  // silent refetch is forced regardless of ``ts``/TTL windows.
+  // May be null for cold-boot AsyncStorage-hydrated entries that
+  // predate this contract — those are also treated as stale the
+  // moment the first live response reports any board_version.
+  bv?: string | null;
 };
+
+// ── Universal freshness sweeper (2026-06-21) ─────────────────────
+// One-time subscription: whenever ``noteBoardVersion`` observes a
+// NEWER version, every cache entry stamped with the previous version
+// (or missing a stamp entirely — pre-contract or AsyncStorage-hydrated)
+// is deleted so the next read pulls fresh canonical truth.  Runs
+// synchronously — the memory cost is a single pass over ``_cache``.
+let _sweeperInstalled = false;
+function _installBoardVersionSweeper(): void {
+  if (_sweeperInstalled) return;
+  _sweeperInstalled = true;
+  subscribeBoardVersion((next, previous) => {
+    let swept = 0;
+    for (const [k, v] of _cache.entries()) {
+      // Missing stamp OR older stamp → stale.  New stamp equal to
+      // ``next`` (already written under the fresh version) is kept.
+      if (v.bv !== next) {
+        _cache.delete(k);
+        swept++;
+      }
+    }
+    if (swept > 0) {
+      try {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[freshness] board_version advanced ${previous || "(none)"} → ${next}; swept ${swept} stale cache entries`,
+        );
+      } catch {}
+      // Persist the sweep to the AsyncStorage LKG snapshot so a
+      // subsequent cold boot doesn't reload the same stale rows.
+      _schedulePersist();
+    }
+  });
+}
+_installBoardVersionSweeper();
 
 // Module-scope cache. Small (<= 32 entries) and keyed by caller-provided
 // stable string. Not exposed globally — tests use `swrCacheClear()`.
@@ -114,7 +162,14 @@ function _sweepDetail(): void {
 }
 
 export function swrCacheWrite<T>(key: string, data: T): void {
-  _cache.set(key, { data, ts: Date.now() });
+  // Stamp every write with the current known board_version so future
+  // invalidation sweeps can identify which entries carry stale
+  // canonical truth.  A null stamp means the entry was written before
+  // ANY board_version had been observed this boot (cold-boot dep-only
+  // fetch race) — the first advance signal will discard it, matching
+  // the same-as-stale behavior for pre-contract AsyncStorage rows.
+  const bv = getCurrentBoardVersion();
+  _cache.set(key, { data, ts: Date.now(), bv });
   if (_persistable(key)) _schedulePersist();
   if (DETAIL_PREFIXES.some((p) => key.startsWith(p))) _sweepDetail();
 }
@@ -213,8 +268,21 @@ export function useSWR<T>(
       setData(cached);
       setLoading(false);
       lastFetchRef.current = _cache.get(key)?.ts ?? 0;
-      // Silent background refresh only if data is older than staleAfterMs.
-      if (Date.now() - lastFetchRef.current >= staleAfterMs) {
+      // ─── Universal freshness gate (2026-06-21) ─────────────────
+      // If the cache entry was written under an OLDER board_version
+      // than the currently observed one, force a silent refresh
+      // regardless of ``staleAfterMs``.  This is what closes the
+      // Preview↔Expo drift window WITHOUT waiting for the arbitrary
+      // 15 s TTL — the moment ANY canonical response has updated the
+      // in-memory board_version, every stamped detail/HI cache row
+      // becomes fetch-on-next-read.
+      const entry = _cache.get(key);
+      const cur = getCurrentBoardVersion();
+      const stampBehind = !!(cur && entry && entry.bv !== cur);
+      if (stampBehind) {
+        void run(true);
+      } else if (Date.now() - lastFetchRef.current >= staleAfterMs) {
+        // Silent background refresh only if data is older than staleAfterMs.
         void run(true);
       }
     } else {
