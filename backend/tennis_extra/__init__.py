@@ -20,7 +20,13 @@ What we OUTPUT (as PerksLocks `pick` documents):
 What we DO NOT do:
   • No props, no totals, no spreads — only moneyline (one outcome per match).
   • No 250 picks with odds < 1.10 (book is 91%+ confident → no value).
-  • No ITF/UTR/exhibition picks — too low-level, settlement unreliable.
+  • ITF Futures (M15/M25/W15/W25/W35) ARE published, but ONLY at the
+    ≥95 canonical-lock threshold gate enforced in
+    ``routes/picks_routes.py`` (``tennis_extra_q`` / ``tennis_ml_q``
+    Path 2).  Standard tournaments retain the 80/85 floor via
+    ``standard_q``; ITF rows are excluded from that path via ``$nor``
+    so ITF ONLY surfaces through the 95+ funnel.  UTR/exhibition
+    remain excluded (settlement unreliable).
 """
 
 from __future__ import annotations
