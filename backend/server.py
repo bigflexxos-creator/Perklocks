@@ -4842,6 +4842,26 @@ async def on_startup():
     except Exception as _atd_warm_err:
         logger.debug("ATD universe warm skipped: %s", _atd_warm_err)
 
+    # PHASE E ROOT CLOSURE (2026-06) — register the live Soccer history
+    # provider adapters against the universal history registry so
+    # ``services.soccer_universal_history`` hydrates real multi-league
+    # data from ``soccer_matches`` (23 leagues), ``soccer_player_game_logs``
+    # (EPL/La_Liga/Bundesliga per-match), and canonical ``player_game_actuals``
+    # / ``team_game_actuals``.  MLS legacy bridge stays registered.
+    try:
+        from services.soccer_live_history_providers import (
+            register_live_soccer_providers,
+        )
+        _providers = register_live_soccer_providers(db)
+        logger.info(
+            "soccer_universal_history: live adapters registered = %s",
+            _providers,
+        )
+    except Exception as _sh_err:
+        logger.warning(
+            "soccer_universal_history: adapter registration skipped: %s",
+            _sh_err,
+        )
 
     # Run the lifecycle preflight (settings + DB + ping + indexes +
     # lease recovery).  All steps are idempotent — the existing
