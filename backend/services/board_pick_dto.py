@@ -68,7 +68,9 @@ _DROP_FIELDS: frozenset[str] = frozenset({
     "published_edge",            # dup: edge_percent
     "published_probability",     # dup: win_probability
     "lock_score_v2",             # dup: lock_score (kept as-is)
-    "implied_probability",       # derivable from odds when a screen needs it
+    # implied_probability is now RETAINED (Phase A root closure) — the
+    # frontend rendered "undefined%" when this field was dropped because
+    # no downstream derivation was performed.  Truth stays on the wire.
 })
 
 # Player-form fields the streak badge uses.
@@ -147,6 +149,13 @@ def project_board_dto(pick: dict) -> dict:
     """Return a *shallow-copy* projection of ``pick`` shaped for the board
     list.  Preserves canonical betting truth verbatim; only removes /
     trims proven detail-only fields.
+
+    Phase A root closure (2026-06):
+      * ``implied_probability`` is now always retained.  When the
+        upstream pick lacks it BUT carries a valid ``book_odds`` value,
+        it is derived from odds via the canonical
+        ``probability_units.implied_probability_from_odds`` helper.
+        This closes the frontend ``undefined%`` bug at the DTO layer.
     """
     out: dict[str, Any] = {}
     for k, v in pick.items():
@@ -168,6 +177,23 @@ def project_board_dto(pick: dict) -> dict:
             out[k] = _trim_apex_blockers(v)
         else:
             out[k] = v
+    # ── implied_probability derive-if-missing ──────────────────────
+    # Frontend must NEVER render "undefined%".  If the pick has valid
+    # book_odds but no implied_probability, derive it here (percent
+    # scale — the frontend displays it as `${implied_probability}%`).
+    ip = out.get("implied_probability")
+    _needs_derive = (
+        ip is None or ip == "" or (isinstance(ip, float) and (ip != ip))
+    )
+    if _needs_derive:
+        odds = out.get("book_odds")
+        try:
+            from services.probability_units import implied_probability_from_odds
+            frac = implied_probability_from_odds(odds)
+            if frac is not None:
+                out["implied_probability"] = round(frac * 100.0, 2)
+        except Exception:
+            pass
     return out
 
 

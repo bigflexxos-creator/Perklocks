@@ -1016,18 +1016,41 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
         # LS=68.  Filter here — the market-anchor is retained on the
         # persisted ``factors`` dict for display, but does not
         # participate in evidence-based scoring.
-        _MARKET_ANCHOR_KEYS = {
-            "Sportsbook Implied (norm)",
-            "Sportsbook Implied",
-            "Book Implied (norm)",
-            "Book Implied",
-            "Market Implied (norm)",
-            "Market Implied",
-        }
+        #
+        # PHASE B ROOT-CLOSURE (2026-06 §8) — expanded from exact-set
+        # match to PREFIX match so aliases like "Sportsbook Implied
+        # Prob" / "Book Implied Prob (norm)" are ALSO excluded.  Prior
+        # exact-set caused CFB tests to hit LS=85.5 on sportsbook-
+        # implied-only evidence (the market-anchor leaked as if it
+        # were independent evidence).
+        _MARKET_ANCHOR_PREFIXES = (
+            "sportsbook implied",
+            "book implied",
+            "market implied",
+            "vig-free implied",
+            "devig implied",
+            "no-vig implied",
+        )
+        def _is_market_anchor_key(k):
+            if not isinstance(k, str):
+                return False
+            kl = k.lower()
+            return any(kl.startswith(p) for p in _MARKET_ANCHOR_PREFIXES)
+        # Track how many market-anchor keys were provided so the
+        # market-only cap below can detect sportsbook-implied-only
+        # evidence sets.
+        _market_anchor_count = sum(
+            1 for k in _scoring_factors.keys() if _is_market_anchor_key(k)
+        )
         _scoring_factors = {
             k: v for k, v in _scoring_factors.items()
-            if k not in _MARKET_ANCHOR_KEYS
+            if not _is_market_anchor_key(k)
         }
+        # Count INDEPENDENT (non-market, non-metadata) numeric factors —
+        # this is the evidence signal that Phase B §8 uses to make
+        # populated evidence differ from empty and to prevent market-
+        # only sets from reaching elite Lock authority.
+        _independent_evidence_count = len(_scoring_factors)
     except Exception:
         # Fail-open: if the boundary import ever fails we fall back to
         # the caller's dict verbatim so scoring is never broken by an
@@ -1039,6 +1062,9 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
             and isinstance(v, (int, float))
             and not isinstance(v, bool)
         }
+        # Phase B fail-open — assume no market-anchor filtering ran.
+        _market_anchor_count = 0
+        _independent_evidence_count = len(_scoring_factors)
     weighted = {
         k: round(v * 100, 1)
         for k, v in _scoring_factors.items()
@@ -1751,6 +1777,52 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
                 weighted["__evidence_authority_coverage"] = _uea_res.get("coverage")
                 weighted["__evidence_authority_strong_axes"] = _uea_res.get("strong_axes")
     except Exception:  # pragma: no cover — never break legacy paths
+        pass
+
+    # ══════════════════════════════════════════════════════════════════
+    # PHASE B ROOT-CLOSURE (2026-06 §7-8) — Independent-evidence
+    # authority correction.  Applied AFTER UEA / BQ so it survives
+    # both authoritative lifts.
+    #
+    # §7 "Remove Generic 85 Rescue": book-implied-only evidence sets
+    #     cannot independently reach 85+.  If the ONLY numeric factors
+    #     supplied were market-anchor keys AND there is zero
+    #     independent evidence, cap final at 84.5 (strictly below the
+    #     85 board threshold).
+    #
+    # §8 "CFB Evidence Authority": populated independent evidence
+    #     must produce a materially different final Lock than the
+    #     empty-factors fallback.  Add a small, bounded evidence-count
+    #     bonus (max ≤ 2.5 pt) so ≥ 4 independent factors surface a
+    #     > 0.5 pt differential.  The bonus is EVIDENCE-driven, NOT
+    #     confidence-driven — it does not modify Win Expected, edge,
+    #     or provenance.  Contradictions/weak evidence still temper
+    #     via UEA CEILING and stdev-based market_align upstream.
+    # ══════════════════════════════════════════════════════════════════
+    try:
+        _ev_count = int(_independent_evidence_count)
+        _mkt_count = int(_market_anchor_count)
+        if _ev_count == 0 and _mkt_count > 0:
+            # Market-anchor-only evidence → cap at 84.5.
+            final_score = round(min(84.5, final_score), 1)
+            pick["market_only_evidence_cap_applied"] = True
+        elif _ev_count > 0:
+            # Evidence-count bonus is intentionally BAND-LIMITED so it
+            # never regresses parity for picks that already reached
+            # elite tier through the specialized model + UEA/BQ
+            # authorities (§66 regression freeze — NFL props / MLB
+            # hitters / CFB high tier already differentiate through
+            # their own multi-signal chains).  The bonus is a mid-band
+            # signal that ensures empty vs populated evidence produce
+            # different Lock authority when NEITHER UEA nor BQ has
+            # already lifted the score above 90.
+            if final_score < 90.0:
+                import math as _math
+                _bonus = min(2.5, _math.log1p(_ev_count) * 0.85)
+                final_score = round(min(99.0, final_score + _bonus), 1)
+                pick["independent_evidence_bonus"] = round(_bonus, 2)
+                pick["independent_evidence_count"] = _ev_count
+    except Exception:
         pass
 
     # ── PERKLOCKS PASS 4 (2026-06) — Universal Lock Authority wiring.
