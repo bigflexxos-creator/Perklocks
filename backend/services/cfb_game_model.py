@@ -221,8 +221,33 @@ def estimate_cfb_game(ctx: dict, home_team: str, away_team: str) -> CFBGameResul
 
     # BASE — SP+
     base_margin = (h_rate - a_rate) + HOME_FIELD_ADV
-    h_pts = h_off + (25.0 - a_def)
-    a_pts = a_off + (25.0 - h_def)
+    # ── ROOT CLOSURE (2026-06 P0 physical acceptance) ─────────────
+    # SP+ semantics from `cfb_sp_ratings`:
+    #   offense_rating = PPG the offense scores vs an AVG defense (~25.0)
+    #   defense_rating = PPG the defense ALLOWS vs an AVG offense (~25.0)
+    #                    LOWER = STRONGER defense (Indiana 9.9 = elite,
+    #                    South Alabama 36.0 = poor)
+    #
+    # Under those semantics, the neutral defensive adjustment against
+    # any offense is (a_def - 25.0):
+    #   • if a_def < 25 (STRONG defense) → subtract from offense's PPG
+    #   • if a_def > 25 (WEAK defense)   → add to offense's PPG
+    #
+    # The previous formula ``h_off + (25.0 - a_def)`` INVERTED that
+    # sign — it ADDED points when opponent's defense was strong.
+    # Concrete: Indiana @ Northwestern (Indiana OFF=40.8/DEF=9.9,
+    # Northwestern OFF=24.4/DEF=20.0, book total=47.5):
+    #     OLD formula → base_total = 85.3 → P(Over 47.5) ≈ 99.9%
+    #                   (published wp=96.69% · Lock=98)
+    #     NEW formula → base_total = 45.1 → P(Over 47.5) ≈ 42.1%
+    #                   (near-market, no fake elite Lock)
+    #
+    # This is a mathematical repair of the SP+ base-total formula,
+    # NOT a scoring adjustment.  Downstream authority (edge,
+    # market_align, evidence, UEA/BQ ceiling, Magic/Apex) sees the
+    # corrected probability and settles the Lock legitimately.
+    h_pts = h_off + (a_def - 25.0)
+    a_pts = a_off + (h_def - 25.0)
     base_total = max(20.0, h_pts + a_pts)
 
     # SHADOW ADJUSTMENTS (existing repo data only) — computed for

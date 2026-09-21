@@ -927,11 +927,22 @@ class SoccerTeamHistoricalAdapter(HistoricalAdapter):
         if not team:
             return []
         family = q.market_family or ""
-        # soccer_matches: home_team / away_team / home_score / away_score
+        # ── §5/§8 Soccer HI universal identity resolution ──────────
+        # `db.soccer_matches` stores provider display names that differ
+        # from the canonical form the pick payload carries (e.g. DB has
+        # "Nott'm Forest" while pick says "Nottingham Forest").  Direct
+        # equality query returned zero for many EPL / big-5 fixtures.
+        # Resolve every match's canonical key and compare against the
+        # canonical key of the entity; fall back to the raw exact
+        # match when identity resolution is unavailable.
+        try:
+            from services.soccer_team_identity import canonical_team_key
+            entity_canon = canonical_team_key(team)
+        except Exception:
+            entity_canon = None
         cursor = db.soccer_matches.find(
-            {"$or": [{"home_team": team}, {"away_team": team}],
-             "status": "finished"}
-        ).sort("date", -1).limit(120)
+            {"status": "finished"}
+        ).sort("date", -1).limit(2500)
         obs: list[HistoricalObservation] = []
         async for doc in cursor:
             try:
@@ -940,7 +951,21 @@ class SoccerTeamHistoricalAdapter(HistoricalAdapter):
             except Exception:
                 continue
             home = doc.get("home_team"); away = doc.get("away_team")
-            is_home = (home == team)
+            # Canonical identity match (safe: no substring).
+            if entity_canon is not None:
+                try:
+                    home_canon = canonical_team_key(home) if home else None
+                    away_canon = canonical_team_key(away) if away else None
+                except Exception:
+                    home_canon = away_canon = None
+                is_home = (home_canon == entity_canon)
+                is_away = (away_canon == entity_canon)
+                if not (is_home or is_away):
+                    continue
+            else:
+                is_home = (home == team)
+                if not (is_home or (away == team)):
+                    continue
             team_gf = hs if is_home else as_
             team_ga = as_ if is_home else hs
             opp = away if is_home else home
@@ -970,6 +995,8 @@ class SoccerTeamHistoricalAdapter(HistoricalAdapter):
                 provenance=doc.get("source"),
                 event_id=None,
             ))
+            if len(obs) >= 120:
+                break
         return obs
 
 
