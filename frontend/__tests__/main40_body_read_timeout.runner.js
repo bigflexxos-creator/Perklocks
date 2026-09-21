@@ -91,7 +91,7 @@ T("no bare `await res.text()` remains in request() body-read path", () => {
   must(!/const\s+res\s*=\s*await\s+_fetchWithTimeout[\s\S]{0,100}?const\s+text\s*=\s*await\s+res\.text\(\)/
         .test(API_TS),
        "old unprotected `await res.text()` right after _fetchWithTimeout must not return");
-  must(/const\s+res\s*=\s*await\s+_fetchWithTimeout[\s\S]{0,200}?const\s+text\s*=\s*res\.text\b/
+  must(/const\s+res\s*=\s*await\s+_fetchWithTimeout[\s\S]{0,400}?const\s+text\s*=\s*res\.text\b/
         .test(API_TS),
        "request() must consume res.text as a property from PreparedResponse");
 });

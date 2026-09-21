@@ -1,6 +1,7 @@
 import { storage } from "@/src/utils/storage";
 import { Platform } from "react-native";
 import Constants from "expo-constants";
+import { noteBoardVersion } from "@/src/lib/boardFreshness";
 
 // ═══════════════════════════════════════════════════════════════════
 // Expo/Native freshness closure — 2026-08-22
@@ -850,6 +851,23 @@ async function _fetchWithTimeout(
     const boardVersion = res.headers.get("x-board-version")
       || res.headers.get("X-Board-Version")
       || undefined;
+    // ─── Universal Canonical Freshness (2026-06-21) ────────────────
+    // ``X-Canonical-Version`` is the SINGLE globally monotonic
+    // freshness fingerprint (sourced from ``board_generation.active()``
+    // via the ``BoardVersionHeaderMiddleware``).  Every canonical
+    // response carries it.  We push it into the freshness observer
+    // here — the ONE central point so every path (Locks, detail, HI,
+    // rollover, parlay, my-bets, lab, analytics) participates in the
+    // same monotonic invalidation contract on both Preview (web) and
+    // Expo Go (native).  Distinct from the endpoint-scoped
+    // ``X-Board-Version`` above — that stays owned by cursor pinning.
+    // Never blocks the response; failure is invisible to the caller.
+    const canonicalVersion = res.headers.get("x-canonical-version")
+      || res.headers.get("X-Canonical-Version")
+      || undefined;
+    try {
+      if (canonicalVersion) noteBoardVersion(canonicalVersion);
+    } catch { /* observer failures are non-fatal */ }
     return { ok: res.ok, status: res.status, text, etag, boardVersion };
   } finally {
     clearTimeout(timer);
