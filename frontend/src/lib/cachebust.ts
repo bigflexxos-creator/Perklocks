@@ -58,7 +58,11 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 // Bumping BOTH the client cache version AND the filter STORAGE_KEY
 // (v7 → v8) so the Locks / NFL / ALL tab hydrates fresh from the
 // canonical /api/picks/today response on next launch.
-export const APP_DATA_VERSION = "2026.06.11-soccer-shots-sot-assists-wired-v49";
+// 2026-06-21 · Iter Canonical Epoch v2 · signfix — bumped so the Profile
+// "Build:" line advances past the stale June-11 marker AND every Expo Go
+// device wipes its Layer-3 caches on next launch to pick up the new
+// canonical-freshness / signfix / undefined-implied guards.
+export const APP_DATA_VERSION = "2026.06.21-canonical-epoch-v2-signfix";
 
 // ─── Backend-version snapshot (Layer 2 - stored after each /api/version call)
 const CLIENT_VERSION_KEY = "perkslocks.client_data_version";

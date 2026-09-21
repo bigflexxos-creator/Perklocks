@@ -7,15 +7,32 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { COLORS } from "@/src/theme";
 import { useAuth } from "@/src/contexts/AuthContext";
-import { api } from "@/src/lib/api";
+import { api, getBackendUrl } from "@/src/lib/api";
 import { PremiumHeader } from "@/src/components/PremiumHeader";
 import { APP_DATA_VERSION, forceClearAllCaches } from "@/src/lib/cachebust";
+import { FRONTEND_BUILD_REVISION } from "@/src/lib/buildRevision";
 import { swrCacheRead, swrCacheWrite } from "@/src/lib/useSWR";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 
-const BACKEND_URL_DISPLAY = (process.env.EXPO_PUBLIC_BACKEND_URL || "auto")
-  .replace(/^https?:\/\//, "")
-  .replace(/\/$/, "");
+// ─── Runtime-resolved backend origin (2026-06-21 v2) ─────────────────
+// The prior implementation displayed ``process.env.EXPO_PUBLIC_BACKEND_URL``
+// directly.  ``process.env`` values are inlined by Metro AT BUNDLE-COMPILE
+// TIME — so a phone running a JS bundle compiled with the OLD env var
+// permanently displayed the stale value (e.g. ``bet-edge-ai-1.emergent.host``)
+// on the Profile screen even after the .env was rotated to Canonical
+// Parity.  Reading through ``getBackendUrl()`` returns the origin
+// resolved AT RUNTIME by ``api.ts::resolveBaseUrl()`` — includes the
+// preview-domain host-swap guard — which is the ORIGIN the app is
+// actually hitting.
+function _resolvedBackendDisplay(): string {
+  try {
+    return getBackendUrl()
+      .replace(/^https?:\/\//, "")
+      .replace(/\/$/, "");
+  } catch {
+    return "unset";
+  }
+}
 
 // μ-closure P3 — Profile stats SWR key.
 type ProfileStats = {
@@ -244,7 +261,9 @@ export default function ProfileScreen() {
         <Text style={styles.footerNote}>
           PerkLocks v1.0 · Daily auto-refresh at 06:00 UTC{"\n"}
           All picks are probabilistic — never guaranteed.{"\n\n"}
-          Build: {APP_DATA_VERSION}  ·  Backend: {BACKEND_URL_DISPLAY}
+          Build: {APP_DATA_VERSION}{"\n"}
+          Source: {FRONTEND_BUILD_REVISION}{"\n"}
+          Backend: {_resolvedBackendDisplay()}
         </Text>
       </ScrollView>
     </SafeAreaView>
