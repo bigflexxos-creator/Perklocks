@@ -187,6 +187,8 @@ async def enrich_nfl_picks_with_v2_evidence(db, *, pick_date: Optional[str] = No
     distinct_player_markets: set = set()
     max_p = 0.0
     max_floor = 0.0
+    integrated_count = 0
+    lock_deltas: list[float] = []
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -295,9 +297,63 @@ async def enrich_nfl_picks_with_v2_evidence(db, *, pick_date: Optional[str] = No
             "stamped_at": now_iso,
         }
 
+        # ── WRITER-SIDE V2 → LOCK SCORE INTEGRATION (2026-06-21) ────────
+        # The V2 evidence is now a legitimate INPUT to the existing
+        # ``sports_engine.compute_lock_score`` authority (per Part 2 of
+        # the NFL Props V2 score-authority closure).  We merge V2-derived
+        # numeric factors into the pick's existing NFL feature-engine
+        # factors and re-invoke compute_lock_score ONCE — no
+        # max(old, new), no direct write of published_lock_score, no
+        # shortcut.  When V2 has no usable distribution we DO NOT
+        # rescore (fail-closed).  The new score can move UP or DOWN.
+        set_fields: dict = {"nfl_props_v2_evidence": v2}
+        try:
+            from .writer_integration import integrate_v2_into_lock_score
+            _res = integrate_v2_into_lock_score(pick, v2)
+        except Exception:
+            _res = None
+        if _res is not None:
+            new_lock, breakdown, merged_factors = _res
+            integrated_count += 1
+            _prev_lock = pick.get("lock_score")
+            if isinstance(_prev_lock, (int, float)):
+                lock_deltas.append(round(new_lock - float(_prev_lock), 2))
+            # Compute canonical grade band the same way sports_engine does.
+            if new_lock >= 100.0:  grade = "APEX Lock"
+            elif new_lock >= 98.0: grade = "Elite Lock"
+            elif new_lock >= 95.0: grade = "Strong Lock"
+            elif new_lock >= 90.0: grade = "Lock"
+            elif new_lock >= 85.0: grade = "Playable"
+            else:                  grade = "Pass"
+            # Mirror sports_engine's write pattern: update every canonical
+            # lock alias so ``_canonicalize_lock_score`` at read time
+            # returns the fresh value.  ``published_lock_score`` IS
+            # updated because this pick is being re-published through the
+            # legitimate writer (compute_lock_score); it is NOT a direct
+            # override — the new value came from the single authoritative
+            # scorer with V2 evidence as one of many inputs.
+            set_fields.update({
+                "lock_score":            new_lock,
+                "lock_score_v2":         new_lock,
+                "lock_score_raw":        new_lock,
+                "lock_breakdown":        breakdown,
+                "factors":               merged_factors,
+                "published_lock_score":  new_lock,
+                "published_grade":       grade,
+                "grade":                 grade,
+                "lock_score_authority":  "canonical_compute_lock_score",
+                "nfl_props_v2_integrated": True,
+                "nfl_props_v2_integration_version": _ENGINE_VERSION,
+            })
+            # Preserve monotonic peak semantics: peak never lowers unless
+            # the pick has no independent lock-peak history yet.
+            _prev_peak = pick.get("lock_score_peak")
+            if not isinstance(_prev_peak, (int, float)):
+                set_fields["lock_score_peak"] = new_lock
+
         await db.picks.update_one(
             {"id": pick["id"]},
-            {"$set": {"nfl_props_v2_evidence": v2}},
+            {"$set": set_fields},
         )
         stamped += 1
         if p_raw is not None:
@@ -315,6 +371,10 @@ async def enrich_nfl_picks_with_v2_evidence(db, *, pick_date: Optional[str] = No
         "distinct_player_markets": len(distinct_player_markets),
         "picks_stamped": stamped,
         "picks_with_nonnull_probability": with_prob,
+        "picks_lock_score_integrated": integrated_count,
+        "lock_delta_min": (round(min(lock_deltas), 2) if lock_deltas else None),
+        "lock_delta_max": (round(max(lock_deltas), 2) if lock_deltas else None),
+        "lock_delta_mean": (round(sum(lock_deltas)/len(lock_deltas), 2) if lock_deltas else None),
         "highest_probability": round(max_p, 4),
         "highest_floor_distance": round(max_floor, 2),
         "engine_version": _ENGINE_VERSION,
