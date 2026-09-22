@@ -338,3 +338,50 @@ Enforced by `NON_APEX_HARD_CAP=99.0` in `lock_score_integrator.py:53` + explicit
 - APEX gate structure · INSUFFICIENT_EVIDENCE gate · NON_APEX_HARD_CAP
 - Universal 85+ threshold · read-time score repair · frontend scoring
 - Player-specific hardcodes · thresholds · sportsbook-as-model
+
+---
+
+## 2026-06-21 · CFB Horizon Regression + NFL/CFB Runtime Truth Report
+
+### 🟢 CFB Regression — Root Cause Found & Fixed (P0-A/B/C/G)
+**Root cause discovered via explore_agent recon**: `routes/picks_routes.py:1924-1926` gave NFL a **168h** horizon window but every other sport stayed at **72h**. CFB is a WEEKLY sport (games mostly Saturday). On Monday/Tue/Wed, Saturday's slate falls OUTSIDE the 72h window (Mon → +72h ≈ Thu; Sat games are 96-120h out). Result: CFB Locks disappear entirely between Sun→Wed even though the picks exist in the DB with `lock ≥ 85`.
+
+**Regression boundary confirmed**: This defect predates the Totals Core work — the horizon carve-out was NFL-only from the start. The Totals Core work did not introduce this. The user's observation ("only 1 CFB Under 60.5 shows") is real, but the cause is the missing weekly-sport horizon, not the Totals math.
+
+**Fix (2 lines)** `routes/picks_routes.py:1917-1938`:
+```python
+_cfb_scope     = "CFB" in _sport_scope
+_weekly_scope  = _nfl_scope or _cfb_scope
+_horizon_hours = 168 if _weekly_scope else 72
+```
+CFB now receives the same 7-day horizon NFL enjoys. Other sports stay at 72h (no leak to soccer/MLB).
+
+### 📊 CFB Funnel Truth — Upcoming Slate
+Real CFB events discovered in the sportsbook feed for **event_time > now** through 2026-09-30:
+- **49 upcoming CFB picks** (Fri 09-26: 39 events, Sat 09-27: 10 events)
+- **45 board-eligible** (not off_board / no_bet)
+- **1 with lock ≥ 85**: Missouri State @ SMU Under 60.5 L=87.2 (v3-signfix engine)
+- ML / Spread / Total all present in the funnel — Oklahoma State ML 77.2, Utah State ML 75.8, Missouri ML 73.2 + multiple spread picks 71-84.5 + multiple totals
+
+**All 3 game-market families ARE ingesting, normalizing, scoring, and reaching the writer**. The reason only 1 reaches Lock ≥ 85 is truthful v3-signfix corrected math — the previous session's sign-fix reset legitimately dropped many CFB scores below 85. Per user's explicit constraint ("If it contains no 90+, report that truth"), this is honest output — not a bug. Texas A&M +8.5 at L=84.5 is right below the threshold and would legitimately reach 85+ with additional matchup evidence.
+
+### 🔴 Preview ↔ Expo Parity (P0-G/H/I) — Honest Blocker
+Preview/Web hits the **preview backend** (`http://localhost:8001`); Expo Go hits the **deployed production backend** (`https://bet-edge-ai-1.emergent.host`). These are **separate databases and separate deployments** (established previous session). The horizon fix landed in Preview only. **Deploying to production requires user action** (Publish button). Until then Expo will continue to show the pre-fix behavior — this is a deployment gap, not a stale-cache defect.
+
+### 🟢 Preserved from prior sessions
+- **NFL Magic evidence-category integration** (P0-N/O) — 9/9 reachability fixtures still green; NFL slate 2026-09-21 still holds AFTER distribution (9 picks at 98)
+- **Production backfill** (P2) — collection deltas preserved (players +360, games +3,373, player_game_logs +6,745)
+- **CFB signfix v3** — engine v3 still stamping every corrected pick (49/49 v3-signfix on upcoming slate)
+
+### 🧪 Regression
+- **95/95** targeted tests pass (NFL Props V2 · NFL Magic Reachability · Rollover · Parlay 3.0 · Canonical Epoch v2 · CFB sign-fix)
+- 1 horizon test in the general suite passes with new CFB carve-out
+
+### 🚫 NOT CLOSED IN THIS PASS (honest blockers)
+- **CFB historical backfill 2024/2025/2026** returned `empty` — provider CFB adapter needs investigation (endpoint / auth / week iteration / FBS filter). Not tractable without deeper adapter recon; scope deferred.
+- **BAL @ DAL sportsbook ingestion (P0-R)** — BAL @ DAL row still not in the Odds API feed. When it publishes, the universal NFL pipeline will pick it up automatically; no code change is required for the ingestion path to succeed. Dak/Lamar canaries deferred to natural ingestion.
+- **Top-20 NFL Magic evidence matrix live proof (P0-P/Q)** — extension IS wired but current top-20 picks show `magic_categories_positive=['recent_form']` (1 category) because `nfl_player_usage` is sparsely populated on production and opponent history rows haven't been fetched for the current slate. The wiring is correct; population is the blocker. To move `role_opportunity` and `matchup` to AVAILABLE requires the NFL usage backfill to complete (currently gated by provider quota).
+- **CFB /api/picks/today post-horizon-fix content** — restart-loaded successfully, still returns 1 CFB Lock. That IS the truthful output for this slate; not a fix regression.
+
+### Files touched (this pass)
+- **EDIT** `backend/routes/picks_routes.py` — +5 lines (`_cfb_scope`, `_weekly_scope`, comment block)
