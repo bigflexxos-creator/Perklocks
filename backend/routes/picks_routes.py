@@ -1921,9 +1921,23 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
     # Mon slate on any day earlier than Monday-of-game-week.  Apply an
     # NFL-specific 168-hour horizon; keep every other sport at 72h so
     # far-future soccer/CFB/MLB leaks stay closed.
-    _sport_scope = ((sport or "") + "," + (sports or "")).upper()
-    _nfl_scope   = "NFL" in _sport_scope
-    _horizon_hours = 168 if _nfl_scope else 72
+    #
+    # PERKLOCKS 2026-06-21 · CFB WEEKLY-SLATE HORIZON ─────────────────
+    # CFB has the same weekly cadence as NFL — the vast majority of
+    # games are Saturday.  Users querying on Sun/Mon/Tue/Wed see a
+    # nearly-empty CFB board because Saturday's slate falls OUTSIDE
+    # the 72h window (Mon 09-22 → +72h = 09-25, but Sat games are
+    # 09-26+ / 09-27).  On 2026-09-22, `/api/picks/today?sport=CFB`
+    # returned exactly ONE CFB pick (Missouri State @ SMU Under 60.5
+    # — a healer-retagged row) while 124 board-eligible CFB picks
+    # with lock ≥ 85 sat in the DB unreachable.  Give CFB the same
+    # 168h horizon NFL enjoys.  Independent of the Totals Core work
+    # or the sign-fix — a routing defect in the picks/today endpoint.
+    _sport_scope    = ((sport or "") + "," + (sports or "")).upper()
+    _nfl_scope      = "NFL" in _sport_scope
+    _cfb_scope      = "CFB" in _sport_scope
+    _weekly_scope   = _nfl_scope or _cfb_scope
+    _horizon_hours  = 168 if _weekly_scope else 72
     _win_start = (_now - _td(hours=30)).isoformat().replace("+00:00", "Z")
     _win_end   = (_now + _td(hours=_horizon_hours)).isoformat().replace("+00:00", "Z")
     # ── Board horizon (sport-scoped 2026-06-09) ─────────────────────
