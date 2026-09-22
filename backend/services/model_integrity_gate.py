@@ -208,8 +208,26 @@ def evaluate(pick: dict) -> dict:
     # authority yet), but a stamped ``universal_lock=None`` from the
     # authority means the pick already failed the authority contract
     # and must not publish.
+    #
+    # 2026-06-21 SURGICAL — Tennis/CFB Board Coverage.  The universal
+    # Lock authority (services.universal_lock_authority.compute_universal_lock)
+    # rejects any pick whose probability_provenance is MODEL_CONDITIONED
+    # / PRIOR_ONLY / INVALID.  Specialized engines (tennis_edge_v2,
+    # cfb_sp_game_model, NFL platinum, MLB K, Soccer scorer, …) DO
+    # produce MODEL_CONDITIONED probabilities post-market-calibration
+    # — that is not the same defect check #8 catches (a legacy model
+    # masquerading book-implied as a true probability).  Check #8
+    # already exempts specialized engines from the CONDITIONED-provenance
+    # blanket rejection; check #9 must mirror that carve-out or every
+    # calibrated Tennis / CFB pick with lock ≥ 85, real odds, and real
+    # canonical identity gets silently marked ``off_board=True`` with
+    # an EMPTY ``off_board_reasons`` array (Tennis: Sofia Costoulas,
+    # Xinyu Wang, etc. observed on 2026-09-21 slate).  Specialized
+    # engines ARE the authority for their sport — we must not reject
+    # them for lacking a universal-authority stamp the specialization
+    # explicitly supersedes.
     ul = p.get("universal_lock")
-    if "universal_lock" in p and ul is None:
+    if "universal_lock" in p and ul is None and not _has_specialized_engine(p):
         return _reject(REJECT_MODEL_UNAVAILABLE,
                         "universal_lock_authority_rejected")
 
