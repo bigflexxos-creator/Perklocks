@@ -84,3 +84,45 @@ Full report: `/app/memory/canonical_epoch_v2_closure_2026_06_21.md`.
 - **74 tests pass · 0 fail** (NFL Props 2.0 up from 19 → 31; combined regression 62 → 74).
 - Memo: `memory/nfl_props_v2_distribution_closure_2026_06_21.md`. PRODUCTION PUBLISHED: NO.
 
+
+---
+
+## 2026-06-21 · NFL Player Props 2.0 — Canonical Pipeline Wiring
+- **NEW** `services/nfl_props_v2/canonical_wiring.py` — walks NFL picks, stamps `nfl_props_v2_evidence` on each doc (additive namespace; passes through `_canonicalize_picks` to `/api/picks/today`).
+- **Admin endpoint** `POST /api/admin/nfl-props-v2/enrich` triggers the sweep (game context built once/game, distribution once/player-market, no provider fanout).
+- **Slate sweep 2026-09-22**: 35 NFL picks total → 24 V2-stamped (all with lock ≥ 85), 23 with non-null probability, 4 at p ≥ 0.90. Highest Lock among V2-stamped = 94.0 (Stafford 175+ Pass Yds, Theo Johnson 0.5+ Receptions). Highest V2 probability = 1.0 (Cam Skattebo 10.5+ Rec Yds).
+- **TE coverage confirmed** — Theo Johnson stamped, no elite_player_name gate.
+- **Zero coverage shrinkage**: existing NFL picks preserved, additive only.
+- **74 tests pass** (NFL Props 2.0 unchanged at 31; combined 74).
+- **Blocker for 98/99**: downstream Lock authority does not yet READ `nfl_props_v2_evidence` — additive stamping is complete, downstream consumption is a follow-up task the spec explicitly forbids in this pass ("no score tuning").
+- Memo: `memory/nfl_props_v2_canonical_wiring_2026_06_21.md`. PRODUCTION PUBLISHED: NO.
+
+
+---
+
+## 2026-06-21 · P0 Runtime Verification + P1 Canonical Test Sweep
+
+### P0 — NFL Props V2 canonical wiring runtime verification
+- Discovered stale-date defect in `canonical_wiring.py`: stamper defaulted to `datetime.now(timezone.utc).strftime("%Y-%m-%d")` while `/api/picks/today` uses `services.perklocks_day.current_slate_day()` (04:00 ET roll).
+- **Fix (surgical, 8 lines)**: `enrich_nfl_picks_with_v2_evidence()` now defaults `pick_date` to `current_slate_day()` when not provided, matching the canonical Locks feed.
+- **Runtime proof (slate 2026-09-21)** — 309 candidate NFL picks → 231 stamped, 208 with non-null probability. `/api/picks/today?sport=NFL` returns 11 Locks (all lock ≥ 85), **6 carry `nfl_props_v2_evidence`** with real distributions:
+  - Kyle Pitts Over 33.5 Rec Yds — p=0.700, n=20 (`nfl_actuals:rec_yds:l20`)
+  - Michael Penix Jr Over 201.5 Pass Yds — p=0.571, n=14 (`nfl_actuals:pass_yds:l14`)
+  - Jordan Love Over 7.5 Rush Yds — p=0.500, n=20 (`nfl_actuals:rush_yds:l20`)
+  - Chris Brooks Over 16.5 Rush Yds — p=0.150, n=20 (`nfl_actuals:rush_yds:l20`)
+  - MarShawn Lloyd Over 28.5 Rush Yds — n=1, p=None (correctly refuses fabrication)
+- Legacy "N+" markets, moneyline, and non-standard formats are correctly untouched (additive only, no suppression).
+- Lock Scores UNCHANGED — evidence namespace is purely additive, no score tuning applied.
+- Weather UNAVAILABLE / role PARTIAL do NOT suppress candidates.
+
+### P1 — Failing canonical test investigation
+- Suspected regression: `tests/test_canonical_epoch_contract_v2.py::test_canonical_revision_uniform_across_surfaces_at_rest`.
+- Runtime result: **all 6 tests in that file PASS** (isolated and in-file). Suspected failure was a stale/state artifact from the prior session — no real product defect exists.
+- Broader sweep: 80 tests across NFL Props V2 + Rollover Immutability + Parlay 3.0 Universal + Canonical Epoch v2 = **80 passed, 0 failed**.
+- No production code changed for P1.
+
+### Not touched (per instruction)
+- No score tuning to fabricate 85+ picks.
+- No re-audit of Rollover / Parlay / NFL Props V2 internals.
+- No weather/injury adapter integration (P2 deferred).
+- No other sports touched.

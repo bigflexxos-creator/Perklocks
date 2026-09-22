@@ -14,9 +14,27 @@ from deps import current_admin, db, logger
 from auth import UserPublic
 from services.nfl_props_v2.slate_orchestrator import discover_slate_best_bets
 from services.nfl_props_v2.engine import evaluate_player_across_markets
+from services.nfl_props_v2.canonical_wiring import enrich_nfl_picks_with_v2_evidence
 
 
 router = APIRouter(prefix="/api/admin/nfl-props-v2", tags=["admin-nfl-props-v2"])
+
+
+@router.post("/enrich")
+async def nfl_props_v2_enrich(
+    user: Annotated[UserPublic, Depends(current_admin)],
+    pick_date: Optional[str] = Query(default=None),
+):
+    """Stamp `nfl_props_v2_evidence` onto every current NFL pick.
+
+    Additive — never modifies any existing pick field.  Wires V2
+    discovery into the existing canonical publication pipeline so
+    downstream Lock authority / Magic / Bet Quality / APEX evaluators
+    can consume the evidence.  Reaches `/api/picks/today` via the
+    standard `_canonicalize_picks` serializer (which does not strip
+    unknown fields).
+    """
+    return await enrich_nfl_picks_with_v2_evidence(db, pick_date=pick_date)
 
 
 @router.get("/discover")
