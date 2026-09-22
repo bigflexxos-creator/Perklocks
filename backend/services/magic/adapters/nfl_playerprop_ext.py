@@ -53,6 +53,71 @@ from services.magic.contract import (
 )
 
 
+# ── NFL team full-name → abbreviation map (2026-06-22) ─────────────
+# Picks carry ``home_team`` / ``away_team`` / ``player_team`` as full
+# team names ("Baltimore Ravens").  ``player_game_actuals.opponent``
+# stores BOTH forms (full name AND 2-3 letter abbreviation) depending
+# on the season backfill batch.  We accept either via an $in query
+# so MATCHUP resolves regardless of backfill batch.
+_NFL_TEAM_ABBREV: dict[str, str] = {
+    "Arizona Cardinals": "ARI", "Atlanta Falcons": "ATL",
+    "Baltimore Ravens": "BAL", "Buffalo Bills": "BUF",
+    "Carolina Panthers": "CAR", "Chicago Bears": "CHI",
+    "Cincinnati Bengals": "CIN", "Cleveland Browns": "CLE",
+    "Dallas Cowboys": "DAL", "Denver Broncos": "DEN",
+    "Detroit Lions": "DET", "Green Bay Packers": "GB",
+    "Houston Texans": "HOU", "Indianapolis Colts": "IND",
+    "Jacksonville Jaguars": "JAX", "Kansas City Chiefs": "KC",
+    "Las Vegas Raiders": "LV", "Los Angeles Chargers": "LAC",
+    "Los Angeles Rams": "LA", "Miami Dolphins": "MIA",
+    "Minnesota Vikings": "MIN", "New England Patriots": "NE",
+    "New Orleans Saints": "NO", "New York Giants": "NYG",
+    "New York Jets": "NYJ", "Philadelphia Eagles": "PHI",
+    "Pittsburgh Steelers": "PIT", "San Francisco 49ers": "SF",
+    "Seattle Seahawks": "SEA", "Tampa Bay Buccaneers": "TB",
+    "Tennessee Titans": "TEN", "Washington Commanders": "WAS",
+}
+
+
+def _derive_opponent(pick: dict) -> Optional[str]:
+    """Resolve the opponent team from home/away + player_team even when
+    ``pick["opponent"]`` was not stamped upstream (audit-observed on
+    all 58 current NFL picks)."""
+    for k in ("opponent", "opponent_team"):
+        v = pick.get(k)
+        if v:
+            return str(v)
+    home = pick.get("home_team")
+    away = pick.get("away_team")
+    player_team = (pick.get("player_team")
+                    or pick.get("player_team_name")
+                    or pick.get("team"))
+    if not (home and away and player_team):
+        return None
+    if player_team == home:
+        return away
+    if player_team == away:
+        return home
+    return None
+
+
+def _extract_player_name(pick: dict) -> Optional[str]:
+    """Pull a usable player name from any of the standard fields."""
+    for k in ("player_name", "player", "elite_player_name"):
+        v = pick.get(k)
+        if v and str(v).strip():
+            return str(v).strip()
+    # Try selection string — most NFL alt lines put the name in selection.
+    sel = pick.get("selection")
+    if sel and isinstance(sel, str) and sel.strip():
+        # Only accept if it looks like a person name (contains a space
+        # and not "Over"/"Under"/team ML).
+        s = sel.strip()
+        if " " in s and s.lower() not in ("over", "under") and not s.startswith("+") and not s.startswith("-"):
+            return s
+    return None
+
+
 # ── Market → stat mapping (mirrors gold_evidence_nfl._nfl_market_stat)
 def _nfl_market_stat(market: str) -> Optional[str]:
     m = (market or "").lower()
@@ -178,6 +243,25 @@ async def _build_role_opportunity(
     except Exception:
         row = None
 
+    # ── 2026-06-22 SURGICAL — ID-format fallback ─────────────────────
+    # nfl_player_usage uses Pro-Football-Reference IDs ("PresDa01");
+    # picks carry nflverse IDs ("00-0033077").  These are DIFFERENT
+    # ID systems.  Audit found 0/20 top-picks resolving on player_id.
+    # Fallback: match by lowercase player name — the collection stores
+    # ``player`` (lowercase full name) which is genuinely portable
+    # across ID schemes.  No fabrication — we return AVAILABLE only
+    # when a real row is found.
+    if not row:
+        name = _extract_player_name(pick)
+        if name:
+            try:
+                row = await db.nfl_player_usage.find_one(
+                    {"player": name.lower()},
+                    sort=[("season", -1)],
+                )
+            except Exception:
+                row = None
+
     if row:
         snap_pct = row.get("snap_pct_avg")
         try:
@@ -253,7 +337,10 @@ async def _build_matchup(
     resolved.  This is DIFFERENT DATA from HISTORY/FORM (different
     player rows entirely) — genuinely independent."""
     stat = _nfl_market_stat(pick.get("market") or "")
-    opp = pick.get("opponent") or pick.get("opponent_team")
+    # 2026-06-22 SURGICAL — derive opponent from home/away/player_team
+    # when the pick doesn't carry an explicit ``opponent`` field
+    # (audit found 0/58 NFL picks stamped with opponent).
+    opp = _derive_opponent(pick)
     position = pick.get("position")
 
     ev = EvidenceItem(
@@ -271,7 +358,22 @@ async def _build_matchup(
 
     # Pre-game cutoff to avoid leakage.
     cutoff_iso = pick.get("event_time") or pick.get("commence_time")
-    q: dict = {"sport": "nfl", "opponent": str(opp).upper()}
+    # 2026-06-22 SURGICAL — player_game_actuals.opponent stores BOTH
+    # abbreviation ("BAL") and full name ("Baltimore Ravens") across
+    # backfill batches.  Accept either via $in so opponent history
+    # resolves regardless of ingestion batch.
+    opp_candidates: list[str] = [opp]
+    opp_up = str(opp).upper()
+    if opp_up != opp:
+        opp_candidates.append(opp_up)
+    ab = _NFL_TEAM_ABBREV.get(opp)
+    if ab and ab not in opp_candidates:
+        opp_candidates.append(ab)
+    # Reverse — if we were given an abbrev, add the matching full name.
+    for full, code in _NFL_TEAM_ABBREV.items():
+        if code == opp_up and full not in opp_candidates:
+            opp_candidates.append(full)
+    q: dict = {"sport": "nfl", "opponent": {"$in": opp_candidates}}
     if cutoff_iso:
         q["event_time"] = {"$lt": cutoff_iso}
     if position:
