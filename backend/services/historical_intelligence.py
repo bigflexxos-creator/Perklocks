@@ -524,6 +524,36 @@ async def query_historical(db, q: HistoricalQuery) -> HistoricalResponse:
     if vs_opp:
         opp_summary = _summarize(vs_opp, q.current_threshold, q.side)
         opp_summary["games"] = [asdict(o) for o in vs_opp[:10]]
+        # ── 2026-06-22 · P0-G COVERAGE TRUTH ──────────────────────────
+        # Historical Intelligence must distinguish complete-available-
+        # history from history currently loaded in Perklocks' dataset.
+        # Emit coverage metadata so the UI can render honest labels
+        # ("2 verified meetings available in current dataset") rather
+        # than implying complete career H2H exists here.
+        _dates = sorted({(o.date or "")[:10] for o in vs_opp if o.date})
+        _seasons = sorted({
+            (o.context or {}).get("season")
+            for o in vs_opp if (o.context or {}).get("season") is not None
+        })
+        opp_summary["coverage"] = {
+            "meetings_used": len(vs_opp),
+            "meetings_found": len(vs_opp),
+            "available_from": _dates[0] if _dates else None,
+            "available_to":   _dates[-1] if _dates else None,
+            "seasons_available": list(_seasons),
+            "source": _src[0] if _src else "verified match history",
+            # coverage_status is CONSERVATIVE:
+            #   "complete" only if the sport-adapter guarantees full
+            #   history (currently no sport does — safest default is
+            #   "in_current_dataset" meaning we have what we have,
+            #   without claiming completeness).
+            "coverage_status": "in_current_dataset",
+            "coverage_note": (
+                f"{len(vs_opp)} verified prior meeting"
+                + ("s" if len(vs_opp) != 1 else "")
+                + " available in current dataset"
+            ),
+        }
         # P1.4 — keep ALL COMPETITIONS and SAME COMPETITION separate.
         # The current competition is the modal `league`/`competition`
         # of the most recent observations (no hardcoding).
@@ -540,7 +570,16 @@ async def query_historical(db, q: HistoricalQuery) -> HistoricalResponse:
                 if same else {"n": 0, "competition": _cur_comp, "note": "NO PRIOR MATCHUPS IN THIS COMPETITION"}
             )
     elif q.opponent_id or q.opponent_name:
-        opp_summary = {"n": 0, "note": "NO PRIOR MATCHUPS"}
+        opp_summary = {
+            "n": 0, "note": "NO PRIOR MATCHUPS IN CURRENT DATASET",
+            "coverage": {
+                "meetings_used": 0, "meetings_found": 0,
+                "available_from": None, "available_to": None,
+                "seasons_available": [],
+                "coverage_status": "in_current_dataset",
+                "coverage_note": "0 verified prior meetings available in current dataset",
+            },
+        }
 
     context_summary: Optional[dict[str, Any]] = None
     context_bucket: dict[str, list[HistoricalObservation]] = {}
@@ -1266,18 +1305,45 @@ class CFBHistoricalAdapter(HistoricalAdapter):
         if not team:
             return []
         family = q.market_family or ""
-        cursor = db.games.find(
+
+        # ── 2026-06-22 · H2H ROOT CLOSURE (universal repair) ─────────
+        # Prior implementation fetched only the subject team's most
+        # recent 120 games and let the generic reducer filter by
+        # opponent afterward.  For opponent-specific VS OPP that
+        # produced a truncated H2H sample: Texas A&M / LSU showed 2/2
+        # not because only 2 meetings existed but because only 2 of
+        # A&M's most recent 120 games happened to be against LSU.
+        #
+        # Fix: when the query targets a specific opponent, run a
+        # DIRECT H2H MongoDB query for games where either team is
+        # subject AND either team is opponent.  Return ALL such rows
+        # (no 120-game cap).  When the query does NOT target an
+        # opponent (general history / L5 / L10 / L20 / Season) keep
+        # the recent-buffer semantics for backwards compatibility.
+        opp_name = (q.opponent_name or q.opponent_id or "").strip() or None
+
+        # ── GENERAL HISTORY buffer (subject-only, most recent 120).
+        # This powers L5 / L10 / L20 / SEASON exactly as before.
+        gen_cursor = db.games.find(
             {"sport": "cfb", "$or": [{"home": team}, {"away": team}],
              "status": "Final"}
         ).sort("date", -1).limit(120)
+
         obs: list[HistoricalObservation] = []
-        async for doc in cursor:
+        _seen_event_ids: set = set()
+
+        async def _emit(doc: dict, is_h2h: bool) -> None:
+            gid = doc.get("game_id")
+            if gid and gid in _seen_event_ids:
+                return
+            if gid:
+                _seen_event_ids.add(gid)
             result = doc.get("result") or {}
             try:
                 hs = float(result.get("home"))
                 as_ = float(result.get("away"))
             except Exception:
-                continue
+                return
             home = doc.get("home"); away = doc.get("away")
             is_home = (home == team)
             team_pts = hs if is_home else as_
@@ -1300,10 +1366,37 @@ class CFBHistoricalAdapter(HistoricalAdapter):
                 actual=actual,
                 context={"team_score": team_pts, "opponent_score": opp_pts,
                          "total": total,
-                         "season": doc.get("season"), "week": doc.get("week")},
+                         "season": doc.get("season"), "week": doc.get("week"),
+                         "h2h_direct_query": is_h2h},
                 provenance="games",
-                event_id=doc.get("game_id"),
+                event_id=gid,
             ))
+
+        async for doc in gen_cursor:
+            await _emit(doc, is_h2h=False)
+
+        # ── DIRECT H2H — 2026-06-22 · P0-B/C fix ─────────────────────
+        # When the caller targets a specific opponent, additionally run
+        # a DIRECT H2H query with BOTH teams as home/away pair.  Prior
+        # code let the generic reducer filter the 120-game buffer,
+        # which truncated H2H (Texas A&M/LSU showed 2/2 not because
+        # only 2 meetings exist historically but because only 2 of
+        # A&M's last 120 games happened to be against LSU).  Direct
+        # query fetches all H2H rows in the dataset regardless of the
+        # subject's buffer position.  De-duplicated by game_id above.
+        if opp_name:
+            h2h_cursor = db.games.find({
+                "sport": "cfb", "status": "Final",
+                "$or": [
+                    {"home": team,     "away": opp_name},
+                    {"home": opp_name, "away": team},
+                ],
+            }).sort("date", -1)
+            async for doc in h2h_cursor:
+                await _emit(doc, is_h2h=True)
+
+        # Restore chronological (desc) order.
+        obs.sort(key=lambda o: o.date or "", reverse=True)
         return obs
 
 
@@ -1460,6 +1553,22 @@ def resolve_market_family(sport: str, market: str) -> Optional[str]:
     if sport == "Soccer": return _soccer_market_family(market)
     if sport == "Tennis": return _tennis_market_family(market)
     if sport == "CFB":    return _nfl_game_market_family(market)  # ML/spread/total same shape
+    if sport == "NBA":
+        # ── 2026-06-22 · NBA market-family dispatch (P0-C) ────────────
+        # Previously `resolve_market_family("NBA", ...)` returned None,
+        # so the public /api/picks/{id}/historical-intelligence route
+        # skipped NBA market resolution.  Player adapters still had
+        # their own inline `_NBA_MARKET_MAP` (line ~1348) but that map
+        # was never invoked at the route level.  Wire the same map
+        # through here so NBA player + game markets dispatch correctly.
+        m = (market or "").lower()
+        for k, v in _NBA_MARKET_MAP.items():
+            if k in m:
+                return v
+        if "moneyline" in m:    return "moneyline"
+        if "spread" in m:       return "spread"
+        if "total" in m:        return "total"
+        return None
     return None
 
 

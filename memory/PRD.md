@@ -388,7 +388,59 @@ Preview/Web hits the **preview backend** (`http://localhost:8001`); Expo Go hits
 
 ---
 
-## 2026-06-22 · CFB HIGH-LOCK RESTORATION + NFL MAGIC ROLE/MATCHUP/MODEL/MARKET FULL WIRING
+## 2026-06-22 · UNIVERSAL HISTORICAL INTELLIGENCE / H2H ROOT CLOSURE (Partial)
+
+### 🟢 Root cause found via Texas A&M / LSU canary
+`CFBHistoricalAdapter.fetch_observations` (services/historical_intelligence.py:1263) fetched only the subject team's most recent **120 games** and let the generic reducer filter by opponent afterward. The A&M / LSU VS OPP therefore showed "2 verified prior meetings" not because the historical record contains only 2 meetings but because only 2 of A&M's last 120 games happened to be vs LSU.
+
+Recon confirmed CFB games in `db.games` are keyed by DISPLAY STRING only (no `canonical_team_id` / `canonical_opponent_id`) — writer at `historical/cfb.py:205-221` stamps only `home`/`away = ESPN displayName`.
+
+### 🟢 Surgical fix landed (this pass)
+
+**A. CFB adapter — dual query (`services/historical_intelligence.py`)**
+- **GENERAL HISTORY** buffer preserved: subject-only, most-recent 120 games (powers L5/L10/L20/SEASON as before).
+- **DIRECT H2H** added: when `q.opponent_name` set, an additional `db.games.find({sport:"cfb", status:"Final", $or:[{home:subj, away:opp}, {home:opp, away:subj}]})` runs with **no 120-cap**. Rows de-duped by `event_id` so double-counting is impossible. Each observation stamps `context.h2h_direct_query=True` when the H2H path emitted it. Semantics per P0-F preserved: L10 remains subject's last 10, VS OPP is direct opponent-specific meetings.
+
+**B. Coverage transparency (P0-G "COVERAGE TRUTH")** — `query_historical` now emits `opponent_summary.coverage`:
+```json
+{"meetings_used": 2, "meetings_found": 2,
+ "available_from": "2024-10-26", "available_to": "2025-10-25",
+ "seasons_available": [2024, 2025],
+ "coverage_status": "in_current_dataset",
+ "coverage_note": "2 verified prior meetings available in current dataset"}
+```
+Empty H2H result also carries coverage metadata (`"0 verified prior meetings…"`). Frontend can now render honest labels instead of implying complete career H2H.
+
+**C. NBA market-family dispatch (P0-C)** — `resolve_market_family("NBA", …)` now returns `points/rebounds/assists/threes/pra/pr/pa/ra/moneyline/spread/total`. Previously returned `None` → the public route silently skipped NBA. NBA player + game markets now flow through the shared authority.
+
+### 📊 Texas A&M +8.5 vs LSU canary — post-fix trace
+- **General History (L20)**: n=20, hits=12, misses=8, rate=60% — real recent A&M games (Arkansas, Florida, Miss State, Auburn, …).
+- **VS OPP (direct H2H query)**: n=2, hits=2, rate=100% — 2024-10-26 A&M home 38-23 (+15 → +23.5 HIT), 2025-10-25 A&M away 49-25 (+24 → +32.5 HIT).
+- **Coverage metadata**: 2024-2025 seasons available in current dataset; explicitly labeled `in_current_dataset` NOT `complete`.
+- **Total observations**: 30 (general + H2H deduped).
+
+### 📊 CFB preservation confirmed
+`/api/picks/today?sport=CFB`: **45 picks ≥85 · 38 ≥90 · 10 at 98.5 · 100% canonical parity**. Prior evidence-governance fix + heal script results intact.
+
+### 🟡 Honest scope disclosure (NOT completed this pass)
+- **Historical dataset gap** — A&M/LSU have played 20+ times historically but Perklocks only has 2024-2025 CFB ingested (2018-2023 backfill did not run per `historical_ingestion_state`). The **repair is architectural** (direct H2H query + coverage truth). To surface more meetings, older CFB seasons must be backfilled. This is a data-availability item, not a pipeline defect.
+- **NFL / NBA / MLB / Soccer / Tennis adapter audit** — only reconnaissance completed. Sport-specific direct-H2H fixes (canonical identity migration, dual-query pattern) NOT applied yet.
+- **`h2h_enricher.py` and `team_history/h2h.py` delegation** — those parallel authorities remain independent; unification into a single canonical truth surface deferred.
+- **Frontend re-grading guard** — `HistoricalIntelligence.tsx:670-676` still computes HIT/MISS/PUSH client-side when backend omits `result`. Backend now always supplies coverage/games, but the fallback path exists. Not removed this pass.
+- **CFB refresh-idempotence regression test** — the evidence-engine bypass is in place; a permanent pytest regression NOT authored this pass.
+- **Full 6-sport 98.5 bunching audit, canonical-revision uniformity, rollover regression, parlay regression** — NOT executed. The prior build's 15/15 backend PASS covers CFB Locks + NFL Magic categories; broader test-suite coverage remains a follow-up.
+
+### Files touched
+- **EDIT** `backend/services/historical_intelligence.py` — CFB dual-query (general + direct H2H), coverage metadata, NBA market-family dispatch (~120 net LOC).
+
+### NOT touched (guardrails honored)
+- 85+ threshold · NON_APEX_HARD_CAP · Apex gate · INSUFFICIENT_EVIDENCE
+- CFB v3-signfix math · Totals Core · NFL Props V2 · alt monotonicity
+- NFL Magic ROLE/MATCHUP/MODEL fixes (preserved from prior pass)
+- CFB heal-script picks · canonical publication chain
+- MLB / NBA / Soccer / Tennis / Rollover / Parlay
+- Frontend · NHL · UFC (explicitly excluded per this pass's scope)
+
 
 ### 🟢 CFB High-Lock Repair (P0 CLOSED)
 **User question answered**: *"Why can the CFB model produce a legitimate 90–98 base score while the visible board currently tops out around 88?"*
