@@ -126,3 +126,37 @@ Full report: `/app/memory/canonical_epoch_v2_closure_2026_06_21.md`.
 - No re-audit of Rollover / Parlay / NFL Props V2 internals.
 - No weather/injury adapter integration (P2 deferred).
 - No other sports touched.
+
+---
+
+## 2026-06-21 · Soccer / Tennis / CFB Discovery + Coverage Sweep
+
+### P0 — Tennis Board Recovery (real defect closed)
+**Root cause**: `services/model_integrity_gate.evaluate()` check #9 rejected any pick with `universal_lock=None` — but the universal_lock authority (`services/universal_lock_authority.compute_universal_lock`) refuses to stamp MODEL_CONDITIONED provenance (specialized engines: tennis edge_v2, cfb_sp_game_model, NFL platinum, MLB K, Soccer scorer). Check #8 already exempts specialized engines from the blanket CONDITIONED rejection; check #9 was missing the symmetric carve-out. Every calibrated Tennis pick with lock ≥ 85, real odds, and canonical identity was being silently marked `off_board=True` with an EMPTY `off_board_reasons` array.
+**Fix (surgical, 8-line comment + 1-line guard)**: `services/model_integrity_gate.py:206-233` — check #9 now bypasses `universal_lock_authority_rejected` when `_has_specialized_engine(pick)` is True.
+**Recovery run (idempotent script `/tmp/remediate_tennis_offboard.py`)**: 
+- **Cleared 400+ Tennis picks** stuck off_board with empty reasons; all had lock ≥ 85, real book_odds, tennis_calibrated markers, no chalk/longshot trap
+- Today slate 2026-09-21: Tennis in-window went from **0 → 3 board picks** (Sofia Costoulas 87.1 · Xinyu Wang 85.3 · Storm Hunter 85.3); remaining 2 correctly off_board via `chalk_trap` (-425/-500)
+- Overall Tennis board+lock≥85 across DB: **~0 → 2,458**
+
+### P1 — CFB Rescore Moneyline Coverage (real defect closed)
+**Root cause**: `scripts/maintenance/cfb_signfix_v3_rescore.py:_rescore_one` rejected every pick where `line is None` (line 116). Moneyline picks have no line by definition; 21 retired v2 ML picks (`retirement_reason=cfb_sp_signfix_v3_regen`) were dropped before rescoring, leaving **zero v3 CFB ML picks** across the entire DB (only Spread=124 + Total=59 for v3).
+**Fix (surgical)**: `scripts/maintenance/cfb_signfix_v3_rescore.py:108-131` — require `line` only for spread/total markets; ML is line-agnostic and proceeds to `wp = float(game.p_home_ml)`.
+**Post-run**: Rescore now processes ML picks; 19/20 target ML picks failed with `sp_missing:away` (SP+ ratings absent for the away team — legitimate data-coverage gap, not a pipeline defect). The rescore pipeline is now **capable** of regenerating CFB ML → v3 for every event where SP+ ratings cover both teams. Live sports_engine (`sports_engine.py:3041-3110`) already emits v3 ML natively for covered games.
+
+### Soccer — funnel truth report (no code change)
+Real off_board_reasons breakdown on today's slate (2026-09-21):
+- `LOW_LOCK_SCORE: 18,908` (77% — model-eligible picks below 85; correct behavior)
+- `TEAM_CONTEXT_UNAVAILABLE: 2,602` — leagues without model coverage (Nations League, Liga MX, Brasileirao B, Argentina Primera Division, Bundesliga Women, etc.)
+- `NO_TEAM_CONTEXT: 1,076` · `NO_MODEL_PROBABILITY: 675` · `NO_POSITIVE_EDGE: 203`
+Today's real Soccer slate window contains 264 events — all in uncovered leagues (Brasileirao B 149, Argentina Primera 99, Bundesliga Women 14). Per contract "SUPPORTED MODEL REQUIRED", these correctly do not reach evaluation. Universal discovery works — dynamic FD-code → Odds-API mapping covers 15 top-tier competitions plus 16 capability-registry leagues. Expanding to include NFL / EPL Sunday-only nations is not surgical (needs new team-form data).
+
+### CFB — funnel truth report
+- 2026-09-19 (Fri): 132 v2/v3 picks → 104 board (all v3-signfix). 10 with lock ≥ 85 (6 Spread + 4 Total). Corrected model; no ML in current v3 rows.
+- 2026-09-20 (Sat) / 2026-09-21 (Sun) / 2026-09-22 (Mon): **0 CFB events** — no games (legit).
+- Live board: 1 CFB Lock currently visible (Missouri State @ SMU Total Under 60.5, L=87.2). Not "restoring old inflated 90-99" — that's the truthful corrected output.
+
+### Not touched
+- No NFL Props V2 · Rollover · Parlay · other sports · Lock Score math · 85-threshold
+- No new leagues added (blocked by team-model data availability, not a surgical change)
+- No rescore of picks outside the retired-v2 CFB set

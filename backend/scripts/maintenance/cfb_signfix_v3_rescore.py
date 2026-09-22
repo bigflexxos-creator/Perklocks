@@ -113,7 +113,19 @@ async def _rescore_one(p: dict, ratings: dict, stats: dict):
     line = p.get("line")
     book_odds = p.get("book_odds")
 
-    if not home or not away or line is None:
+    # 2026-06-21 SURGICAL — CFB Board Coverage.  Moneyline picks
+    # legitimately carry ``line = None`` (there is no line on an
+    # ML wager).  The previous guard ``if line is None`` dropped
+    # EVERY retired v2 ML row (21 observed) before the rescore
+    # could regenerate a v3 counterpart, leaving the CFB board
+    # covered by Spread/Total only.  Require ``line`` only for
+    # markets that actually need one (spread / total); ML is
+    # line-agnostic.
+    if not home or not away:
+        stats["skipped_missing_fields"] += 1
+        return
+    _m_lc = (market or "").lower()
+    if line is None and "moneyline" not in _m_lc:
         stats["skipped_missing_fields"] += 1
         return
 
