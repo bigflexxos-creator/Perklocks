@@ -229,3 +229,112 @@ Today's real Soccer slate window contains 264 events — all in uncovered league
 - Apex gate structure, Magic tier ceilings, evidence-count caps
 - Frontend, read-time canonicalisation, historical frozen wager snapshots
 - 85+ universal threshold, published_lock_score direct-override path
+
+---
+
+## 2026-06-21 · Production Backfill + NFL Magic Evidence-Category Integration
+
+### Part 1 — Production admin auth ✅
+- `Bossmanperkins@yahoo.com` authenticated on production, role=admin, status=active
+- Credentials used ONLY for this maintenance op. Never persisted to source, .env, or logs.
+
+### Part 2 — Support-directed production backfill ✅
+- Called `POST https://bet-edge-ai-1.emergent.host/api/admin/historical/backfill-seasons` with `{sports:[cfb,nfl,tennis,soccer,nba], lookback:3, skip_if_done:true}`
+- **Collection counts BEFORE → AFTER**:
+  - `players:            16,519 → 16,879 (+360)`
+  - `games:               4,202 →  7,575 (+3,373)`
+  - `player_game_logs:  166,789 → 173,534 (+6,745)`
+- **Per-sport ingestion status** (post-run):
+  - **CFB** — 3 seasons attempted (2024/2025/2026), all `empty` (provider returned 0 rows; retryable per Support). Games inserted: 0. Logs inserted: 0.
+  - **NFL** — 2024 season done previously (games=286, logs=22,346); 2025 done previously (games=286, logs=23,151); 2023 attempted, `empty`. Errors: prior E11000 dup-key blocker was NOT re-triggered on this pass.
+  - **Tennis** — 2024 season: **games=0, logs_inserted=6,152**; 2026 skipped (done). Errors: none.
+  - **Soccer** — 2026: 0 rows added; 4 errors from football-data.org 404s on Champions League + European Championship scorers/standings (upstream, non-blocking).
+  - **NBA** — 2025/2026 skipped (done).
+- Historical resolution verified: `player_game_logs` count grew, confirming the pipeline can now query fresh actuals.
+
+### Part 3-7 — NFL Magic evidence-category integration ✅
+**Root defect discovered by explore_agent recon**: The Magic authority uses 6 independent evidence categories, but the generic `build_playerprop_evidence` adapter for NFL emitted only 3 EvidenceTypes (`HISTORICAL_EXACT_THRESHOLD`, `MODEL_PROBABILITY`, `SPORTSBOOK_CONSENSUS`) — filling only `history_exact`, `model_family`, `market_intel`. **`recent_form`, `role_opportunity`, `matchup` were structurally empty for every NFL player prop.** Apex #6 (≥5 positive categories) and Apex #7 (`role_opportunity` OR `matchup` positive) were unreachable. A separate `services/magic/gold_evidence_nfl.py` file had rich NFL adapters, but they were orphaned (never imported).
+
+**Fix (files touched)**:
+- **NEW** `services/magic/adapters/nfl_playerprop_ext.py` (~245 LOC) — emits three EvidenceItems for NFL player props:
+  - **RECENT_FORM** from persisted `nfl_feature_engine.factors["L5 Avg vs Line"]` (distinct `source_class="nfl_feature_engine::L5_avg_vs_line"` so `collapse_history_form` can still guard shared source)
+  - **ROLE_OPPORTUNITY** from `nfl_player_usage.snap_pct_avg` (authoritative) with V2 `role_status` as a PARTIAL fallback; UNAVAILABLE if neither
+  - **MATCHUP** from `player_game_actuals` opponent+position rows (genuinely independent — the opponent's *other players*, not the pick's player); UNAVAILABLE when opponent history is missing (no fabrication)
+- **EDIT** `services/magic/adapters/playerprop.py` — 12-line NFL-only branch calling `emit_nfl_extended_evidence(db, pick, out)` after existing evidence is emitted. Additive, best-effort (swallows exceptions so Magic authority always continues).
+
+**Provenance & independence rules honored (Part 5)**:
+- HISTORY source_class `authoritative::L20_threshold` — L20 hit-rate
+- FORM source_class `nfl_feature_engine::L5_avg_vs_line` — L5 avg, distinct provenance
+- ROLE source_class `nfl_player_usage::snap_pct` — different collection
+- MATCHUP source_class `player_game_actuals::opponent=<TEAM>` — different rows entirely
+- MODEL source_class `nfl_props_v2::calibrated` (single vote enforced by `_CATEGORY_MAP` collapsing three EvidenceTypes into `model_family`)
+- MARKET source_class `the_odds_api` — different data
+- `collapse_history_form` in `lock_score_integrator.py` still zeroes FORM's positive vote when source_key set matches HISTORY exactly. No double-counting.
+
+**INSUFFICIENT_EVIDENCE gate preserved (Part 6)**: not weakened. `lock_score_integrator.py:280-291` unchanged.
+
+### Reachability proofs — 9 controlled fixtures through REAL scoring path
+`tests/test_nfl_magic_reachability.py` — constructs MagicOutput with controlled EvidenceItems and runs the REAL `apply_magic_and_apex()` authority (no test-only scorer):
+- **A**  complete 6/6 evidence → **reaches ≥98** ✅
+- **A2** complete 6/6 evidence → **can qualify Apex 100** ✅
+- **B**  matchup missing (5/6) → still qualifies (role satisfies #7) ✅
+- **C**  form missing (5/6) → still reaches ≥98 ✅
+- **D**  independent model missing (5/6 non-model) → still reaches ≥98 (#9 satisfied) ✅
+- **E**  market missing → **APEX fails closed** (#8 rejects) ✅
+- **F**  only 3 categories (pre-fix baseline) → APEX fails closed, cap 99 ✅
+- **G**  non-APEX hard cap at 99 ✅
+- **H**  INSUFFICIENT_EVIDENCE zeros positive delta ✅
+
+### Part 8 — Real NFL slate 2026-09-21 (295 alt-line eligible)
+BEFORE (V2 writer integration only) → AFTER (+ Magic evidence extension):
+| Tier    | BEFORE | AFTER | Δ    |
+|---------|--------|-------|------|
+| below-85|    0   |    3  |  +3  |
+| 85-89   |  108   |   93  | -15  |
+| 90-92   |  119   |  104  | -15  |
+| 93-95   |   44   |   57  | +13  |
+| 96-97   |   22   |   29  |  +7  |
+| **98**  |    0   |    9  |  **+9** ✨ |
+| 99      |    0   |    0  |   0  |
+| 100     |    0   |    0  |   0  |
+
+**Top 5 NFL locks (AFTER)** — all real, no manufactured scores:
+- L=98.6 Cooper Kupp 5+ Rec Yds (V2 hp=1.0, n=20) apex_block=`magic_tier_not_aligned_strong:ALIGNED`
+- L=98.5 Alvin Kamara 1+ Rec (V2 hp=0.9, n=20) apex_block=`insufficient_independent_categories:2/5`
+- L=98.5 Davante Adams 2+ Rec (V2 hp=0.9, n=20) apex_block=`insufficient_independent_categories:2/5`
+- L=98.4 C.J. Stroud 125+ Pass Yds (V2 hp=0.9, n=20) apex_block=`magic_tier_not_aligned_strong:ALIGNED`
+- L=98.4 Justin Herbert 5+ Rush Yds (V2 hp=0.85, n=20) apex_block=`magic_tier_not_aligned_strong:ALIGNED`
+
+Apex 100 not granted on this slate — legitimate block_reasons every time. NO structural NFL-only ceiling.
+
+### Part 9 — 198/199 discrepancy resolved
+One pick, `Jonathon Brooks Over 7.5 Player Reception Yds` (line=7.5, hp=0.505, **n=3**), correctly gated by the writer-integration n<5 fail-closed guard in `build_v2_factors`. This is DESIGN, not a defect — prevents 1-3 sample "distributions" from injecting noisy probabilities into Lock Score. Provenance documented in `writer_integration.py:106-113`.
+
+### Parts 10-11 — Dak / Lamar canaries
+BAL @ DAL sportsbook row still NOT ingested by the sportsbook feed at time of this pass. Cannot evaluate the specific canary rows. When the row is ingested, they will flow through the SAME universal pipeline (no player-specific code exists).
+
+### Part 12 — Alt-line monotonicity
+Existing V2 engine at `services/nfl_props_v2/engine.py::build_distribution` produces `hit_probability_monotonic` from the ladder (see `_monotonize` step). The writer integration passes it through unchanged. Ladder monotonicity is enforced upstream at distribution build time, not at writer integration.
+
+### Part 13 — Canonical publication parity
+Live `/api/picks/today?sport=NFL`: **4/4 picks have `lock_score == published_lock_score`** exactly. No read-time repair. No frontend override.
+
+### Part 14 — Non-APEX 100 impossible
+Enforced by `NON_APEX_HARD_CAP=99.0` in `lock_score_integrator.py:53` + explicit `defensive_downgrade_if_needed`. Test `test_non_apex_hard_cap_99` passes.
+
+### Part 15 — Focused regression
+- **95/95** targeted tests pass (NFL Props V2 · NFL Magic Reachability · Rollover · Parlay 3.0 · Canonical Epoch v2 · CFB sign-fix)
+- 9 new NFL Magic reachability tests pass
+- 11 pre-existing failures in unrelated test files (`test_magic_3a1`, `test_magic_3e`, `test_magic_3i1`, `test_main40`, `test_phase8_parlay2`) verified to FAIL identically before my changes (git-stash confirmation)
+
+### Files touched
+- **NEW** `services/magic/adapters/nfl_playerprop_ext.py`
+- **NEW** `tests/test_nfl_magic_reachability.py`
+- **EDIT** `services/magic/adapters/playerprop.py` (+12 lines for NFL branch)
+
+### NOT touched (per hard guardrails)
+- MLB / NBA / CFB / Tennis / Soccer scoring
+- Rollover · Parlay 3.0 · Canonical Epoch · frozen wager snapshots
+- APEX gate structure · INSUFFICIENT_EVIDENCE gate · NON_APEX_HARD_CAP
+- Universal 85+ threshold · read-time score repair · frontend scoring
+- Player-specific hardcodes · thresholds · sportsbook-as-model

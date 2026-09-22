@@ -260,6 +260,23 @@ async def build_playerprop_evidence(
         model_probability=mp,
         model_market_state=conv["state"],
     )
+    # ── NFL EVIDENCE CATEGORY EXTENSION (2026-06-21) ────────────────
+    # Emit RECENT_FORM / ROLE_OPPORTUNITY / MATCHUP EvidenceItems for
+    # NFL player-prop picks so the Magic authority sees the same 6
+    # independent evidence categories MLB/NBA can reach.  Additive
+    # only — never removes or overrides HISTORY / MODEL / MARKET.
+    # See services/magic/adapters/nfl_playerprop_ext.py for the strict
+    # source_key / provenance / fail-closed rules.
+    if sport == "NFL":
+        try:
+            from services.magic.adapters.nfl_playerprop_ext import (
+                emit_nfl_extended_evidence,
+            )
+            await emit_nfl_extended_evidence(db, pick, out)
+        except Exception:
+            # Swallow — extension is best-effort; Magic authority
+            # continues to run with whatever evidence was already added.
+            pass
     compute_magic_score(out, identity_class=ic)
     return out
 
