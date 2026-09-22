@@ -127,6 +127,59 @@ async def test_default_weather_consumes_indoor_flag_when_present():
     assert r.is_indoor is True
 
 
+# ── Root Closure — weather auto-penalty removed ───────────────────
+
+def test_weather_confidence_multiplier_unavailable_is_neutral():
+    """Missing weather does NOT penalize confidence."""
+    from services.nfl_props_v2.engine import _weather_confidence_multiplier
+    r = WeatherReport(status=WEATHER_STATUS_UNAVAILABLE)
+    assert _weather_confidence_multiplier(r) == 1.0
+
+
+def test_weather_confidence_multiplier_indoor_is_neutral():
+    from services.nfl_props_v2.engine import _weather_confidence_multiplier
+    r = WeatherReport(status=WEATHER_STATUS_AVAILABLE, is_indoor=True,
+                       wind_mph=30, precip_probability=0.9)
+    # Indoor overrides outdoor data → still neutral
+    assert _weather_confidence_multiplier(r) == 1.0
+
+
+def test_weather_confidence_multiplier_only_penalizes_real_bad_weather():
+    from services.nfl_props_v2.engine import _weather_confidence_multiplier
+    r = WeatherReport(status=WEATHER_STATUS_AVAILABLE, is_indoor=False,
+                       wind_mph=25)   # 25mph sustained
+    assert _weather_confidence_multiplier(r) < 1.0
+
+
+# ── NFL market → stat mapping ────────────────────────────────────
+
+@pytest.mark.parametrize("market,expected", [
+    ("Matthew Stafford Over 261.5 Player Pass Yds",       "pass_yds"),
+    ("Matthew Stafford Over 1.5 Player Pass Tds",         "pass_tds"),
+    ("Matthew Stafford Over 34.5 Player Pass Attempts",   "attempts"),
+    ("Kyren Williams Over 54.5 Player Rush Yds - Alternative", "rush_yds"),
+    ("Kyren Williams Over 1.5 Player Receptions",         "receptions"),
+    ("Malik Nabers Over 50.5 Player Reception Yds",       "rec_yds"),
+    ("Bijan Robinson Anytime TD Scorer",                  "anytime_td"),
+    ("Nonsense Market",                                    None),
+])
+def test_nfl_market_to_stat_mapping(market, expected):
+    from services.nfl_props_v2.nfl_stat_mapping import resolve_market_to_stat
+    assert resolve_market_to_stat(market) == expected
+
+
+def test_actuals_value_anytime_td_sums_rush_and_rec():
+    from services.nfl_props_v2.nfl_stat_mapping import actuals_value
+    a = {"rush_tds": 1, "rec_tds": 2, "pass_yds": 250}
+    assert actuals_value(a, "anytime_td") == 3.0
+    a2 = {"rush_tds": None, "rec_tds": None}
+    assert actuals_value(a2, "anytime_td") is None
+    a3 = {"pass_yds": 285}
+    assert actuals_value(a3, "pass_yds") == 285.0
+    a4 = {}
+    assert actuals_value(a4, "pass_yds") is None
+
+
 # ── Adapter interface completeness ───────────────────────────────
 
 def test_supported_markets_registered():

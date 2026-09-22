@@ -73,3 +73,14 @@ Full report: `/app/memory/canonical_epoch_v2_closure_2026_06_21.md`.
 - **Admin endpoint**: `GET /api/admin/nfl-props-v2/discover` returns the full trace.
 - **19 focused tests pass** (`tests/test_nfl_props_v2.py`); combined 62-test suite green.
 - Memo: `memory/nfl_props_v2_universal_closure_2026_06_21.md`. PRODUCTION PUBLISHED: NO.
+
+---
+
+## 2026-06-21 · NFL Player Props 2.0 — P0 Distribution Closure
+- **Canonical NFL market → stat mapper** (`services/nfl_props_v2/nfl_stat_mapping.py`): resolves free-form sportsbook markets to `player_game_actuals.actuals` keys (`pass_yds`, `pass_tds`, `attempts`, `completions`, `rush_yds`, `rush_attempts`, `rush_tds`, `rec_yds`, `receptions`, `rec_tds`, `targets`, `anytime_td=rush_tds+rec_tds`).
+- **Distributions materialize** directly from `db.player_game_actuals` (sport=`"nfl"`, 132K docs) — no new history source; as-of safe (`event_time < as_of`); small-sample tolerant (n<20 OK).
+- **Weather auto-penalty removed**: UNAVAILABLE / indoor / roof-closed → multiplier = 1.0. Only real bad-weather DATA (wind ≥ 20, gust ≥ 30, precip_prob ≥ 0.7) reduces confidence. Injury PARTIAL is now neutral.
+- **Live proof (2026-09-22 slate)**: Stafford SAFEST `175+ Pass Yds @ -550, p=0.950, floor=+70`; Kyren SAFEST `44.5+ Rush Yds @ -250, p=0.950, floor=+15.5`; Bijan SAFEST `65.5+ Rush Yds @ -185, p=0.750, floor=+4.5`; Malik Nabers SAFEST `3+ Receptions @ -1000, p=0.895, floor=+2.0` (canary discovery).
+- **74 tests pass · 0 fail** (NFL Props 2.0 up from 19 → 31; combined regression 62 → 74).
+- Memo: `memory/nfl_props_v2_distribution_closure_2026_06_21.md`. PRODUCTION PUBLISHED: NO.
+

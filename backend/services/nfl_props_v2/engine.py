@@ -123,58 +123,91 @@ class PlayerEvaluation:
 # ─────────────────────────────────────────────────────────────────────
 
 async def build_distribution(db, *, player_name: str, canonical_player_id: Optional[str],
-                              market: str, opponent: Optional[str] = None) -> Distribution:
-    """Ask the existing player_history service for L20 evidence, then
-    materialize a Distribution.  No fake values — Distribution.sample_size
-    reflects the actual number of observations."""
-    from services.player_history.service import get_player_history
-    try:
-        ev = await get_player_history(
-            db, sport="NFL",
-            canonical_player_id=canonical_player_id,
-            player_name=player_name,
-            market=market,
-            threshold=None,
-            direction="over",
-            opponent=opponent,
-        )
-    except Exception as e:
-        return Distribution(market=market, sample_size=0,
-                             provenance=f"player_history:error:{type(e).__name__}")
+                              market: str, opponent: Optional[str] = None,
+                              as_of: Optional[str] = None) -> Distribution:
+    """Build a per-player, per-market distribution from PerkLocks'
+    canonical NFL historical actuals (``player_game_actuals``).
 
-    # Best available slice — prefer L20 → L10 → L5 → season.
-    slices = ("l20", "l10", "l5", "season")
-    slice_obj = None
-    slice_name = None
-    for s in slices:
-        cand = getattr(ev, s, None)
-        if cand and getattr(cand, "sample_size", 0) and cand.sample_size > 0:
-            slice_obj = cand
-            slice_name = s
-            break
-    if slice_obj is None:
+    Root Closure — NFL Props 2.0 (2026-06-21):
+      * Resolves the free-form sportsbook market string via the
+        canonical NFL market→stat mapper.
+      * Reads directly from ``db.player_game_actuals`` with sport="nfl".
+      * As-of safe — only games with ``event_time < as_of`` are used.
+      * Small-sample tolerant — a player with 6 games still gets a
+        Distribution; sample_size reflects the truth.
+
+    No fake values are ever manufactured; when the underlying stat is
+    absent we return sample_size=0 (probabilities remain None
+    downstream — never fabricated).
+    """
+    from .nfl_stat_mapping import resolve_market_to_stat, actuals_value
+
+    stat_key = resolve_market_to_stat(market)
+    if not stat_key:
         return Distribution(market=market, sample_size=0,
-                             provenance="player_history:no_slice")
-    values = list(getattr(slice_obj, "actual_values", None) or [])
-    numeric_values = [float(v) for v in values if v is not None]
+                             provenance=f"nfl_stat_mapping:unresolved:{market[:40]}")
+
+    # Build the as-of filter.  Prefer canonical_player_id, fall back to
+    # player_name.  Never fabricate a canonical id.
+    query: dict = {"sport": "nfl"}
+    if canonical_player_id:
+        query["canonical_player_id"] = canonical_player_id
+    elif player_name:
+        query["player_name"] = {"$regex": f"^{player_name}$", "$options": "i"}
+    else:
+        return Distribution(market=market, sample_size=0,
+                             provenance="nfl_actuals:no_player_key")
+    if as_of:
+        query["event_time"] = {"$lt": as_of}
+
+    docs = await db.player_game_actuals.find(
+        query, {"_id": 0, "event_time": 1, "actuals": 1, "season": 1, "week": 1},
+    ).sort("event_time", -1).to_list(length=40)   # L20 window, buffered
+
+    numeric_values: list[float] = []
+    for d in docs:
+        v = actuals_value(d.get("actuals") or {}, stat_key)
+        if v is not None:
+            numeric_values.append(v)
+
+    n = len(numeric_values)
+    if n == 0:
+        return Distribution(market=market, sample_size=0,
+                             provenance=f"nfl_actuals:{stat_key}:no_samples")
+
+    # Prefer the most recent L20 window when we have >20 games; keep the
+    # tail otherwise (small-sample tolerant per the spec).
+    window = numeric_values[:20]
+    slice_name = f"nfl_actuals:{stat_key}:l{len(window)}"
+
+    mean = sum(window) / len(window)
     variance = None
-    if len(numeric_values) >= 2:
+    if len(window) >= 2:
         try:
-            variance = statistics.variance(numeric_values)
+            variance = statistics.variance(window)
         except statistics.StatisticsError:
             variance = None
+    # Quantiles — use empirical percentiles on the window.
+    sorted_w = sorted(window)
+    def _p(pct: float) -> float:
+        if not sorted_w:
+            return 0.0
+        idx = min(len(sorted_w) - 1,
+                  max(0, int(round((pct / 100.0) * (len(sorted_w) - 1)))))
+        return sorted_w[idx]
+
     return Distribution(
         market=market,
-        sample_size=int(slice_obj.sample_size),
-        mean=float(slice_obj.average_actual) if getattr(slice_obj, "average_actual", None) is not None else None,
+        sample_size=len(window),
+        mean=mean,
         variance=variance,
-        q10=None,
-        q25=float(slice_obj.q25) if getattr(slice_obj, "q25", None) is not None else None,
-        median=float(slice_obj.median) if getattr(slice_obj, "median", None) is not None else None,
-        q75=float(slice_obj.q75) if getattr(slice_obj, "q75", None) is not None else None,
-        q90=None,
-        values=numeric_values,
-        provenance=f"player_history:{slice_name}",
+        q10=_p(10),
+        q25=_p(25),
+        median=_p(50),
+        q75=_p(75),
+        q90=_p(90),
+        values=window,
+        provenance=slice_name,
     )
 
 
@@ -247,15 +280,23 @@ async def evaluate_player_across_markets(db, *, player_name: str,
     )
 
     # ── CONFIDENCE DOWN-WEIGHTS ──────────────────────────────────
+    # Root Closure (2026-06-21): missing WEATHER data does NOT
+    # penalize confidence — the spec forbids suppressing NFL props
+    # merely because PerkLocks does not yet ingest a weather feed.
+    # Weather can only modify confidence when the provider actually
+    # returned trustworthy weather DATA that suggests degraded
+    # conditions (e.g. sustained 20+ mph wind).  A neutral / indoor /
+    # UNAVAILABLE report contributes weather multiplier = 1.0.
     confidence_breakdown = {
-        "game_context": 1.0 if game_ctx.get("nfl_model_available") else 0.75,
-        "weather":      1.0 if weather.status == WEATHER_STATUS_AVAILABLE else 0.95,
+        "game_context": 1.0 if game_ctx.get("nfl_model_available") else 0.9,
+        "weather":      _weather_confidence_multiplier(weather),
         "availability": {
             INJURY_STATUS_AVAILABLE:   1.0,
-            INJURY_STATUS_PARTIAL:     0.90,
-            INJURY_STATUS_UNAVAILABLE: 0.85,
-        }.get(availability.status, 0.85),
+            INJURY_STATUS_PARTIAL:     1.0,   # PARTIAL is honest, not penalised
+            INJURY_STATUS_UNAVAILABLE: 1.0,   # feed offline ≠ player suppressed
+        }.get(availability.status, 1.0),
     }
+    # Explicit designations DO modify confidence — QUESTIONABLE 0.65 etc.
     if availability.availability_probability is not None:
         confidence_breakdown["availability_prob"] = availability.availability_probability
     else:
@@ -285,6 +326,10 @@ async def evaluate_player_across_markets(db, *, player_name: str,
         if mk:
             rows_by_market[mk].append(r)
 
+    # Compute as-of once so all distributions honour "no future leakage".
+    # We use the game's event_time as the as-of horizon.
+    _as_of = (game or {}).get("event_time")
+
     # ── DISTRIBUTIONS + THRESHOLDS (compute ONCE per market) ────
     dists: dict[str, Distribution] = {}
     thresholds: list[ThresholdEvaluation] = []
@@ -292,7 +337,7 @@ async def evaluate_player_across_markets(db, *, player_name: str,
         dist = await build_distribution(
             db, player_name=player_name,
             canonical_player_id=canonical_player_id,
-            market=market_str, opponent=opponent,
+            market=market_str, opponent=opponent, as_of=_as_of,
         )
         dists[market_str] = dist
         raw_evals: list[ThresholdEvaluation] = []
@@ -376,6 +421,44 @@ def _safe_float(v) -> Optional[float]:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _weather_confidence_multiplier(weather) -> float:
+    """Return a confidence multiplier from a WeatherReport.
+
+    Contract: missing data does NOT penalize.  Only real, trustworthy
+    weather EVIDENCE that suggests degraded conditions reduces
+    confidence.  Indoor / retractable-closed roofs are treated as
+    neutral (multiplier = 1.0) regardless of outdoor conditions.
+    """
+    try:
+        status = getattr(weather, "status", None)
+        # UNAVAILABLE → we simply don't know.  Not a penalty.
+        if status != WEATHER_STATUS_AVAILABLE:
+            return 1.0
+        # Indoor / roof closed → neutral.
+        if bool(getattr(weather, "is_indoor", False)):
+            return 1.0
+        roof = (getattr(weather, "roof_status", None) or "").lower()
+        if "closed" in roof or "dome" in roof:
+            return 1.0
+        # Real evidence of degraded conditions ONLY reduces confidence.
+        wind = getattr(weather, "wind_mph", None)
+        gust = getattr(weather, "wind_gust_mph", None)
+        precip = getattr(weather, "precip_probability", None)
+        # Sustained 20+ mph wind → small confidence haircut.
+        w = 1.0
+        if wind is not None and wind >= 20:
+            w *= 0.95
+        # Sustained gusts 30+ mph → additional haircut.
+        if gust is not None and gust >= 30:
+            w *= 0.95
+        # Very high precip probability → small haircut.
+        if precip is not None and precip >= 0.7:
+            w *= 0.95
+        return round(w, 4)
+    except Exception:
+        return 1.0
 
 
 __all__ = [
