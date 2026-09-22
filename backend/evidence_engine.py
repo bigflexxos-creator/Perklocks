@@ -535,6 +535,57 @@ def govern_pick(
         pick["player_prop_v2_calibrated"] = True
         return pick
 
+    # ── CFB SP+ v3-signfix calibrated fast-path (2026-06-22) ────────
+    # CFB game-market picks that carry ``cfb_engine_version=cfb_sp_game.v3.*``
+    # have already been through the SP+ signfix calibrated pipeline
+    # (services.cfb_game_model.estimate_cfb_game → compute_lock_score
+    # with real SP+ margin/sigma + book_odds + edge). Applying the
+    # generic evidence_engine multiplier on top DOUBLE-COUNTS the
+    # calibration and compounds on every refresh (audit-confirmed via
+    # cfb_full_high_lock_trace: raw 98 → v2 90 → v3_base 56.4 = mult
+    # 0.577 far below the theoretical 0.70 floor because govern_pick
+    # ran REPEATEDLY on subsequent refreshes reading its own governed
+    # output as the new "raw"). This is the same pattern the tennis
+    # calibrated fast-path solves for the Sackmann pipeline.
+    # We still compute evidence_score / insights / peak so audit trail
+    # and pinned-99 logic keep working — we only skip the multiplier.
+    _cfb_calibrated = (
+        (pick.get("sport") == "CFB")
+        and bool(pick.get("cfb_engine_version") or "").startswith("cfb_sp_game.v3")
+    )
+    if _cfb_calibrated:
+        classify(features, sport="CFB")
+        pick["evidence_score"] = evidence_score(features)
+        sorted_feats = sorted(
+            features, key=lambda f: (f.importance * f.reliability), reverse=True,
+        )
+        insights_in = pick.get("key_insights") or []
+        insights_out, dropped = apply_explanation_governor(
+            insights_in, sorted_feats, pick["evidence_score"],
+        )
+        pick["key_insights"] = insights_out
+        pick["evidence_dropped_insights"] = dropped
+        # Peak tracking still applies — the pipeline stores it for
+        # sticky-99 semantics; skip only the multiplier.
+        try:
+            raw_lock = pick.get("lock_score")
+            if raw_lock is not None:
+                prev_peak = pick.get("lock_score_peak")
+                try:
+                    prev_peak = float(prev_peak) if prev_peak is not None else 0.0
+                except Exception:
+                    prev_peak = 0.0
+                pick["lock_score_peak"] = round(max(float(raw_lock), prev_peak), 1)
+                if pick["lock_score_peak"] >= 95.0:
+                    pick["pinned"] = True
+                # lock_score_raw mirrors current lock_score for this
+                # already-calibrated pipeline.
+                pick.setdefault("lock_score_raw", round(float(raw_lock), 1))
+        except Exception:
+            pass
+        pick["cfb_signfix_calibrated"] = True
+        return pick
+
     # ── PHASE 1B (2026-06) — Magic/APEX Final-State Freeze ─────────
     # ONE DECISION STATE CONTRACT: after Block 8 Magic/Apex has
     # evaluated a pick and produced its final lock_score/apex_lock,

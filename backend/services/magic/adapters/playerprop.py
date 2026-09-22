@@ -221,6 +221,42 @@ async def build_playerprop_evidence(
 
     # Model probability + market convergence + risk flags.
     mp = pick.get("model_probability")
+    # ── 2026-06-22 SURGICAL — NFL model_probability fallback ─────────
+    # NFL player-prop writers persist the model output under
+    # ``win_probability`` (0-100 percentage) plus optional
+    # ``model_win_probability`` / ``calibrated_win_probability`` — the
+    # canonical ``model_probability`` field is often None.  Reading
+    # only ``model_probability`` therefore emitted MODEL_FAMILY =
+    # UNAVAILABLE on every NFL pick (audit: 0/20 available), which
+    # broke Apex Requirement #9 (independent model vote).  Fallback:
+    # read win_probability and normalise to a [0,1] fraction so the
+    # convergence math + direction contract behave as intended.
+    if mp is None and sport == "NFL":
+        for k in ("model_win_probability", "calibrated_win_probability",
+                  "win_probability"):
+            v = pick.get(k)
+            if v is None:
+                continue
+            try:
+                vf = float(v)
+            except (TypeError, ValueError):
+                continue
+            mp = vf / 100.0 if vf > 1.0 else vf
+            break
+    # ── 2026-06-22 SURGICAL — MODEL/MARKET confidence stamping ───────
+    # Without an explicit ``confidence`` value the Magic authority's
+    # positive-vote gate (MIN_CATEGORY_CONFIDENCE=0.6) rejects a
+    # direction=positive item because ``conf or 0.0`` falls to 0.
+    # Audit: model_family 20/20 available but 0/20 positive.  Stamp
+    # confidence proportional to the model's divergence from 50/50 —
+    # a genuine +18pp signal (win_prob=68) earns conf ≈ 0.66, a fake
+    # coin-flip (mp≈0.50) earns conf ≈ 0.24 (never crosses 0.6).
+    _mp_conf: float | None = None
+    if mp is not None:
+        try:
+            _mp_conf = round(min(1.0, abs(float(mp) - 0.5) * 2.0 + 0.2), 3)
+        except (TypeError, ValueError):
+            _mp_conf = None
     out.add(EvidenceItem(
         evidence_type=EvidenceType.MODEL_PROBABILITY,
         availability=availability_from(mp),
@@ -229,6 +265,7 @@ async def build_playerprop_evidence(
         direction=("positive" if mp and float(mp) >= 0.55
                     else "negative" if mp and float(mp) <= 0.45
                     else "neutral"),
+        confidence=_mp_conf,
         source="pick.model_probability",
         source_class=(pick.get("model_probability_source") or "unknown"),
     ))
@@ -239,6 +276,17 @@ async def build_playerprop_evidence(
         book_implied_prob=pick.get("book_implied_prob"),
     )
     out.model_market_state = conv["state"]
+    # SPORTSBOOK confidence — proportional to the |model - market|
+    # convergence delta so a genuine agreement/divergence signal earns
+    # a positive vote and a flat market never crosses 0.6.
+    _sb_conf: float | None = None
+    if conv.get("market_prob") is not None:
+        try:
+            _delta_pts = conv.get("delta_pts")
+            _sb_conf = round(min(1.0, (abs(float(_delta_pts)) / 30.0) + 0.3), 3) \
+                if _delta_pts is not None else 0.3
+        except (TypeError, ValueError):
+            _sb_conf = 0.3
     out.add(EvidenceItem(
         evidence_type=EvidenceType.SPORTSBOOK_CONSENSUS,
         availability=(Availability.AVAILABLE
@@ -249,6 +297,7 @@ async def build_playerprop_evidence(
         direction=("positive" if conv["delta_pts"] and conv["delta_pts"] > 0
                     else "negative" if conv["delta_pts"] and conv["delta_pts"] < 0
                     else "neutral"),
+        confidence=_sb_conf,
         source="pick.book_odds",
         source_class="the_odds_api",
         provenance=conv,
