@@ -61,3 +61,15 @@ Full report: `/app/memory/canonical_epoch_v2_closure_2026_06_21.md`.
 - **Saved parlay wager freeze v2** verified across MLB/NFL/Soccer/Tennis.
 - 43 regression tests pass (`tests/test_rollover_immutability_and_parlay30.py`, `tests/test_parlay30_universal_closure.py`).
 - Memo: `memory/parlay30_universal_closure_2026_06_21.md`. PRODUCTION PUBLISHED: NO.
+
+
+---
+
+## 2026-06-21 · NFL Player Props 2.0 — Universal Game Intelligence + Best-Bet Discovery
+- **New package**: `services/nfl_props_v2/` with replaceable `WeatherProvider` / `AvailabilityProvider` adapters, per-player `Distribution` + monotonic `ThresholdEvaluation` + safest-bet + best-value discovery.
+- **Reuses existing PerkLocks providers only** — no new paid APIs added: `platinum_nfl.game_runtime`, `player_history.service`, `espn_injury_notes`, live NFL alt lines from `db.picks`.
+- **Coverage strictly expanded**: 12 NFL picks scanned → all 4 sampled QB/RB/WR players reach evaluation with 51 / 43 / 19 / 18 real sportsbook alt lines each. Zero suppression, zero star bonuses, zero fake data, zero 40+ hardcodes.
+- **Weather = UNAVAILABLE / Injury = PARTIAL** honestly reported; degrade confidence 0.855, do not suppress.
+- **Admin endpoint**: `GET /api/admin/nfl-props-v2/discover` returns the full trace.
+- **19 focused tests pass** (`tests/test_nfl_props_v2.py`); combined 62-test suite green.
+- Memo: `memory/nfl_props_v2_universal_closure_2026_06_21.md`. PRODUCTION PUBLISHED: NO.

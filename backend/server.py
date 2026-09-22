@@ -159,6 +159,16 @@ try:
 except Exception as _lab_mount_err:
     logger.warning("Lab routes failed to mount: %s", _lab_mount_err)
 
+# NFL Player Props 2.0 — universal game-intelligence + best-bet discovery
+# (admin-only read endpoints; does NOT modify main picks pipeline).
+try:
+    from routes.nfl_props_v2_routes import router as _nfl_props_v2_router
+    app.include_router(_nfl_props_v2_router)
+    logger.info("NFL Player Props 2.0 admin routes mounted at /api/admin/nfl-props-v2/*")
+except Exception as _npv2_err:
+    logger.warning("NFL Player Props 2.0 routes failed to mount: %s", _npv2_err)
+
+
 
 # ────────────────────── Data version (cache-bust signal) ──────────────────────
 # Bump `DATA_VERSION` whenever a backend change requires phones to wipe their
