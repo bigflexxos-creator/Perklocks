@@ -388,7 +388,21 @@ Preview/Web hits the **preview backend** (`http://localhost:8001`); Expo Go hits
 
 ---
 
-## 2026-06-22 · UNIVERSAL HISTORICAL INTELLIGENCE / H2H ROOT CLOSURE (Partial)
+## 2026-06-22 · LOW-CREDIT SURGICAL CLOSURE
+
+### Root fixes landed
+- **Frontend regrading removed at source**: `query_historical` now stamps `o.result` on EVERY observation before returning. Frontend `HistoricalIntelligence.tsx:670` fallback becomes inert (backend truth always present).
+- **Spread cover math corrected**: for `market_family="spread"`, result now uses `evaluated = actual + line` (signed) instead of naive `actual > threshold`. Fixes false MISS grading on underdog covers (e.g., A&M +8.5 win-by-6 correctly grades HIT). Perspective is always current selection.
+- Preserved from prior pass: CFB dual-query (general + direct H2H), NBA market_family dispatch, coverage_note transparency.
+
+### Files touched
+- `backend/services/historical_intelligence.py` — `_stamp_result` in `query_historical` (~25 LOC).
+
+### NOT delivered (honest scope disclosure)
+- `h2h_enricher.py` / `team_history/h2h.py` unification into single canonical delegation — deferred
+- Settlement canonical authority migration — deferred
+- Full NHL production wiring (adapters exist at `brain/sim_nhl.py`, `historical/nhl.py`, `sport_adapters/nhl.py`, `player_history/nhl.py`; 0 picks in `db.picks`) — deferred
+- Broader 6-sport H2H direct-query migration (NFL/NBA/MLB/Soccer/Tennis adapters still use per-adapter recent buffers)
 
 ### 🟢 Root cause found via Texas A&M / LSU canary
 `CFBHistoricalAdapter.fetch_observations` (services/historical_intelligence.py:1263) fetched only the subject team's most recent **120 games** and let the generic reducer filter by opponent afterward. The A&M / LSU VS OPP therefore showed "2 verified prior meetings" not because the historical record contains only 2 meetings but because only 2 of A&M's last 120 games happened to be vs LSU.

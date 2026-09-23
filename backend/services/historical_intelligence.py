@@ -508,6 +508,35 @@ async def query_historical(db, q: HistoricalQuery) -> HistoricalResponse:
     venue_filtered = _apply_venue_scope(all_obs, q.venue_scope)
     scoped = _apply_sample_scope(venue_filtered, q.sample_scope)
 
+    # ── 2026-06-22 · P0 REMOVE FRONTEND REGRADING + P0-I SPREAD COVER ─
+    # Backend is the sole authority for HIT/MISS/PUSH.  Stamp
+    # o.result on every observation using the CURRENT sportsbook
+    # threshold + side so frontend consumers never fall back to
+    # client-side grading (HistoricalIntelligence.tsx:670).
+    #
+    # For SPREAD, the classifier's naive ``actual > threshold`` was
+    # semantically wrong: for A&M +8.5 with a +6 game (win by 6) it
+    # returned MISS because 6 !> 8.5, yet +8.5 obviously covered.
+    # Correct cover math (per P0-I):
+    #     evaluated = actual + line
+    #     > 0 → HIT · < 0 → MISS · = 0 → PUSH
+    # This is signed and works for both favorites (line<0) and
+    # underdogs (line>0).  Perspective is the CURRENT selection.
+    def _stamp_result(o):
+        try:
+            if (q.market_family or "").lower() == "spread" \
+                    and o.actual is not None and q.current_threshold is not None:
+                evaluated = float(o.actual) + float(q.current_threshold)
+                if   evaluated > 0: o.result = "HIT"
+                elif evaluated < 0: o.result = "MISS"
+                else:               o.result = "PUSH"
+            else:
+                o.result = _classify(o.actual, q.current_threshold, q.side)
+        except Exception:
+            o.result = None
+    for _o in all_obs:
+        _stamp_result(_o)
+
     main = _summarize(scoped, q.current_threshold, q.side)
 
     home_only = [o for o in venue_filtered if (o.home_away or "").lower() == "home"]
