@@ -388,7 +388,29 @@ Preview/Web hits the **preview backend** (`http://localhost:8001`); Expo Go hits
 
 ---
 
-## 2026-06-22 · FINAL LOW-CREDIT CLOSURE (Settlement Root · UNRESOLVED · NHL)
+## 2026-06-22 · NFL PROPS DIAGNOSTIC (Threshold Truth · Coverage · Monotonicity)
+
+### Investigative findings — NO code changes this pass
+- **"220+ Passing Yards" is NOT synthetic**: `services/nfl_alt_label_projection.py:147` performs READ-TIME milestone projection (`milestone = floor(point) + 1`). Raw pick `Over 219.5` becomes display `220+`. Raw `line=219.5` preserved for settlement. This matches DK / FanDuel published alt format.
+- **Provenance metadata gap**: every published NFL pick carries `book=None, src=None, provider_market_key=None`. Upstream `live_alt_lines` DOES capture book but the field is not propagated to `db.picks`. Root defect but requires writer-path change beyond this diagnostic pass.
+- **Ladder monotonicity breaks** — confirmed:
+  - Prescott Pass Yds: 260.5 → 270.5 wp 54.1% → 57.1% (BREAK)
+  - Burrow Pass Yds: 268.5 → 273.5 wp 54.3% → 55.1% (BREAK)
+  - Duplicate rows: 3× `Burrow Over 249.5` with wp 62.0 / 61.1 / 56.3 (same threshold, three probs — different books/models not consolidated)
+- **Canary coverage** (all 7):
+  - Prescott 36 picks · 11 on-board ≥85 · best L=96.3
+  - Burrow 31 · 14 ≥85 · best L=96.0
+  - Chase 19 · 7 ≥85 · best L=96.0
+  - Lamar 26 · 1 ≥85 · best L=88.4
+  - Gibbs 14 · 2 ≥85 · best L=87.6
+  - A.J. Brown 33 · 0 ≥85 · best L=82.2
+  - Smith-Njigba 0 picks — identity match failure (potential apostrophe / hyphen normalization gap)
+
+### NOT delivered — deferred to next pass
+- Ladder monotonicity guard (dedupe same-threshold rows + enforce P(200+) ≥ P(225+))
+- Provenance metadata write-through (`book`, `provider_market_key`, `provider_outcome`)
+- Smith-Njigba identity alias
+- Threshold-specific historical evaluation confirmation across all supported families
 
 ### Files changed
 - `backend/services/universal_market_contract.py` — added `Family.NHL_PUCK_LINE/NHL_GOALS/NHL_SOG/NHL_ASSISTS/NHL_POINTS`; extended NHL entries (aliases + player-prop MarketEntry records, all `MODEL_UNAVAILABLE`); added public `resolve_family_from_market(sport, market)` — single source of truth for legacy string → canonical family.
