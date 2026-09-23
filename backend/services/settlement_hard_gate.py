@@ -113,9 +113,30 @@ _FAMILY_MAP: Dict[str, tuple[tuple[str, str], ...]] = {
 
 def resolve_family(sport: Optional[str], market: Optional[str]) -> Optional[str]:
     """Map (sport, legacy market string) → canonical market family, or
-    None if unsupported by the registry."""
+    None if unsupported by the registry.
+
+    2026-06-22 · P0 Settlement Authority Root Fix:
+    PRIMARY resolution goes through
+    ``UniversalMarketContract.resolve_family_from_market`` so adding a
+    new sport (e.g. NHL) only requires an entry in the shared
+    registry — NOT another private family map here.  The legacy
+    per-sport ``_FAMILY_MAP`` remains as a COMPATIBILITY FALLBACK for
+    old pick records whose free-form market strings don't yet match a
+    UMC alias.  No supported canonical market is silently rejected.
+    """
     if not sport or not market:
         return None
+    # ── PRIMARY · UniversalMarketContract single source of truth ────
+    try:
+        from services.universal_market_contract import (
+            resolve_family_from_market as _umc_resolve,
+        )
+        umc_family = _umc_resolve(sport, market)
+        if umc_family:
+            return umc_family
+    except Exception:
+        pass
+    # ── LEGACY COMPATIBILITY FALLBACK · pre-canonical records ───────
     m = market.lower()
     hints = _FAMILY_MAP.get(sport)
     if not hints:

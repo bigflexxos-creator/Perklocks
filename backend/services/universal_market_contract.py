@@ -89,6 +89,12 @@ class Family:
     TENNIS_MATCH_WIN  = "tennis_match_winner"
     TENNIS_GAME_HANDICAP = "tennis_game_handicap"
     TENNIS_TOTAL_GAMES = "tennis_total_games"
+    # NHL — game + player (2026-06-22 · NHL wiring prep)
+    NHL_PUCK_LINE     = "puck_line"
+    NHL_GOALS         = "nhl_goals"
+    NHL_SOG           = "nhl_sog"       # SHOTS ON GOAL (not generic shots)
+    NHL_ASSISTS       = "nhl_assists"
+    NHL_POINTS        = "nhl_points"
 
 
 ACTIVE                 = "ACTIVE"
@@ -523,13 +529,38 @@ _add(MarketEntry("NHL", Family.MONEYLINE, provider_market_keys=("h2h",),
     capability_state=MODEL_UNAVAILABLE))
 _add(MarketEntry("NHL", "puck_line",
     provider_market_keys=("spreads",),
-    aliases=("puckline",),
+    aliases=("puckline", "puck_line", "puck line"),
     market_class="game_market", line_type="both",
     selection_schema="participant", allowed_sides=("home", "away"),
     capability_state=MODEL_UNAVAILABLE))
 _add(MarketEntry("NHL", Family.GAME_TOTAL,
     provider_market_keys=("totals",),
+    aliases=("total", "game_total"),
     market_class="game_market", line_type="both",
+    capability_state=MODEL_UNAVAILABLE))
+# ── 2026-06-22 · NHL player-prop canonical entries ───────────────
+# Registry entries present with capability_state=MODEL_UNAVAILABLE so
+# settlement/hard-gate can canonicalize them uniformly.  Activating
+# ACTIVE requires acquisition + independent model + settlement.
+_add(MarketEntry("NHL", Family.NHL_GOALS,
+    provider_market_keys=("player_goals", "player_goals_alternate"),
+    aliases=("goals", "player goals", "anytime goal scorer"),
+    market_class="player_prop", line_type="both",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NHL", Family.NHL_SOG,
+    provider_market_keys=("player_shots_on_goal", "player_shots_on_goal_alternate"),
+    aliases=("shots on goal", "sog", "player shots on goal"),
+    market_class="player_prop", line_type="both",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NHL", Family.NHL_ASSISTS,
+    provider_market_keys=("player_assists", "player_assists_alternate"),
+    aliases=("assists", "player assists"),
+    market_class="player_prop", line_type="both",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NHL", Family.NHL_POINTS,
+    provider_market_keys=("player_points", "player_points_alternate"),
+    aliases=("points", "player points"),
+    market_class="player_prop", line_type="both",
     capability_state=MODEL_UNAVAILABLE))
 _add(MarketEntry("UFC", Family.MONEYLINE, provider_market_keys=("h2h",),
     market_class="game_market", selection_schema="moneyline",
@@ -612,6 +643,44 @@ def resolve_provider_key(sport: str, provider_key: str) -> Optional[MarketEntry]
             return e
         if pk in tuple(a.lower() for a in e.aliases):
             return e
+    return None
+
+
+def resolve_family_from_market(sport: str, market: str) -> Optional[str]:
+    """Canonicalize a legacy pick's free-form `market` string into a
+    UniversalMarketContract family.  This is the single authoritative
+    resolver — settlement_hard_gate delegates here so a new sport
+    (e.g. NHL) only needs to appear in ``_REGISTRY`` once, not in
+    every consumer's private family map.
+
+    Match order:
+      1. Exact alias / provider-key substring against every entry
+         registered for that sport.
+      2. Fall back to the entry's `family` value substring (so
+         "Total 60.5" resolves to the ``game_total`` entry).
+    Returns the ``family`` string when a match is found, or None.
+    2026-06-22 · low-credit closure — settlement authority root fix.
+    """
+    if not sport or not market:
+        return None
+    m = (market or "").lower()
+    entries_for_sport = [e for e in _REGISTRY.values() if e.sport == sport]
+    if not entries_for_sport:
+        return None
+    # Pass 1: aliases first (most specific).
+    for e in entries_for_sport:
+        for alias in e.aliases:
+            if alias and alias.lower() in m:
+                return e.family
+    # Pass 2: provider keys.
+    for e in entries_for_sport:
+        for pk in e.provider_market_keys:
+            if pk and pk.lower() in m:
+                return e.family
+    # Pass 3: family token itself ("game_total" / "moneyline").
+    for e in entries_for_sport:
+        if e.family and e.family.replace("_", " ") in m:
+            return e.family
     return None
 
 

@@ -388,7 +388,15 @@ Preview/Web hits the **preview backend** (`http://localhost:8001`); Expo Go hits
 
 ---
 
-## 2026-06-22 · CONTINUATION SURGICAL CLOSURE (H2H / Frontend / Settlement)
+## 2026-06-22 · FINAL LOW-CREDIT CLOSURE (Settlement Root · UNRESOLVED · NHL)
+
+### Files changed
+- `backend/services/universal_market_contract.py` — added `Family.NHL_PUCK_LINE/NHL_GOALS/NHL_SOG/NHL_ASSISTS/NHL_POINTS`; extended NHL entries (aliases + player-prop MarketEntry records, all `MODEL_UNAVAILABLE`); added public `resolve_family_from_market(sport, market)` — single source of truth for legacy string → canonical family.
+- `backend/services/settlement_hard_gate.py` — `resolve_family` now delegates to `UniversalMarketContract.resolve_family_from_market` FIRST; legacy `_FAMILY_MAP` remains as compat fallback for pre-canonical records. New sports no longer require adding to `_FAMILY_MAP`.
+- `frontend/src/components/HistoricalIntelligence.tsx` — VS OPP tab renders explicit `◇ UNRESOLVED` badge when backend result is missing/null (still never regrades client-side).
+
+### Preservation
+- CFB Locks preserved · NFL 238-player funnel preserved · A&M/LSU H2H regression: 2/2 HIT · UNRESOLVED rows show explicit badge.
 
 ### Files changed this continuation
 - `backend/services/team_history/h2h.py` — `get_h2h_history` now queries `team_game_actuals` directly by canonical (team_id, opponent_id). Prior over-fetch(`limit*4`)+filter pattern replaced. Legacy fallback preserved for sports without team_game_actuals rows.
