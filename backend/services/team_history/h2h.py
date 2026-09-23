@@ -119,6 +119,15 @@ async def get_h2h_history(
     Returns ``H2HResult`` — sample_size accurately reflects the true
     number of events (§9 — a 2-meeting sample is NEVER inflated).
     Missing scores stay UNKNOWN, they do NOT become 0.
+
+    2026-06-22 · P0 H2H authority repair: prior implementation
+    over-fetched the team's most recent ``limit * 4`` general history
+    rows and filtered them by opponent afterward.  For any opponent
+    whose meetings fell outside that window, H2H was silently
+    truncated.  Fix: query ``team_game_actuals`` DIRECTLY with both
+    ``canonical_team_id`` AND ``canonical_opponent_id`` — no
+    over-fetch, no filter-after step, complete H2H sample within the
+    dataset.
     """
     from datetime import datetime, timezone
     as_of_iso = as_of or datetime.now(timezone.utc).isoformat()
@@ -129,16 +138,36 @@ async def get_h2h_history(
             canonical_opponent_id=canonical_opponent_id,
         )
 
-    rows, _source = await load_team_rows(
-        db, sport=sport,
-        canonical_team_id=canonical_team_id,
-        team_name=None,
-        as_of=as_of_iso,
-        limit=limit * 4,     # over-fetch and filter
-    )
-    h2h_rows = [r for r in rows
-                  if r.get("canonical_opponent_id") == canonical_opponent_id]
-    h2h_rows = h2h_rows[:limit]
+    sport_l = (sport or "").lower()
+    h2h_rows: list[dict] = []
+    try:
+        coll = db.team_game_actuals
+        q = {
+            "sport": sport_l,
+            "canonical_team_id": canonical_team_id,
+            "canonical_opponent_id": canonical_opponent_id,
+            "event_time": {"$lt": as_of_iso},
+        }
+        cursor = coll.find(q, {"_id": 0}).sort("event_time", -1).limit(limit)
+        h2h_rows = [d async for d in cursor]
+    except Exception:
+        h2h_rows = []
+
+    # Legacy fallback — only when the direct-canonical query returns
+    # nothing (e.g. sport hasn't been backfilled into
+    # team_game_actuals yet).  Preserves prior behavior for old data.
+    if not h2h_rows:
+        rows, _source = await load_team_rows(
+            db, sport=sport,
+            canonical_team_id=canonical_team_id,
+            team_name=None,
+            as_of=as_of_iso,
+            limit=max(limit * 4, 200),
+        )
+        h2h_rows = [r for r in rows
+                    if r.get("canonical_opponent_id") == canonical_opponent_id]
+        h2h_rows = h2h_rows[:limit]
+
     return build_h2h_result(
         canonical_team_id=canonical_team_id,
         canonical_opponent_id=canonical_opponent_id,

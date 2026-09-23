@@ -77,11 +77,37 @@ _SOCCER_FAMILY_HINTS: tuple[tuple[str, str], ...] = (
     ("total goals",           Family.GAME_TOTAL),
     ("moneyline",             Family.MONEYLINE),
 )
+# ── 2026-06-22 · P0 Settlement Authority Fix ──────────────────────
+# NBA / CFB game markets were previously NOT in the family map, so
+# the SettlementCapabilityRegistry hard-gate abstained and every NBA
+# grading fell through to the legacy engine's string parsers.
+# Route the canonical shapes through the registry too.  Legacy string
+# parsers remain the fallback for OLD unmapped records — no
+# unsupported market is silently rejected.
+_NBA_FAMILY_HINTS: tuple[tuple[str, str], ...] = (
+    ("moneyline",             Family.MONEYLINE),
+    ("point spread",          Family.POINT_SPREAD),
+    ("spread",                Family.POINT_SPREAD),
+    ("total",                 Family.GAME_TOTAL),
+    ("points",                Family.NBA_POINTS),
+    ("rebounds",              Family.NBA_REBOUNDS),
+    ("assists",               Family.NBA_ASSISTS),
+    ("threes",                Family.NBA_THREES),
+    ("3pt made",              Family.NBA_THREES),
+    ("pra",                   Family.NBA_PRA),
+)
+_CFB_FAMILY_HINTS: tuple[tuple[str, str], ...] = (
+    ("moneyline",             Family.MONEYLINE),
+    ("spread",                Family.POINT_SPREAD),
+    ("total",                 Family.GAME_TOTAL),
+)
 _FAMILY_MAP: Dict[str, tuple[tuple[str, str], ...]] = {
     "MLB":    _MLB_FAMILY_HINTS,
     "NFL":    _NFL_FAMILY_HINTS,
     "Tennis": _TENNIS_FAMILY_HINTS,
     "Soccer": _SOCCER_FAMILY_HINTS,
+    "NBA":    _NBA_FAMILY_HINTS,
+    "CFB":    _CFB_FAMILY_HINTS,
 }
 
 

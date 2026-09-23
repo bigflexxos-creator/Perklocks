@@ -667,13 +667,16 @@ function VsOppTab({ data }: { data: HistoricalIntelligenceResponse }) {
       {games.length > 0 && (
         <View style={{ marginTop: 12 }}>
           {games.map((g: any, i: number) => {
-            // Derive HIT/MISS/PUSH vs today's line when the observation
-            // carries no precomputed result.  Missing actual stays "—".
-            let res: string | undefined = g.result || undefined;
-            if (!res && g.actual != null && line != null) {
-              if (g.actual === line) res = "PUSH";
-              else res = ((g.actual > line) === (sideRaw !== "under")) ? "HIT" : "MISS";
-            }
+            // ── 2026-06-22 · P0 REMOVE FRONTEND REGRADING ────────────
+            // Backend is the SOLE grading authority.  It stamps
+            // g.result (HIT/MISS/PUSH) on every observation via
+            // services/historical_intelligence.py `_stamp_result`.
+            // If result is absent → UNRESOLVED (rendered as no badge).
+            // The previous client-side fallback (actual vs line) was
+            // mathematically wrong for spreads (naïve `actual > line`
+            // false-graded underdog covers) so we do NOT compute
+            // locally here.  Missing result stays missing.
+            const res: string | undefined = g.result || undefined;
             const ctx = g.context || {};
             const subjScore = ctx.subject_score ?? ctx.team_score ?? ctx.gf ?? null;
             const oppScore  = ctx.opponent_score ?? ctx.ga ?? null;
