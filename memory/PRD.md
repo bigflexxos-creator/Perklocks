@@ -388,7 +388,17 @@ Preview/Web hits the **preview backend** (`http://localhost:8001`); Expo Go hits
 
 ---
 
-## 2026-06-22 · LOW-CREDIT SURGICAL CLOSURE
+## 2026-06-22 · CONTINUATION SURGICAL CLOSURE (H2H / Frontend / Settlement)
+
+### Files changed this continuation
+- `backend/services/team_history/h2h.py` — `get_h2h_history` now queries `team_game_actuals` directly by canonical (team_id, opponent_id). Prior over-fetch(`limit*4`)+filter pattern replaced. Legacy fallback preserved for sports without team_game_actuals rows.
+- `backend/services/settlement_hard_gate.py` — added `_NBA_FAMILY_HINTS` (ML/Spread/Total/Points/Rebounds/Assists/Threes/PRA) and `_CFB_FAMILY_HINTS` (ML/Spread/Total). NBA + CFB now route through the SettlementCapabilityRegistry instead of relying solely on legacy string parsers.
+- `frontend/src/components/HistoricalIntelligence.tsx` — VS OPP tab no longer computes HIT/MISS/PUSH locally. Backend result is the sole authority. Missing result → no badge (UNRESOLVED).
+
+### Preservation confirmed
+- CFB Locks ≥85 upcoming on-board: 51 (unchanged)
+- NFL distinct players in funnel: 238 (unchanged)
+- A&M/LSU H2H regression: OPP n=2 hits=2 rate=100%, both HITs correctly graded via spread cover math
 
 ### Root fixes landed
 - **Frontend regrading removed at source**: `query_historical` now stamps `o.result` on EVERY observation before returning. Frontend `HistoricalIntelligence.tsx:670` fallback becomes inert (backend truth always present).
