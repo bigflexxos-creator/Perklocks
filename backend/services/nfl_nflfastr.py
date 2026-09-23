@@ -93,10 +93,37 @@ def _safe_div(a, b) -> Optional[float]:
 
 
 def _normalize_name(name: str) -> str:
-    """Case-fold + strip whitespace. NFL names are stable across
-    nflverse and TheSportsBook feeds so no complex normalization is
-    needed here (e.g. "Ja'Marr Chase" → "ja'marr chase")."""
-    return (name or "").strip().lower()
+    """Canonical NFL name normalizer used across ingest + lookup paths.
+
+    2026-06-22 · P16 UNIVERSAL PLAYER IDENTITY NORMALIZATION.
+    Prior behavior was just ``strip().lower()`` which meant that
+    variants like ``Jaxon Smith-Njigba`` vs ``jaxon smith njigba``
+    (spaces vs hyphen), ``O'Connell`` vs ``o'connell`` vs curly
+    ``o\u2019connell``, ``A.J. Brown`` vs ``aj brown`` did NOT
+    canonicalize together and caused genuine lookup misses.
+
+    Fix: unicode NFKC normalize, replace curly quotes with straight,
+    strip apostrophes/periods (never punctuation-safe join), collapse
+    hyphens to a single space, collapse whitespace.  This does NOT
+    fuzzy-match unrelated players — every substitution is a
+    punctuation-only canonicalization.
+    """
+    import re, unicodedata
+    s = (name or "").strip()
+    if not s:
+        return ""
+    # Unicode NFKC then case-fold.
+    s = unicodedata.normalize("NFKC", s).casefold()
+    # Curly → straight quotes.
+    s = s.replace("\u2019", "'").replace("\u2018", "'")
+    # Drop apostrophes and dots entirely so O'Connell → oconnell,
+    # A.J. → aj (NEVER cross-collides — punctuation-only).
+    s = s.replace("'", "").replace(".", "")
+    # Hyphen → space so Smith-Njigba matches "smith njigba".
+    s = s.replace("-", " ")
+    # Collapse whitespace.
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 
 # ── Ingest ────────────────────────────────────────────────────────
