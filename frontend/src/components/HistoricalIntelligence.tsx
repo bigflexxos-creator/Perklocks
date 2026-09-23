@@ -731,6 +731,19 @@ function VsOppTab({ data }: { data: HistoricalIntelligenceResponse }) {
                     {line !== null && line !== undefined ? ` ${line}` : ""} — {res}
                   </Text>
                 )}
+                {/* 2026-06-22 · Historical UNRESOLVED contract — when
+                    the backend cannot grade (missing actual /
+                    canonical identity failure / unsupported market)
+                    we display UNRESOLVED explicitly rather than an
+                    empty badge.  Frontend NEVER computes HIT/MISS
+                    locally. */}
+                {!res && (
+                  <Text style={{ marginTop: 6, fontSize: 12, fontWeight: "800",
+                    color: COLORS.textMuted }}>
+                    ◇ {sideLabel}
+                    {line !== null && line !== undefined ? ` ${line}` : ""} — UNRESOLVED
+                  </Text>
+                )}
               </View>
             );
           })}
