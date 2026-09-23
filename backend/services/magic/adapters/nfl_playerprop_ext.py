@@ -254,9 +254,23 @@ async def _build_role_opportunity(
     if not row:
         name = _extract_player_name(pick)
         if name:
+            # 2026-06-22 · P16 — canonical name normalization.  Try the
+            # ingested (legacy) form first (lowercase-strip) then the
+            # new NFKC-canonical form (apostrophes stripped, hyphens
+            # → space) so hyphenated / apostrophe / A.J. variants
+            # resolve without a data migration.
+            try:
+                from services.nfl_nflfastr import _normalize_name as _nn
+                canon = _nn(name)
+            except Exception:
+                canon = None
+            legacy = name.strip().lower()
+            candidates = [legacy]
+            if canon and canon != legacy:
+                candidates.append(canon)
             try:
                 row = await db.nfl_player_usage.find_one(
-                    {"player": name.lower()},
+                    {"player": {"$in": candidates}},
                     sort=[("season", -1)],
                 )
             except Exception:

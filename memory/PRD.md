@@ -388,7 +388,26 @@ Preview/Web hits the **preview backend** (`http://localhost:8001`); Expo Go hits
 
 ---
 
-## 2026-06-22 · NFL ALT-LADDER MONOTONICITY + DEDUPE GUARD
+## 2026-06-22 · NFL PROPS — IDENTITY NORMALIZATION UPGRADE
+
+### Files changed
+- `backend/services/nfl_nflfastr.py::_normalize_name` — upgraded to universal punctuation-safe canonicalizer: NFKC normalize, curly→straight quotes, strip apostrophes+dots, hyphens→space, collapse whitespace. Unit test 6/6 PASS (Jaxon Smith-Njigba, Ja'Marr Chase, curly-quote O'Connell, A.J./D.J. Moore, plain Dak Prescott).
+- `backend/services/magic/adapters/nfl_playerprop_ext.py::_build_role_opportunity` — dual-name fallback: query `nfl_player_usage` with `$in: [legacy_lower, canonical]` so hyphen/apostrophe/A.J.-style names resolve without a data migration.
+
+### FanDuel market key audit (recon, no change needed)
+`sport_capability_registry.NFL.prop_markets` already requests BOTH standard AND alternate/milestone keys for every currently supported family:
+- `player_pass_yds` + `player_pass_yds_alternate`
+- `player_rush_yds` + `player_rush_yds_alternate`
+- `player_receptions` + `player_receptions_alternate`
+- `player_reception_yds` + `player_reception_yds_alternate`
+- `player_pass_tds`, `player_pass_attempts`, `player_pass_completions`, `player_rush_attempts`, `player_rush_tds`, `player_reception_tds`, `player_anytime_td`, `player_1st_td`
+**No missing request key** — the "125+ for Penix but only 220.5 for Dak" gap is a genuine per-event provider ladder-depth difference (upstream), not a Perklocks acquisition defect.
+
+### JSN status
+`db.odds_api_cache` and `db.picks` both contain **zero rows** matching `Njigba` — provider not exposing JSN player-prop lines on the current slate (SEA game upstream unavailable / IR / no ladder). Identity normalizer proven correct; upstream is the constraint.
+
+### NOT delivered (honest scope)
+Massive P9-P14 items (single canonical player/stat distribution feeding all rungs, writer-time monotonicity, provenance write-through) require multi-pass writer refactor. The existing read-time `nfl_alt_ladder_monotonicity` guard remains as the mathematically correct fail-safe.
 
 ### Files changed
 - **NEW** `backend/services/nfl_alt_ladder_monotonicity.py` — read-time guard grouping (player, family, side), same-threshold dedupe keeping safest wp + surviving book/odds tuple, monotonicity clamp on OVER/UNDER
