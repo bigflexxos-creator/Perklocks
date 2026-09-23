@@ -388,7 +388,33 @@ Preview/Web hits the **preview backend** (`http://localhost:8001`); Expo Go hits
 
 ---
 
-## 2026-06-22 · NFL PROPS — IDENTITY NORMALIZATION UPGRADE
+## 2026-06-22 · NFL FANDUEL ROOT CAUSE ISOLATED (Not Yet Fixed)
+
+### Root defect definitive trace
+- `db.live_alt_lines` for `event=Baltimore Ravens @ Dallas Cowboys` bookmaker=`fanduel` market_key=`player_pass_yds_alternate` **CONTAINS**:
+  - Dak Prescott Over 174.5 (-1450) → 199.5 (-600) → 224.5 (-300) → 249.5 (-162) → 274.5 (116) → … → 399.5 (1500)
+  - Lamar Jackson Over 149.5 (-1100) → 174.5 (-500) → 199.5 (-280) → 224.5 (-154) → … → 374.5 (1500)
+  - **Matches supplied FanDuel screenshots exactly** (175+/200+/225+ etc.)
+- `db.live_alt_lines` for `event=Cincinnati Bengals @ Pittsburgh Steelers` — **ZERO FanDuel `player_pass_yds_alternate` rows for Burrow** (DraftKings similarly does not appear; 6/16 NFL market_keys total do not carry a Burrow row this event)
+- `db.picks` Dak Pass Yds alt ladder shows: **240.5 (-189), 250.5 (-147), 260.5, 270.5, 280.5, …** — offsets and odds match NEITHER FanDuel NOR DraftKings live_alt_lines
+
+**Classification: A + B mixed**:
+- **A** for Dak / Lamar — provider raw FanDuel response contains the low milestones (174.5/199.5/224.5 etc.); Perklocks writer discards them and emits a SYNTHESIZED 10-yard ladder starting at 240.5 with prices that don't match any real book row
+- **B** for Burrow (CIN@PIT) — provider currently returns NO `player_pass_yds_alternate` rows for the CIN@PIT event from EITHER bookmaker (0/77 FanDuel, 0/197 DraftKings) despite FanDuel sportsbook displaying the ladder — this is a genuine data-provider coverage gap for that specific event
+
+### Perklocks FIX REQUIRED: **YES for A** (writer path emits synthetic thresholds instead of pulling `live_alt_lines`)
+
+### NOT delivered this pass (honest — beyond low-credit budget)
+- Common-distribution writer refactor (P9-P11)
+- Provenance write-through (P6)
+- Writer-side monotonicity (P10)
+- Explicit availability gate (P14)
+- Fix for the writer synthesizing thresholds instead of consuming `live_alt_lines` (the ROOT of the FanDuel gap)
+
+### Preserved
+- Read-time monotonicity + dedupe guard operational
+- Identity normalizer verified
+- Settlement canonical authority + UMC-first resolution
 
 ### Files changed
 - `backend/services/nfl_nflfastr.py::_normalize_name` — upgraded to universal punctuation-safe canonicalizer: NFKC normalize, curly→straight quotes, strip apostrophes+dots, hyphens→space, collapse whitespace. Unit test 6/6 PASS (Jaxon Smith-Njigba, Ja'Marr Chase, curly-quote O'Connell, A.J./D.J. Moore, plain Dak Prescott).
