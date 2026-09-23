@@ -2367,6 +2367,25 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             logger.info("NflAltLabelProjection: %s", _nfl_lp_stats)
     except Exception as _nfl_lp_err:
         logger.warning("NflAltLabelProjection skipped: %s", _nfl_lp_err)
+    # ── 2026-06-22 · NFL Alt-Ladder MONOTONICITY + DEDUPE GUARD ────
+    # READ-TIME post-scoring guard.  Fixes two confirmed defects
+    # (1) non-monotone probability ladders (Prescott 260.5→270.5
+    # wp 54.1→57.1; Burrow 268.5→273.5 wp 54.3→55.1) — the raw
+    # scored probabilities are clamped to the easier rung so a
+    # harder OVER threshold cannot have higher probability, and
+    # (2) same-threshold duplicates (Burrow 3× at line=249.5 with
+    # wp 62.0/61.1/56.3) — consolidated to the safest surviving
+    # book+line+odds tuple.  ZERO db writes; frozen picks stay
+    # immutable per PUBLICATION_CONTRACT §3.
+    try:
+        from services.nfl_alt_ladder_monotonicity import (
+            apply_nfl_alt_ladder_guard,
+        )
+        _mono_stats = apply_nfl_alt_ladder_guard(picks)
+        if _mono_stats.get("clamped") or _mono_stats.get("consolidated"):
+            logger.info("NflAltLadderGuard: %s", _mono_stats)
+    except Exception as _mono_err:
+        logger.warning("NflAltLadderGuard skipped: %s", _mono_err)
     # ── CFB STALE PRE-FIX SAFETY NET (2026-06-12 · v3 EXPLICIT-VERSION) ─
     # v3 authority ladder (each rung sufficient to KEEP a pick):
     #   1. Explicit engine/publication version present:

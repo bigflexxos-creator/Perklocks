@@ -388,7 +388,24 @@ Preview/Web hits the **preview backend** (`http://localhost:8001`); Expo Go hits
 
 ---
 
-## 2026-06-22 · NFL PROPS DIAGNOSTIC (Threshold Truth · Coverage · Monotonicity)
+## 2026-06-22 · NFL ALT-LADDER MONOTONICITY + DEDUPE GUARD
+
+### Files changed
+- **NEW** `backend/services/nfl_alt_ladder_monotonicity.py` — read-time guard grouping (player, family, side), same-threshold dedupe keeping safest wp + surviving book/odds tuple, monotonicity clamp on OVER/UNDER
+- `backend/routes/picks_routes.py` — wired `apply_nfl_alt_ladder_guard` into `/api/picks/today` projection right after `apply_nfl_alt_label_projection` (~20 LOC)
+
+### Proof (synthetic guard unit test — confirmed defect cases)
+- Burrow 3× line=249.5 (wp 62.0/61.1/56.3) → **consolidated to 1 row**, kept safest wp=56.3% + its book+odds tuple intact
+- Burrow 268.5→273.5 wp 54.3→55.1 → **clamped to 54.3%**, note stamped `clamped 55.1%→54.3% (monotone with easier rung)`
+- Prescott 260.5→270.5 wp 54.1→57.1 → **clamped to 54.1%**
+- Guard stats on test payload: scanned=8, consolidated=2, clamped=2
+
+### Guardrails preserved
+- Zero DB writes (read-time projection only)
+- Frozen `db.picks` immutable
+- Line / book_odds / book on surviving row untouched — never combines one book's line with another book's odds
+- No score fabrication, no star bonus, no 85+ threshold change
+- No player-specific logic
 
 ### Investigative findings — NO code changes this pass
 - **"220+ Passing Yards" is NOT synthetic**: `services/nfl_alt_label_projection.py:147` performs READ-TIME milestone projection (`milestone = floor(point) + 1`). Raw pick `Over 219.5` becomes display `220+`. Raw `line=219.5` preserved for settlement. This matches DK / FanDuel published alt format.
