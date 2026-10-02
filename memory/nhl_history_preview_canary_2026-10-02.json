@@ -1,0 +1,302 @@
+{
+  "environment": "preview",
+  "canonical_write_enabled": "false",
+  "background_workers_enabled": "false",
+  "mongo_fingerprint_db": "lockscore_db",
+  "preview_counts": {
+    "player_game_actuals_nhl": 0,
+    "player_game_logs_nhl": 30680,
+    "team_game_actuals_nhl": 0,
+    "games_nhl": 767
+  },
+  "player_canary": {
+    "goals": {
+      "status": "AVAILABLE",
+      "observations": 48,
+      "l5": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "l10": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "l20": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        0.0,
+        2.0,
+        1.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        2.0,
+        0.0
+      ],
+      "provenance_set": [
+        "nhl_api_player_game_logs"
+      ],
+      "sample_source": "player_game_logs",
+      "player_id": "nhl_8478403",
+      "player_name": "J. Eichel"
+    },
+    "assists": {
+      "status": "AVAILABLE",
+      "observations": 48,
+      "l5": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      "l10": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        1.0,
+        0.0,
+        2.0,
+        0.0,
+        3.0
+      ],
+      "l20": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        1.0,
+        0.0,
+        2.0,
+        0.0,
+        3.0,
+        1.0,
+        1.0,
+        0.0,
+        1.0,
+        4.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      "provenance_set": [
+        "nhl_api_player_game_logs"
+      ],
+      "sample_source": "player_game_logs",
+      "player_id": "nhl_8478403",
+      "player_name": "J. Eichel"
+    },
+    "points": {
+      "status": "AVAILABLE",
+      "observations": 48,
+      "l5": [
+        2.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      "l10": [
+        2.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        1.0,
+        0.0,
+        2.0,
+        0.0,
+        4.0
+      ],
+      "l20": [
+        2.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        1.0,
+        0.0,
+        2.0,
+        0.0,
+        4.0,
+        2.0,
+        1.0,
+        2.0,
+        2.0,
+        4.0,
+        1.0,
+        0.0,
+        0.0,
+        3.0,
+        0.0
+      ],
+      "provenance_set": [
+        "nhl_api_player_game_logs"
+      ],
+      "sample_source": "player_game_logs",
+      "player_id": "nhl_8478403",
+      "player_name": "J. Eichel"
+    },
+    "shots_on_goal": {
+      "status": "AVAILABLE",
+      "observations": 48,
+      "l5": [
+        2.0,
+        1.0,
+        1.0,
+        3.0,
+        0.0
+      ],
+      "l10": [
+        2.0,
+        1.0,
+        1.0,
+        3.0,
+        0.0,
+        1.0,
+        3.0,
+        1.0,
+        2.0,
+        5.0
+      ],
+      "l20": [
+        2.0,
+        1.0,
+        1.0,
+        3.0,
+        0.0,
+        1.0,
+        3.0,
+        1.0,
+        2.0,
+        5.0,
+        3.0,
+        3.0,
+        7.0,
+        9.0,
+        3.0,
+        4.0,
+        1.0,
+        3.0,
+        6.0,
+        3.0
+      ],
+      "provenance_set": [
+        "nhl_api_player_game_logs"
+      ],
+      "sample_source": "player_game_logs",
+      "player_id": "nhl_8478403",
+      "player_name": "J. Eichel"
+    }
+  },
+  "team_canary": {
+    "moneyline": {
+      "status": "AVAILABLE",
+      "observations": 47,
+      "home_count": 26,
+      "away_count": 21,
+      "l5": [
+        1.0,
+        1.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      "l10": [
+        1.0,
+        1.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        1.0
+      ],
+      "sample_source": "games",
+      "team": "Florida"
+    },
+    "puck_line": {
+      "status": "AVAILABLE",
+      "observations": 47,
+      "home_count": 26,
+      "away_count": 21,
+      "l5": [
+        1.0,
+        1.0,
+        4.0,
+        -3.0,
+        -3.0
+      ],
+      "l10": [
+        1.0,
+        1.0,
+        4.0,
+        -3.0,
+        -3.0,
+        -2.0,
+        -3.0,
+        1.0,
+        -2.0,
+        3.0
+      ],
+      "sample_source": "games",
+      "team": "Florida"
+    },
+    "total": {
+      "status": "AVAILABLE",
+      "observations": 47,
+      "home_count": 26,
+      "away_count": 21,
+      "l5": [
+        5.0,
+        3.0,
+        8.0,
+        7.0,
+        5.0
+      ],
+      "l10": [
+        5.0,
+        3.0,
+        8.0,
+        7.0,
+        5.0,
+        4.0,
+        3.0,
+        7.0,
+        8.0,
+        3.0
+      ],
+      "sample_source": "games",
+      "team": "Florida"
+    }
+  },
+  "generated_at": "2026-10-02T20:27:22.175841+00:00"
+}
