@@ -2806,6 +2806,22 @@ _MARKET_REGEX = {
     "tennis_game_alt": r"[+\-]\d+(?:\.\d+)?\s+games\s*\(alt\)|[+\-]\d+(?:\.\d+)?\s+spread\b",
     "tennis_totals":   r"\btotal games\b|^\s*(?:over|under)\s+\d+(?:\.\d+)?\s+games\b",
 
+    # ── NHL (2026-10-02) ────────────────────────────────────────────
+    # Market strings produced by sports_engine / brain.sim_nhl paths:
+    #   "Vegas Golden Knights Moneyline"
+    #   "Vegas Golden Knights -1.5 Puck Line"
+    #   "Total Goals Over 6.5"
+    #   "Mark Stone Over 1.5 Shots on Goal"
+    #   "Connor McDavid Over 0.5 Goals"
+    #   "Connor McDavid Over 0.5 Assists"
+    #   "Connor McDavid Over 0.5 Points"
+    # NB: `player_assists` + `player_points` tokens above already match
+    # NHL assists/points without changes. `moneyline` already covers
+    # NHL ML. The three NEW NHL tokens below are:
+    "puck_line":              r"\bpuck line\b",
+    "player_shots_on_goal":   r"shots on goal|player shots on goal",
+    "player_goals":           r"(?:over|under)\s+\d+(?:\.\d+)?\s+goals\b",
+
     # ── Broad catch-all (still used by analytics market-label grouping) ──
     "player_props":  r"hits|outs recorded|points|rebounds|assists|passing yards|rushing yards|receiving yards|touchdowns|goal scorer",
 }
@@ -2910,6 +2926,22 @@ SPORT_MARKETS = {
         {"token": "tennis_game_alt", "label": "Game Alt Line"},
         {"token": "sets",            "label": "Sets"},
         {"token": "tennis_totals",   "label": "Totals"},
+    ],
+    # ── 2026-10-02 · NHL tabs. Mirrors Universal Market Contract
+    # canonical families (moneyline / puck_line / game_total /
+    # nhl_goals / nhl_sog / nhl_assists / nhl_points) so the frontend
+    # resolver maps tab-token → canonical market_family without a
+    # second naming standard. Keeping tabs visible even when the
+    # current slate carries 0 qualifying picks per the FREEZE
+    # directive — provider availability varies slate-to-slate.
+    "NHL": [
+        {"token": "moneyline",            "label": "ML"},
+        {"token": "puck_line",            "label": "Puck Line"},
+        {"token": "totals",               "label": "Total"},
+        {"token": "player_goals",         "label": "Goals"},
+        {"token": "player_shots_on_goal", "label": "SOG"},
+        {"token": "player_assists",       "label": "Assists"},
+        {"token": "player_points",        "label": "Points"},
     ],
 }
 
