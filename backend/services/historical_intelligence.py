@@ -1555,26 +1555,469 @@ class NBATeamHistoricalAdapter(HistoricalAdapter):
         return obs
 
 
-# ── 2026-06-28 · P1-F NHL HISTORICAL ADAPTER (fail-closed stub) ──────
-# NHL historical game-log collections are not yet ingested.  Registering
-# an empty-but-well-formed adapter prevents the dispatcher from throwing
-# "sport unsupported" for NHL and lets the frontend render the standard
-# "no historical data" state (coverage=0) via the canonical path.  When
-# NHL game logs land in the DB, this stub becomes the natural
-# extension point without any changes to the dispatcher wiring.
+# ── 2026-10-02 · NHL HISTORICAL ADAPTERS — CANONICAL IMPLEMENTATION ──
+# Previous version left both NHL adapters as empty fail-closed stubs
+# ("No ingestion yet").  NHL ingestion has in fact been live for
+# months — `historical/nhl.py` writes `games` + `player_game_logs`
+# (and the normalized `player_game_actuals` where available).  These
+# adapters now surface that real history through the same
+# HistoricalAdapter contract every other sport already uses.
+#
+# Data sources (verified 2026-10-02):
+#   NHL player  → player_game_actuals (sport=nhl)  preferred
+#                 player_game_logs (sport=nhl)     verified fallback
+#   NHL team    → team_game_actuals  (sport=nhl)  preferred
+#                 games             (sport=nhl)   verified fallback
+#
+# Both fallbacks mirror the shape produced by `historical/nhl.py`
+# ingestion — player rows carry player_id="nhl_<nhlapi_id>",
+# game_id="nhl_<nhlapi_game>", and the skater fields
+# {goals, assists, points, shots, hits, blocked_shots, toi,
+# plus_minus}.  See historical/nhl.py:240-280 for the ingestion
+# contract.  Supported player markets: goals, assists, points,
+# shots_on_goal.  Supported team game markets: moneyline, puck_line,
+# total.
+
+_NHL_PLAYER_MARKET_MAP: dict[str, str] = {
+    # family → actuals field preference (checked in order against
+    # `row["actuals"]` first and the top-level row second).
+    "goals":          "goals",
+    "assists":        "assists",
+    "points":         "points",            # falls back to goals+assists at extraction time
+    "shots_on_goal":  "shots_on_goal",     # falls back to "shots"/"sog"
+}
+
+
+def _nhl_player_market_family(market: str) -> Optional[str]:
+    """Resolve a provider/book market string to our canonical NHL
+    player family.  Mirrors `_mlb_market_family()` and the aliases
+    in `services/player_history/nhl.py`."""
+    if not market:
+        return None
+    m = market.lower()
+    # Order matters: compound ("points") after specific atoms.
+    if ("anytime goal" in m or "goal scorer" in m
+            or m in ("player_goals", "player_goals_alternate",
+                     "player_anytime_goal", "player_goal_scorer")
+            or (m.startswith("player_goals") and "assist" not in m and "point" not in m)
+            or (m.startswith("goals") and "assist" not in m)):
+        return "goals"
+    if (m in ("player_assists", "player_assists_alternate", "assists")
+            or m.startswith("player_assist")
+            or (m.startswith("assists") and "point" not in m)):
+        return "assists"
+    if (m in ("player_points", "player_points_alternate", "points")
+            or m.startswith("player_point")
+            or m.startswith("points")):
+        return "points"
+    if ("shot on goal" in m or "shots on goal" in m or " sog" in m
+            or m in ("player_shots_on_goal", "player_shots_on_goal_alternate",
+                     "player_shots", "shots", "shots_on_goal", "sog")
+            or m.startswith("player_shots")):
+        return "shots_on_goal"
+    return None
+
+
+def _nhl_game_market_family(market: str) -> Optional[str]:
+    if not market:
+        return None
+    m = market.lower()
+    if "moneyline" in m or " ml" in m or m == "h2h":
+        return "moneyline"
+    if "puck line" in m or "puck_line" in m or ("spread" in m and "point" not in m):
+        return "puck_line"
+    if "total" in m or "over/under" in m or "over under" in m:
+        return "total"
+    return None
+
+
+def _extract_nhl_player_actual(family: str, row: dict) -> Optional[float]:
+    """Read the raw stat value for a given NHL player family out of
+    either the normalized ``actuals`` subdoc or the top-level
+    `player_game_logs` fields written by ingestion.  Returns None
+    whenever a required component is missing — never fabricates 0."""
+    actuals = row.get("actuals") or {}
+
+    def _get(*keys) -> Optional[float]:
+        for k in keys:
+            v = actuals.get(k) if actuals else None
+            if v is None:
+                v = row.get(k)
+            if v is not None:
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    if family == "goals":
+        return _get("goals", "g")
+    if family == "assists":
+        return _get("assists", "a")
+    if family == "points":
+        pts = _get("points", "pts")
+        if pts is not None:
+            return pts
+        g = _get("goals", "g")
+        a = _get("assists", "a")
+        if g is None or a is None:
+            return None
+        return g + a
+    if family == "shots_on_goal":
+        return _get("shots_on_goal", "shots", "sog")
+    return None
+
+
 class NHLPlayerHistoricalAdapter(HistoricalAdapter):
+    """NHL player historical observations for Goals / Assists /
+    Points / SOG.  Preference order: canonical ``player_game_actuals``
+    → ``player_game_logs`` legacy fallback.  Observations are returned
+    newest-first (by `event_time` where present, else by `date` joined
+    from `games`).  Sample size, coverage and provenance are honest —
+    never padded."""
     sport = "NHL"
 
-    async def fetch_observations(self, db, q: HistoricalQuery) -> list[HistoricalObservation]:
-        # No ingestion yet — fail closed with empty observations.
-        return []
+    _LIMIT = 80  # supports L5/L10/L20 + VS-OPP windows
+
+    async def fetch_observations(self, db, q: HistoricalQuery
+                                  ) -> list[HistoricalObservation]:
+        family = _nhl_player_market_family(q.market_family)
+        if family is None:
+            # Preserve explicit fail-closed semantics — the dispatcher
+            # distinguishes "no data" from "unsupported family" via
+            # the empty list.
+            return []
+
+        # ── Stage 1 — canonical actuals ──
+        docs = await self._query_actuals(db, q)
+
+        # ── Stage 2 — legacy player_game_logs fallback (verified
+        # compatibility path).  We only invoke the fallback when the
+        # canonical store returned nothing; this keeps provenance clean
+        # (never mix stores inside a single response).
+        used_fallback = False
+        if not docs:
+            docs = await self._query_logs(db, q)
+            used_fallback = bool(docs)
+
+        if not docs:
+            return []
+
+        # Enrich any logs rows that are missing a `date`/`event_time`
+        # by joining `games` on `game_id`.  One batch read.
+        docs = await self._enrich_event_dates(db, docs)
+
+        # Re-sort newest first (defensive — some stores produce mixed
+        # orderings when event_time is absent on legacy rows).
+        def _sort_key(d: dict) -> str:
+            return str(d.get("event_time") or d.get("date") or "")
+        docs = sorted(docs, key=_sort_key, reverse=True)
+
+        obs: list[HistoricalObservation] = []
+        for doc in docs:
+            v = _extract_nhl_player_actual(family, doc)
+            actual: Optional[float] = None
+            if v is not None:
+                try:
+                    actual = float(v)
+                except Exception:
+                    actual = None
+            # Home/away comes from `home_away` on actuals rows and
+            # `is_home` on legacy logs — normalize both to the
+            # standard "home"/"away" vocabulary used by every other
+            # adapter.
+            ha = doc.get("home_away")
+            if ha is None:
+                ih = doc.get("is_home")
+                if isinstance(ih, bool):
+                    ha = "home" if ih else "away"
+            opp_id = (doc.get("canonical_opponent_id")
+                      or doc.get("opp_team_id")
+                      or None)
+            opp_name = (doc.get("opponent")
+                        or doc.get("opp_team_name")
+                        or opp_id)
+            date_s = str(doc.get("event_time")
+                          or doc.get("date")
+                          or doc.get("ingested_at") or "")[:10]
+            prov = doc.get("source") or doc.get("provenance")
+            if used_fallback and not prov:
+                prov = "nhl_api_player_game_logs"
+            ctx = {
+                "season":      doc.get("season"),
+                "season_type": doc.get("season_type"),
+                "team":        doc.get("team") or doc.get("canonical_team_id"),
+                "position":    doc.get("position"),
+                "toi":         doc.get("toi"),
+            }
+            obs.append(HistoricalObservation(
+                date=date_s,
+                opponent_id=opp_id,
+                opponent_name=opp_name,
+                home_away=ha,
+                actual=actual,
+                context=ctx,
+                provenance=prov,
+                event_id=(doc.get("canonical_event_id")
+                          or doc.get("event_id")
+                          or doc.get("game_id")),
+            ))
+        return obs
+
+    async def _query_actuals(self, db, q: HistoricalQuery) -> list[dict]:
+        """Canonical path — `player_game_actuals` sport=nhl.
+        Resolution order: canonical_player_id → player_identities(name)
+        → direct player_name."""
+        base_q: Optional[dict] = None
+        eid = str(q.entity_id or "")
+        if eid:
+            # NHL canonical ids are opaque strings (often "nhl_<id>").
+            base_q = {"sport": "nhl", "canonical_player_id": eid}
+        if base_q is None and q.entity_name:
+            norm = q.entity_name.strip().lower().replace(".", "")
+            try:
+                ident = await db.player_identities.find_one(
+                    {"sport": "NHL", "name_norm": norm},
+                    {"provider_ids": 1, "canonical_player_id": 1})
+            except Exception:
+                ident = None
+            if ident:
+                prov = (ident.get("provider_ids") or {})
+                nhl_id = prov.get("nhl") or prov.get("nhl_api")
+                cid = ident.get("canonical_player_id") or (
+                    f"nhl_{nhl_id}" if nhl_id else None)
+                if cid:
+                    base_q = {"sport": "nhl", "canonical_player_id": cid}
+        if base_q is None and q.entity_name:
+            base_q = {"sport": "nhl", "player_name": q.entity_name}
+        if not base_q:
+            return []
+        docs: list[dict] = []
+        try:
+            cursor = db.player_game_actuals.find(base_q).sort(
+                "event_time", -1).limit(self._LIMIT)
+            async for d in cursor:
+                docs.append(d)
+        except Exception as e:
+            raise HistoricalQueryFailed(self.sport, e) from e
+        if docs:
+            docs = await _enrich_event_time_from_team_actuals(db, docs, "nhl")
+        return docs
+
+    async def _query_logs(self, db, q: HistoricalQuery) -> list[dict]:
+        """Legacy `player_game_logs` sport=nhl fallback.  Rows carry
+        `player_id` ≈ "nhl_<nhlapi_id>" and `name` for the display name.
+        Only triggered when canonical store returned nothing."""
+        base_q: Optional[dict] = None
+        eid = str(q.entity_id or "")
+        if eid:
+            if eid.startswith("nhl_"):
+                base_q = {"sport": "nhl", "player_id": eid}
+            else:
+                base_q = {"sport": "nhl",
+                          "$or": [{"player_id": eid},
+                                   {"player_id": f"nhl_{eid}"}]}
+        if base_q is None and q.entity_name:
+            base_q = {"sport": "nhl", "name": q.entity_name}
+        if not base_q:
+            return []
+        docs: list[dict] = []
+        try:
+            cursor = db.player_game_logs.find(base_q).sort(
+                "date", -1).limit(self._LIMIT)
+            async for d in cursor:
+                docs.append(d)
+        except Exception as e:
+            raise HistoricalQueryFailed(self.sport, e) from e
+        return docs
+
+    async def _enrich_event_dates(self, db, docs: list[dict]) -> list[dict]:
+        """Join `games` by `game_id` (shape "nhl_<id>") to supply a
+        real event date for any legacy log row missing one.  Also
+        supplies the opponent display name if the log stored only
+        the id side."""
+        need = [d for d in docs
+                if not (d.get("event_time") or d.get("date"))]
+        if not need:
+            return docs
+        gids = sorted({str(d.get("game_id") or "") for d in need
+                       if d.get("game_id")})
+        if not gids:
+            return docs
+        gmap: dict[str, dict] = {}
+        try:
+            async for g in db.games.find(
+                {"sport": "nhl", "game_id": {"$in": gids}},
+                {"game_id": 1, "date": 1, "home": 1, "away": 1,
+                 "home_team_id": 1, "away_team_id": 1},
+            ):
+                gmap[str(g.get("game_id") or "")] = g
+        except Exception:
+            gmap = {}
+        for d in docs:
+            g = gmap.get(str(d.get("game_id") or ""))
+            if not g:
+                continue
+            if not d.get("date") and not d.get("event_time"):
+                d["date"] = g.get("date")
+            # Supply opponent *name* if only id was stored.
+            if not d.get("opponent") and d.get("opp_team_id"):
+                home_tid = str(g.get("home_team_id") or "")
+                away_tid = str(g.get("away_team_id") or "")
+                opp_tid  = str(d.get("opp_team_id") or "")
+                if opp_tid == home_tid:
+                    d["opp_team_name"] = g.get("home")
+                elif opp_tid == away_tid:
+                    d["opp_team_name"] = g.get("away")
+        return docs
 
 
 class NHLTeamHistoricalAdapter(HistoricalAdapter):
-    sport = "NHL"
+    """NHL team/game adapter — ML / Puck Line / Total.  Preference
+    order: canonical ``team_game_actuals`` → ``games`` fallback with
+    home/away split so the selected team's perspective is always
+    correct (never mixes both teams into one series)."""
+    sport = "NHL_TEAM"
 
-    async def fetch_observations(self, db, q: HistoricalQuery) -> list[HistoricalObservation]:
-        return []
+    _LIMIT = 120
+
+    async def fetch_observations(self, db, q: HistoricalQuery
+                                  ) -> list[HistoricalObservation]:
+        team_key = q.entity_id or q.entity_name
+        if not team_key:
+            return []
+        family = _nhl_game_market_family(q.market_family) or ""
+
+        # Stage 1 — canonical team_game_actuals.
+        try:
+            cursor = db.team_game_actuals.find(
+                {"sport": "nhl", "canonical_team_id": str(team_key)}
+            ).sort("event_time", -1).limit(self._LIMIT)
+            tga: list[dict] = []
+            async for d in cursor:
+                tga.append(d)
+        except Exception as e:
+            raise HistoricalQueryFailed(self.sport, e) from e
+
+        if tga:
+            return self._observations_from_tga(tga, family)
+
+        # Stage 2 — `games` fallback.  Build team-perspective
+        # observations from the raw final scores stored by
+        # `historical/nhl.py`.  Match on either team name or
+        # team_id so the dispatcher works with either canonical form.
+        tk = str(team_key)
+        try:
+            cursor = db.games.find(
+                {"sport": "nhl",
+                 "$or": [{"home": tk}, {"away": tk},
+                          {"home_team_id": tk}, {"away_team_id": tk},
+                          {"home_abbrev": tk}, {"away_abbrev": tk}],
+                 "status": "Final"},
+            ).sort("date", -1).limit(self._LIMIT)
+            games: list[dict] = []
+            async for d in cursor:
+                games.append(d)
+        except Exception as e:
+            raise HistoricalQueryFailed(self.sport, e) from e
+
+        return self._observations_from_games(games, tk, family)
+
+    @staticmethod
+    def _observations_from_tga(rows: list[dict], family: str
+                                ) -> list[HistoricalObservation]:
+        out: list[HistoricalObservation] = []
+        for doc in rows:
+            ts = doc.get("team_score")
+            os_ = doc.get("opponent_score")
+            if ts is None or os_ is None:
+                continue
+            try:
+                ts = float(ts); os_ = float(os_)
+            except Exception:
+                continue
+            if family == "moneyline":
+                actual = 1.0 if ts > os_ else (0.5 if ts == os_ else 0.0)
+            elif family == "puck_line":
+                actual = ts - os_
+            elif family == "total":
+                actual = ts + os_
+            else:
+                actual = ts - os_
+            out.append(HistoricalObservation(
+                date=str(doc.get("event_time") or "")[:10],
+                opponent_id=doc.get("canonical_opponent_id"),
+                opponent_name=(doc.get("opponent")
+                                or doc.get("canonical_opponent_id")),
+                home_away=doc.get("home_away"),
+                actual=actual,
+                context={"team_score": ts, "opponent_score": os_,
+                         "result":  doc.get("result"),
+                         "season":  doc.get("season"),
+                         "season_type": doc.get("season_type")},
+                provenance=doc.get("source") or "team_game_actuals",
+                event_id=doc.get("event_id"),
+            ))
+        return out
+
+    @staticmethod
+    def _observations_from_games(rows: list[dict], team_key: str,
+                                  family: str
+                                  ) -> list[HistoricalObservation]:
+        """Selected-team perspective — never mixes both sides.  For
+        every game we work out whether `team_key` was home or away and
+        pull the correct team_score / opponent_score."""
+        out: list[HistoricalObservation] = []
+        tk = str(team_key)
+        for g in rows:
+            home = g.get("home"); away = g.get("away")
+            home_tid = str(g.get("home_team_id") or "")
+            away_tid = str(g.get("away_team_id") or "")
+            home_ab  = g.get("home_abbrev") or ""
+            away_ab  = g.get("away_abbrev") or ""
+            is_home: Optional[bool] = None
+            if tk in (home, home_tid, home_ab):
+                is_home = True
+            elif tk in (away, away_tid, away_ab):
+                is_home = False
+            if is_home is None:
+                continue
+            r = g.get("result") or {}
+            try:
+                hs = float(r.get("home")) if r.get("home") is not None else None
+                as_ = float(r.get("away")) if r.get("away") is not None else None
+            except Exception:
+                hs = as_ = None
+            if hs is None or as_ is None:
+                continue
+            if is_home:
+                ts, os_ = hs, as_
+                opp_name = away; opp_tid = away_tid
+            else:
+                ts, os_ = as_, hs
+                opp_name = home; opp_tid = home_tid
+            if family == "moneyline":
+                actual = 1.0 if ts > os_ else (0.5 if ts == os_ else 0.0)
+            elif family == "puck_line":
+                actual = ts - os_
+            elif family == "total":
+                actual = ts + os_
+            else:
+                actual = ts - os_
+            out.append(HistoricalObservation(
+                date=str(g.get("date") or "")[:10],
+                opponent_id=opp_tid or None,
+                opponent_name=opp_name,
+                home_away=("home" if is_home else "away"),
+                actual=actual,
+                context={"team_score":    ts,
+                         "opponent_score": os_,
+                         "status":        g.get("status"),
+                         "season":        g.get("season")},
+                provenance="games_fallback",
+                event_id=g.get("game_id"),
+            ))
+        return out
 
 
 register_adapter("NBA",    _SportDispatcher(
