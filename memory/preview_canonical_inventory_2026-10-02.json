@@ -1,0 +1,160 @@
+{
+  "generated_at": "2026-10-02T19:07:03.457772+00:00",
+  "environment": "preview",
+  "mongo_fingerprint": "ac7ea1130f39",
+  "db_name": "lockscore_db",
+  "mongo_host_class": "local",
+  "picks": {
+    "total": 272712,
+    "current_published": 17123,
+    "publication_state_dist": {
+      "None": 246307,
+      "PUBLISHED": 17123,
+      "OFF_BOARD": 7682,
+      "INVALIDATED": 8,
+      "RETIRED_STALE_PRE_FIX": 52,
+      "REJECTED": 1633
+    },
+    "latest_event_time": "2026-11-04T19:45:00Z",
+    "latest_published_at": "2026-10-02T18:12:10.171722+00:00"
+  },
+  "board_revisions": {
+    "total": 0,
+    "latest_revision": null,
+    "latest_ts": null
+  },
+  "games": {
+    "nfl": {
+      "total": 907,
+      "current_season": 49,
+      "latest_event": "2026-10-02T00:15Z"
+    },
+    "cfb": {
+      "total": 2465,
+      "current_season": 234,
+      "latest_event": "2026-10-02T01:00Z"
+    },
+    "mlb": {
+      "total": 2130,
+      "current_season": 304,
+      "latest_event": "2026-10-02T00:00:00Z"
+    },
+    "nba": {
+      "total": 0,
+      "current_season": 0,
+      "latest_event": null
+    },
+    "nhl": {
+      "total": 767,
+      "current_season": 0,
+      "latest_event": "None"
+    },
+    "soccer": {
+      "total": 0,
+      "current_season": 0,
+      "latest_event": null
+    },
+    "tennis": {
+      "total": 6207,
+      "current_season": 0,
+      "latest_event": "2026-01-17T00:00:00+00:00"
+    }
+  },
+  "player_game_logs": {
+    "nfl": {
+      "total": 71688,
+      "current_season": 0,
+      "latest": "None"
+    },
+    "cfb": {
+      "total": 172775,
+      "current_season": 0,
+      "latest": "None"
+    },
+    "mlb": {
+      "total": 66823,
+      "current_season": 0,
+      "latest": "None"
+    },
+    "nba": {
+      "total": 20415,
+      "current_season": 0,
+      "latest": "2025-06-23"
+    },
+    "nhl": {
+      "total": 30680,
+      "current_season": 0,
+      "latest": "None"
+    },
+    "soccer": {
+      "total": 0,
+      "current_season": 0,
+      "latest": null
+    }
+  },
+  "player_game_actuals": {
+    "nfl": {
+      "total": 133857,
+      "current_season": 0,
+      "latest": "None"
+    },
+    "cfb": {
+      "total": 0,
+      "current_season": 0,
+      "latest": null
+    },
+    "mlb": {
+      "total": 128622,
+      "current_season": 0,
+      "latest": "None"
+    },
+    "nba": {
+      "total": 51190,
+      "current_season": 0,
+      "latest": "None"
+    },
+    "nhl": {
+      "total": 0,
+      "current_season": 0,
+      "latest": null
+    },
+    "soccer": {
+      "total": 4487,
+      "current_season": 0,
+      "latest": "None"
+    },
+    "tennis": {
+      "total": 85628,
+      "current_season": 0,
+      "latest": "None"
+    }
+  },
+  "nfl_specific": {
+    "nfl_player_weekly": 133077
+  },
+  "soccer_specific": {
+    "soccer_matches": 25658,
+    "soccer_player_game_logs": 99524
+  },
+  "tennis_specific": {
+    "tennis_matches_history": 38380
+  },
+  "identities": {
+    "team_identity": 0,
+    "player_identity": 61493
+  },
+  "settlement": {
+    "HIT": 0,
+    "MISS": 0,
+    "PUSH": 0,
+    "VOID": 0,
+    "UNRESOLVED": 231101
+  },
+  "canaries": {
+    "sam_laporta_actuals": 49,
+    "brock_purdy_actuals": 60,
+    "delaware_2026_games": 4,
+    "mlb_postseason_games": 9,
+    "nhl_history_games": 767
+  }
+}
