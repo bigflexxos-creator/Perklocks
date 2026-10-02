@@ -501,8 +501,13 @@ async def status() -> dict[str, Any]:
     base = {
         "worker_lease_name":        GLOBAL_LEASE_NAME,
         "worker_lease_required":    True,
+        "lease_backend":            "mongodb",
+        "lease_collection":         LEASE_COLLECTION_NAME,
         "instance_id":              process_instance_id(),
+        "owner_instance_id":        process_instance_id(),
         "eligible_for_lease":       is_eligible_for_canonical_lease(),
+        "active_leases":            [],
+        "this_instance_owned_leases": [],
     }
     try:
         from services.database import get_database, is_initialized
@@ -514,9 +519,47 @@ async def status() -> dict[str, Any]:
                 "lease_expires_at":         None,
             })
             return base
-        lease = get_lease_authority(get_database())
+        db = get_database()
+        lease = get_lease_authority(db)
         snap = await lease.safe_snapshot()
         base.update(snap)
+        # Enumerate every live, non-expired lease row in the shared
+        # authority collection — not just this instance's.  Multiple
+        # leases per responsibility are supported (see spec §11); the
+        # Perklocks default is the single ``canonical_background_
+        # authority`` lease but we don't want the status endpoint to
+        # lie if additional leases ever appear.
+        import datetime as _dt
+        now = _dt.datetime.utcnow()
+        try:
+            cur = db[LEASE_COLLECTION_NAME].find(
+                {"expires_at": {"$gt": now}},
+                {"lease_name": 1, "owner_instance_id": 1,
+                 "heartbeat_at": 1, "expires_at": 1, "lease_version": 1,
+                 "_id": 0},
+            )
+            rows = await cur.to_list(length=50)
+            active = []
+            owned = []
+            for r in rows:
+                safe_row = {
+                    "lease_name":        r.get("lease_name"),
+                    "owner_instance_id": r.get("owner_instance_id"),
+                    "lease_version":     r.get("lease_version"),
+                    "heartbeat_at":      r["heartbeat_at"].isoformat()
+                        if isinstance(r.get("heartbeat_at"), _dt.datetime) else None,
+                    "expires_at":        r["expires_at"].isoformat()
+                        if isinstance(r.get("expires_at"), _dt.datetime) else None,
+                }
+                active.append(safe_row)
+                if r.get("owner_instance_id") == process_instance_id():
+                    owned.append(safe_row["lease_name"])
+            base["active_leases"] = active
+            base["this_instance_owned_leases"] = owned
+        except Exception as _le:
+            base["active_leases"] = []
+            base["this_instance_owned_leases"] = []
+            base["active_leases_error"] = str(_le)[:160]
         return base
     except Exception as e:                                      # pragma: no cover
         logger.warning("lease.status raised: %s", e)
