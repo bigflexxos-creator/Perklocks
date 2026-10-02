@@ -760,6 +760,30 @@ def evidence_threshold(picks: list[dict]) -> tuple[list[dict], dict]:
                     or _cfb_sim.get("expected_total") is not None):
                 evidence += 1
 
+        # ── 2026-10-02 · NHL independent-model evidence ──────────────
+        # Mirror of NFL Platinum / CFB SP+ pattern. NHL picks that
+        # ran through brain.sim_nhl.simulate with CAUSAL_INDEPENDENT
+        # provenance (home_lambda + away_lambda + recent-game sample
+        # sizes from real db.games history) carry two genuinely-
+        # independent evidence categories:
+        #   1. sim exact-market win probability (CAUSAL_INDEPENDENT /
+        #      EMPIRICAL_INDEPENDENT with decision_valid=True)
+        #   2. team-rating context (sim_home_lambda / sim_away_lambda
+        #      derived from real recent games — different signal class
+        #      from the exact-market probability)
+        # Without this recognizer, every NHL pick dies at
+        # EVIDENCE_THRESHOLD even when the independent model ran on
+        # 20k Monte Carlo paths against 10 games/team of real history.
+        if (p.get("sport") == "NHL"
+                and p.get("sim_win_probability") is not None
+                and p.get("independent_evidence") is True
+                and p.get("decision_valid") is True):
+            evidence += 1
+            if (p.get("sim_home_lambda") is not None
+                    or p.get("sim_away_lambda") is not None
+                    or p.get("sim_mean_adjusted") is not None):
+                evidence += 1
+
         # ── 2026-09-03 · TENNIS authoritative-model evidence ─────────
         # Preserves prior Tennis evidence recognition.  Missing before
         # this line: NFL PLAYER-PROP + NFL ATD evidence recognizers

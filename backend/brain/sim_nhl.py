@@ -190,9 +190,33 @@ def _parse_side(pick: dict) -> Optional[str]:
 
 
 def _team_side(pick: dict) -> Optional[str]:
-    """For moneyline / puck-line picks, return "home" or "away"."""
+    """For moneyline / puck-line picks, return "home" or "away".
+
+    2026-10-02 Surgical NHL fix: NHL picks sometimes arrive with ``event``
+    = "Away Team @ Home Team" but without ``home_team``/``away_team``
+    stamped. Fallback: parse the standard "AWAY @ HOME" event format
+    when the dedicated fields are empty.
+    """
     home = str(pick.get("home_team") or "").strip().lower()
     away = str(pick.get("away_team") or "").strip().lower()
+    if not (home and away):
+        ev = str(pick.get("event") or "").strip()
+        if "@" in ev:
+            try:
+                _away_e, _home_e = ev.split("@", 1)
+                _away_e = _away_e.strip().lower()
+                _home_e = _home_e.strip().lower()
+                if _away_e and _home_e:
+                    away = away or _away_e
+                    home = home or _home_e
+                    # Stamp so downstream consumers (sim_context readers,
+                    # settlement) share the same resolution without
+                    # re-parsing. Guarded on absence to preserve any
+                    # authoritative value.
+                    if not pick.get("home_team"): pick["home_team"] = _home_e.title()
+                    if not pick.get("away_team"): pick["away_team"] = _away_e.title()
+            except Exception:
+                pass
     for k in ("side", "selection", "pick"):
         v = str(pick.get(k) or "").strip().lower()
         if not v:
@@ -331,7 +355,8 @@ def _simulate_game(pick: dict, kind: str) -> dict:
         "valid":                        True,
         **compute_percentiles(distribution, threshold=threshold),
     }
-    _stamp_provenance(payload, pick, signals=2, p_win=p_win)
+    _stamp_provenance(payload, pick,
+                       signals=_count_signals(ctx), p_win=p_win)
     return payload
 
 
@@ -475,10 +500,22 @@ def _simulate_player(pick: dict, stat_key: str) -> dict:
 
 
 def _count_signals(ctx: dict) -> int:
+    """Count independent real-evidence signals in the sim context.
+
+    2026-10-02 Surgical NHL fix: game-market context carries two
+    Poisson rates (``home_lambda`` / ``away_lambda``) plus two
+    independent sample-size signals (``home_recent_games`` /
+    ``away_recent_games``) — each team's recent-form window is a
+    separate real-data input. Previously only the two lambdas were
+    counted, which capped NHL game markets at PARTIAL quality and
+    blocked the independent-evidence anchor from reaching Lock Score.
+    """
     return sum(1 for k in (
         "recent_mean", "season_mean", "recent_std",
         "is_home", "opp_defense_mult", "role_volume_mult",
-        "home_lambda", "away_lambda") if ctx.get(k) is not None)
+        "home_lambda", "away_lambda",
+        "home_recent_games", "away_recent_games",
+        "recent_n", "season_n") if ctx.get(k) is not None)
 
 
 def _stamp_provenance(payload: dict, pick: dict, *, signals: int,

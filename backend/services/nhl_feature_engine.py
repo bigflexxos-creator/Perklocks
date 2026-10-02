@@ -65,7 +65,15 @@ _MAX_RECENT_WINDOW       = 10
 def _norm_name(name: str) -> str:
     if not name:
         return ""
-    s = re.sub(r"[^\w\s'.-]", "", name.strip()).lower()
+    # 2026-10-02 Surgical NHL fix: also strip periods AND accents so
+    # the sportsbook "St Louis Blues" / "Montreal Canadiens" normalize
+    # to the same key as the NHL API / historical "St. Louis Blues" /
+    # "Montréal Canadiens". Otherwise team-recent-stats returns 0
+    # games and the sim ctx cannot be built.
+    import unicodedata as _ud
+    _ascii = "".join(c for c in _ud.normalize("NFKD", name.strip())
+                     if not _ud.combining(c))
+    s = re.sub(r"[^\w\s'-]", "", _ascii).lower()
     return re.sub(r"\s+", " ", s)
 
 

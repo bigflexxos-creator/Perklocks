@@ -518,50 +518,53 @@ _add(MarketEntry("Soccer", "soccer_shots_on_target",
     settlement_primary="sportdb",
     capability_state=MODEL_UNAVAILABLE))
 
-# ── NHL / UFC — honest unavailable states, no fake support ─────────
-# PERKLOCKS-MAIN 35 · P1-8 — align to `sport_capability_registry`
-# which declares NHL h2h/spreads/totals as MODEL_UNAVAILABLE (provider
-# is wired end-to-end; no authoritative independent NHL model exists
-# yet). Was declared PROVIDER_UNAVAILABLE here — mismatch fixed.
+# ── NHL — 2026-10-02 ACTIVE wiring. Pipeline fully end-to-end:
+# acquisition (icehockey_nhl bulk + alt_totals + player markets) →
+# services.nhl_feature_engine → brain.sim_nhl (20k Monte Carlo /
+# Poisson team-score + per-stat player distributions, CAUSAL_
+# INDEPENDENT provenance) → sport_model_authority(brain_sim_nhl) →
+# settlement_capability_registry(all 7 families).  Rows that fail
+# to build a sim_context still fail-closed at the simulator level
+# (DATA_INSUFFICIENT) — the pipeline never fabricates probability.
 _add(MarketEntry("NHL", Family.MONEYLINE, provider_market_keys=("h2h",),
     market_class="game_market", selection_schema="moneyline",
     allowed_sides=("home", "away"),
-    capability_state=MODEL_UNAVAILABLE))
+    capability_state=ACTIVE))
 _add(MarketEntry("NHL", "puck_line",
     provider_market_keys=("spreads",),
     aliases=("puckline", "puck_line", "puck line"),
     market_class="game_market", line_type="both",
     selection_schema="participant", allowed_sides=("home", "away"),
-    capability_state=MODEL_UNAVAILABLE))
+    capability_state=ACTIVE))
 _add(MarketEntry("NHL", Family.GAME_TOTAL,
     provider_market_keys=("totals",),
     aliases=("total", "game_total"),
     market_class="game_market", line_type="both",
-    capability_state=MODEL_UNAVAILABLE))
-# ── 2026-06-22 · NHL player-prop canonical entries ───────────────
-# Registry entries present with capability_state=MODEL_UNAVAILABLE so
-# settlement/hard-gate can canonicalize them uniformly.  Activating
-# ACTIVE requires acquisition + independent model + settlement.
+    capability_state=ACTIVE))
+# ── 2026-10-02 · NHL player-prop canonical entries ACTIVE ──────
+# Settlement authorities (nhl_goals / nhl_sog / nhl_assists /
+# nhl_points) registered; independent per-stat player distribution
+# in brain/sim_nhl._simulate_player keyed on real player_game_logs.
 _add(MarketEntry("NHL", Family.NHL_GOALS,
     provider_market_keys=("player_goals", "player_goals_alternate"),
     aliases=("goals", "player goals", "anytime goal scorer"),
     market_class="player_prop", line_type="both",
-    capability_state=MODEL_UNAVAILABLE))
+    capability_state=ACTIVE))
 _add(MarketEntry("NHL", Family.NHL_SOG,
     provider_market_keys=("player_shots_on_goal", "player_shots_on_goal_alternate"),
     aliases=("shots on goal", "sog", "player shots on goal"),
     market_class="player_prop", line_type="both",
-    capability_state=MODEL_UNAVAILABLE))
+    capability_state=ACTIVE))
 _add(MarketEntry("NHL", Family.NHL_ASSISTS,
     provider_market_keys=("player_assists", "player_assists_alternate"),
     aliases=("assists", "player assists"),
     market_class="player_prop", line_type="both",
-    capability_state=MODEL_UNAVAILABLE))
+    capability_state=ACTIVE))
 _add(MarketEntry("NHL", Family.NHL_POINTS,
     provider_market_keys=("player_points", "player_points_alternate"),
     aliases=("points", "player points"),
     market_class="player_prop", line_type="both",
-    capability_state=MODEL_UNAVAILABLE))
+    capability_state=ACTIVE))
 _add(MarketEntry("UFC", Family.MONEYLINE, provider_market_keys=("h2h",),
     market_class="game_market", selection_schema="moneyline",
     allowed_sides=("home", "away"),

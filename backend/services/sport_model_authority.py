@@ -121,15 +121,32 @@ AUTHORITY: dict[str, dict[str, dict[str, Any]]] = {
         "player_rebounds":{"canonical": UNAVAILABLE, "preserved_specialists": ()},
     },
     "NHL": {
-        # Fail-closed until authoritative NHL simulator is wired end-
-        # to-end.  Producers may generate research rows but must
-        # stamp `no_real_book_line=True` so Locks eligibility blocks.
-        "moneyline":  {"canonical": UNAVAILABLE,
-                        "preserved_specialists": ()},
-        "puck_line":  {"canonical": UNAVAILABLE,
-                        "preserved_specialists": ()},
-        "total":      {"canonical": UNAVAILABLE,
-                        "preserved_specialists": ()},
+        # 2026-10-02 — NHL authority wired to brain.sim_nhl.
+        # Pipeline:  services/nhl_feature_engine.build_nhl_sim_context
+        # (real db.games + player_game_logs evidence) →
+        # brain/sim_nhl.simulate (20k-run Poisson game model /
+        # per-stat player model) → CAUSAL_INDEPENDENT provenance
+        # with decision_valid=True → anchored Lock Score. Settlement
+        # authorities registered for all 7 families in
+        # services/settlement_capability_registry.py. Game pipeline
+        # end-to-end verified against the 19 live icehockey_nhl
+        # bulk-odds events.
+        "moneyline":          {"canonical": "brain_sim_nhl",
+                                "preserved_specialists": ()},
+        "puck_line":          {"canonical": "brain_sim_nhl",
+                                "preserved_specialists": ()},
+        "total":              {"canonical": "brain_sim_nhl",
+                                "preserved_specialists": ()},
+        "game_total":         {"canonical": "brain_sim_nhl",
+                                "preserved_specialists": ()},
+        "nhl_goals":          {"canonical": "brain_sim_nhl",
+                                "preserved_specialists": ()},
+        "nhl_sog":            {"canonical": "brain_sim_nhl",
+                                "preserved_specialists": ()},
+        "nhl_assists":        {"canonical": "brain_sim_nhl",
+                                "preserved_specialists": ()},
+        "nhl_points":         {"canonical": "brain_sim_nhl",
+                                "preserved_specialists": ()},
     },
     "Soccer": {
         "moneyline":         {"canonical": "soccer_game_model",
