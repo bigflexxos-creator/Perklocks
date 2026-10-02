@@ -3621,7 +3621,39 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         _r_o = _sim_nhl(_pick_tot_o)
                         if _r_o.get("ran") and _r_o.get("sim_win_probability") is not None:
                             _cfb_tot_probs["Over"] = float(_r_o["sim_win_probability"]) / 100.0
-                            _cfb_tot_probs["Under"] = round(1.0 - _cfb_tot_probs["Over"], 4)
+                            # 2026-10-02 — PUSH-SAFE NHL UNDER FIX.
+                            # Previously the Under was derived as
+                            # ``1.0 - P(Over)`` which only holds when
+                            # no push is possible.  For whole-number
+                            # NHL totals (e.g. 6.0) ``P(Push) > 0`` and
+                            # the identity breaks.  Call ``_sim_nhl``
+                            # again with the Under semantics against
+                            # the SAME distribution so Over + Under +
+                            # Push sum to 1 and the model directly
+                            # produces P(Under).
+                            _pick_tot_u = {
+                                **_pick_tot_o,
+                                "market": f"Under {float(line)} Total Goals",
+                                "selection": "Under",
+                            }
+                            try:
+                                _r_u = _sim_nhl(_pick_tot_u)
+                            except Exception:
+                                _r_u = {}
+                            if _r_u.get("ran") and _r_u.get("sim_win_probability") is not None:
+                                _cfb_tot_probs["Under"] = (
+                                    float(_r_u["sim_win_probability"]) / 100.0
+                                )
+                                # P(Push) = 1 - P(Over) - P(Under); non-negative.
+                                _push = max(0.0, 1.0 - _cfb_tot_probs["Over"]
+                                            - _cfb_tot_probs["Under"])
+                                _cfb_tot_probs["Push"] = round(_push, 4)
+                            else:
+                                # Half-line (no push possible) → identity OK.
+                                _cfb_tot_probs["Under"] = round(
+                                    1.0 - _cfb_tot_probs["Over"], 4,
+                                )
+                                _cfb_tot_probs["Push"] = 0.0
                             _totals_model_ok = True
                 except Exception as _nte:
                     logger.warning("NHL total wiring failed: %s", _nte)
@@ -3681,9 +3713,17 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     })
             if u_price is not None and _totals_model_ok:
                 implied_u = _implied_prob(u_price)
-                # Reject truly lopsided dog-Unders (below 38% implied)
-                # \u2014 there the Over is the only side worth grading.
-                if implied_u >= 0.38:
+                # 2026-10-02 — NHL asymmetric-gate fix.  For NHL the
+                # 0.38 implied-Under floor is dropped because
+                # brain.sim_nhl already evaluates both sides from the
+                # SAME joint-scoring distribution — the Under reach-
+                # ability is a model question, not a market-price
+                # question.  For other sports the legacy 0.38 floor
+                # remains (prevents extreme-dog Unders from clogging
+                # the pre-model queue in sports whose totals model
+                # is less deterministic).
+                _nhl_under = (sport == "NHL")
+                if _nhl_under or implied_u >= 0.38:
                     if _mlb_shared_dist is not None:
                         # §5 SHARED distribution: conserved P(Under)
                         # from the SAME μ that produced P(Over) above.
@@ -3709,6 +3749,11 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         mp_u = _cfb_tot_probs.get("Under")
                         contribs_u = None
                     elif sport == "NHL":
+                        # 2026-10-02 — PUSH-SAFE NHL UNDER.
+                        # Use the directly simulated P(Under) from
+                        # sim_nhl rather than the legacy ``1 - P(Over)``
+                        # derivation (which is wrong on whole-number
+                        # NHL totals because push probability > 0).
                         mp_u = _cfb_tot_probs.get("Under")
                         contribs_u = None
                     else:
@@ -7786,6 +7831,22 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     "player_receptions",
                     "player_reception_yds",
                     "player_reception_tds",
+                    # ── 2026-10-02 · NHL PLAYER-PROP STARVATION FIX ──
+                    # Root cause: when the sportsbook Over/Under pair
+                    # on a legitimate NHL player market is balanced
+                    # (|Δimplied| < 5pp — the typical shape for Goals
+                    # O0.5, Assists O0.5, Points O0.5, and even-money
+                    # SOG lines), the generic pair-dedup killed BOTH
+                    # sides BEFORE sim_nhl ever evaluated them.  That
+                    # starved the independent NHL model.  Allow both
+                    # sides through so the model — not book pricing —
+                    # chooses the stronger NHL side.  Post-model
+                    # contradiction dedupe still prevents both sides
+                    # from publishing simultaneously.
+                    "player_goals",
+                    "player_shots_on_goal",
+                    "player_assists",
+                    "player_points",
                 }
                 if abs(_o_imp - _u_imp) < 0.05:
                     if _fam in _KEEP_BOTH_ON_BALANCED_FAMILIES:
@@ -8052,6 +8113,25 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 "player_reception_yds_alternate",
                 "player_reception_tds",
                 "player_reception_tds_alternate",
+                # ── 2026-10-02 · NHL PLAYER-PROP GATE EXEMPTION ──
+                # NHL main-line player props are commonly priced at or
+                # below the generic 62% implied floor (Goals O0.5,
+                # Assists O0.5, Points O0.5, SOG O/U all live near
+                # pick-em or plus money).  The 62% pre-model gate was
+                # structurally wrong for NHL — it killed legitimate
+                # candidates before brain.sim_nhl could evaluate them.
+                # Final board admission is still gated by Lock Score
+                # >= 85 downstream (real line + model + Probability
+                # Authority).  This exemption only lets real candidates
+                # REACH the model.
+                "player_goals",
+                "player_goals_alternate",
+                "player_shots_on_goal",
+                "player_shots_on_goal_alternate",
+                "player_assists",
+                "player_assists_alternate",
+                "player_points",
+                "player_points_alternate",
             }
             if not _mk_gated and implied < _HIGH_PROB_MIN_IMPLIED:
                 continue
