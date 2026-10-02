@@ -84,6 +84,10 @@ _MARKET_STAT_KEY: dict[str, str] = {
     "points":                    "points",
     "player_shots_on_goal":      "shots_on_goal",
     "shots_on_goal":             "shots_on_goal",
+    # 2026-06-28 · P0-A — display-string form must route to SOG so
+    # provider markets labeled "<Player> Over N.5 Shots on Goal"
+    # don't fall through to _detect_market → unsupported.
+    "shots on goal":             "shots_on_goal",
     "player_shots":              "shots_on_goal",
     "shots":                     "shots_on_goal",
     "player_total_saves":        "saves",

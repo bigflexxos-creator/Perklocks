@@ -64,20 +64,34 @@ def _score_for(scores: list[dict], team: str) -> Optional[float]:
 
 
 def _parse_spread(market: str) -> tuple[Optional[str], Optional[float]]:
-    """Extract the team and line from a market string like 'Team +1.5 Spread',
-    'Team -1.5 Spread (Alt)', 'Team +1.5 Run Line', 'Team -1.5 Puck Line' etc.
-    Handles the ' (Alt)' suffix and Run Line / Puck Line / Handicap variants
-    that some sports (MLB / NHL) emit instead of the literal 'Spread'."""
+    """Extract the team and line from a market string.  Supports multiple
+    emission layouts observed across sports:
+
+      • 'Team +1.5 Spread'      (MLB / NFL / NBA)
+      • 'Team -1.5 Run Line'    (MLB)
+      • 'Team +1.5 Puck Line'   (NHL — some writers)
+      • 'Team Puck Line -1.5'   (NHL — Odds-API writer order)
+      • 'Team Spread -2.5 (Alt)'
+    """
     # Strip trailing " (Alt)" first — settles identically to the main line.
     m_str = re.sub(r"\s*\(Alt\)\s*$", "", market, flags=re.IGNORECASE)
+    # Order 1: Team NUMBER (Spread|Run Line|Puck Line|Handicap)
     m = re.match(
         r"^(.+?)\s+([+-]?\d+(?:\.\d+)?)\s+"
         r"(?:Spread|Run\s+Line|Puck\s+Line|Handicap)\s*$",
         m_str, re.IGNORECASE,
     )
-    if not m:
-        return (None, None)
-    return (m.group(1).strip(), float(m.group(2)))
+    if m:
+        return (m.group(1).strip(), float(m.group(2)))
+    # ── 2026-06-28 · P0-A NHL layout: 'Team Puck Line ±1.5' ──
+    m2 = re.match(
+        r"^(.+?)\s+(?:Spread|Run\s+Line|Puck\s+Line|Handicap)\s+"
+        r"([+-]?\d+(?:\.\d+)?)\s*$",
+        m_str, re.IGNORECASE,
+    )
+    if m2:
+        return (m2.group(1).strip(), float(m2.group(2)))
+    return (None, None)
 
 
 def _parse_total_line(market: str) -> Optional[float]:
@@ -245,6 +259,43 @@ def settle_pick(pick: dict, score_payload: dict) -> Optional[str]:
         if side == "over":
             return "won" if total > line else "lost"
         return "won" if total < line else "lost"
+
+    # ── 2026-06-28 · P0-A NHL PLAYER-PROP SETTLEMENT ────────────────
+    # Resolve goals / assists / points / shots-on-goal from the
+    # authoritative player boxscore when the pick carries
+    # ``player_actuals`` (populated by the settlement orchestrator
+    # pre-step).  Never fabricates an actual.
+    if (pick.get("sport") == "NHL"
+            and any(tok in market for tok in (
+                "goals", "assists", "points", "shots on goal", " sog"))
+            and any(tok in market for tok in ("over", "under"))):
+        actuals = pick.get("player_actuals") or score_payload.get("player_actuals") or {}
+        line = _parse_total_line(pick.get("market") or "")
+        side = _parse_total_side(pick.get("market") or "")
+        if line is None or side is None:
+            return None
+        # Which actual to read.
+        if "shots on goal" in market or " sog" in market:
+            v = actuals.get("shots_on_goal") or actuals.get("shots")
+        elif " assists" in market:
+            v = actuals.get("assists")
+        elif " points" in market:
+            v = actuals.get("points")
+        elif " goals" in market:
+            v = actuals.get("goals")
+        else:
+            v = None
+        if v is None:
+            return None  # no authoritative actual yet → UNRESOLVED
+        try:
+            av = float(v)
+        except (TypeError, ValueError):
+            return None
+        if abs(av - line) < 0.01:
+            return "push"
+        if side == "over":
+            return "won" if av > line else "lost"
+        return "won" if av < line else "lost"
 
     return None  # unrecognized market — leave pending
 

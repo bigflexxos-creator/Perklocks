@@ -129,6 +129,21 @@ _SEED = [
         ("home_score", "away_score"), "espn_scores", ()),
     SettlementAuthority("CFB", "game_total",
         ("home_score", "away_score"), "espn_scores", ()),
+    # ── 2026-06-28 · P0-A NHL settlement authorities ────────────
+    SettlementAuthority("NHL", "moneyline",
+        ("home_score", "away_score"), "nhl_api", ("espn_scores",)),
+    SettlementAuthority("NHL", "puck_line",
+        ("home_score", "away_score"), "nhl_api", ("espn_scores",)),
+    SettlementAuthority("NHL", "game_total",
+        ("home_score", "away_score"), "nhl_api", ("espn_scores",)),
+    SettlementAuthority("NHL", "nhl_goals",
+        ("player_goals",), "nhl_api", ()),
+    SettlementAuthority("NHL", "nhl_sog",
+        ("player_shots_on_goal",), "nhl_api", ()),
+    SettlementAuthority("NHL", "nhl_assists",
+        ("player_assists",), "nhl_api", ()),
+    SettlementAuthority("NHL", "nhl_points",
+        ("player_points",), "nhl_api", ()),
 ]
 for _cap in _SEED:
     register(_cap)

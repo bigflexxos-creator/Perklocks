@@ -217,7 +217,13 @@ async def _ingest_boxscore(cx: httpx.AsyncClient, db, game_id) -> int:
                         "goals": p.get("goals"),
                         "assists": p.get("assists"),
                         "points": p.get("points"),
-                        "shots": p.get("shots"),
+                        # ── 2026-06-28 · P0-A NHL ingestion fix ──
+                        # NHL public API field is ``sog`` (shots on
+                        # goal), not ``shots``.  Previously stored a
+                        # null for every skater which blocked the
+                        # SOG model.  Reading ``sog`` with ``shots``
+                        # as a legacy fallback.
+                        "shots": p.get("sog", p.get("shots")),
                         "hits": p.get("hits"),
                         "blocked_shots": p.get("blockedShots"),
                         "toi": p.get("toi"),
