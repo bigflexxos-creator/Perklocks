@@ -1,5 +1,48 @@
 # PRD — Perklocks Master Surgical Build
 
+## 2026-10-02 · DISTRIBUTED CANONICAL WORKER LEASE — PASS (code-only, no DB cutover)
+
+### What shipped
+* New `services/canonical_worker_lease.py` — Mongo-backed atomic distributed lease.
+  * Collection: `canonical_worker_leases`
+  * Lease name: `canonical_background_authority`
+  * Unique index on `lease_name`
+  * Atomic `find_one_and_update` → `insert_one` fallback (DuplicateKey = lost race)
+  * TTL = 90s, heartbeat = 30s
+  * Supervisor loop renews every 30s; failed renewal flips `owns_local → False` and cancels every tracked protected task
+  * Graceful release on shutdown; TTL expiry remains the ultimate crash-recovery authority
+  * Hard eligibility gate: `DATA_AUTHORITY=production` AND `CANONICAL_WRITE_ENABLED=true` AND `BACKGROUND_WORKERS_ENABLED=true`
+  * Stable per-process `instance_id` (prefers `INSTANCE_ID` / `HOSTNAME`, always `:uuid` suffixed)
+* `server.py` startup wiring — one `get_lease_authority()` call per process, ensure_index, acquire, start_supervisor + non-owner watchdog that retries acquire every heartbeat (failover without restart).
+* `server.py :: _deferred_task` — second gate added after the existing `BACKGROUND_WORKERS_ENABLED` gate: non-owner replicas log suppression and skip; owner-only runners re-check `owns_local()` immediately before firing the first mutation; task handles are registered with the lease for ownership-loss cancellation.
+* `server.py` shutdown handler — `stop_supervisor()` + `release()` on clean exit.
+* `routes/admin_routes.py :: GET /api/admin/data-authority/status` extended with `canonical_worker_lease` snapshot (worker_lease_name/owner/this_instance_owns_lease/heartbeat_at/expires_at/ttl/heartbeat/instance_id/eligible_for_lease) — zero credentials exposed.
+
+### Scope guarantees
+* No change to `MONGO_URL`, `DB_NAME`, `data_authority.py` env semantics.
+* No change to `sports_engine.py`, NHL V1 (champion), NHL V2 (dormant), Probability Authority, Lock Score, 85+ eligibility, settlement rules, canonical publication semantics, NFL alt writer.
+* No database migration, no backfill, no NHL regen.
+* Preview posture unchanged: `canonical_worker_lease: NOT eligible — lease dormant` logged at startup; the pre-existing `data_authority: SUPPRESSED background worker '…'` lines continue firing for all ~17 workers → zero running canonical workers in Preview.
+
+### Tests (15/15 PASS — `tests/test_canonical_worker_lease.py`)
+1. Two Production instances race → exactly 1 winner ✅
+2. 5 Production instances race → exactly 1 winner, exactly 1 row ✅
+3. Losing instance cannot execute protected worker ✅
+4. Owner can renew lease ✅
+5. Non-owner cannot renew owner's lease ✅
+6. Owner loses authority immediately after failed renewal ✅
+7. Expired lease reclaimed by another eligible instance ✅
+8. Preview cannot acquire ✅
+9. `CANONICAL_WRITE_ENABLED=false` cannot acquire ✅
+10. `BACKGROUND_WORKERS_ENABLED=false` cannot acquire ✅
+11. `DATA_AUTHORITY != production` cannot acquire ✅
+12. Graceful release → next instance acquires ✅
+13. Crash + TTL expiry → failover without restart ✅
+14. Preview background-worker suppression preserved ✅
+15. API/read traffic available on non-owner instance ✅
+
+---
+
 ## 2026-10-02 · FINAL SURGICAL CLOSURE (Preview-only) — Partial
 
 ### Delivered P0 code fixes

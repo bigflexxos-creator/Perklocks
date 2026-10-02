@@ -5248,6 +5248,66 @@ async def on_startup():
     except Exception as _e:
         logger.warning("Phase 3B Mongo readiness check raised: %s", _e)
 
+    # ── Phase 3G — Distributed Canonical Worker Lease (2026-10) ───────
+    # Production will soon run multiple backend replicas against a
+    # shared Atlas database.  To guarantee exactly ONE replica acts
+    # as the canonical background mutation authority we elect a
+    # Mongo-backed distributed lease here.  Preview is NOT eligible
+    # (DATA_AUTHORITY != production) so this call is a safe no-op
+    # that keeps the current zero-worker Preview posture intact.
+    _CANONICAL_LEASE = None
+    try:
+        from services.canonical_worker_lease import (
+            get_lease_authority as _get_lease,
+            is_eligible_for_canonical_lease as _lease_eligible,
+            process_instance_id as _instance_id,
+        )
+        from services.database import get_database as _get_db
+        _CANONICAL_LEASE = _get_lease(_get_db())
+        await _CANONICAL_LEASE.ensure_index()
+        if _lease_eligible():
+            _acquired = await _CANONICAL_LEASE.acquire()
+            logger.info(
+                "canonical_worker_lease: acquisition attempt instance=%s "
+                "acquired=%s owner_local=%s",
+                _instance_id(), _acquired, _CANONICAL_LEASE.owns_local(),
+            )
+            if _CANONICAL_LEASE.owns_local():
+                _CANONICAL_LEASE.start_supervisor()
+            else:
+                # Non-owner replica: keep retrying in the background
+                # so this instance can fail over if the current owner
+                # dies.  The supervisor loop performs the periodic
+                # re-acquire via renew() — but renew() only succeeds
+                # for existing owners, so we also kick off a cheap
+                # watchdog that retries acquire() each heartbeat.
+                _CANONICAL_LEASE.start_supervisor()
+
+                async def _lease_watchdog():
+                    import asyncio as _aio2
+                    while True:
+                        try:
+                            await _aio2.sleep(_CANONICAL_LEASE.heartbeat_s)
+                            if not _CANONICAL_LEASE.owns_local():
+                                await _CANONICAL_LEASE.acquire()
+                        except _aio2.CancelledError:
+                            break
+                        except Exception as _we:
+                            logger.debug("lease_watchdog iter raised: %s", _we)
+                asyncio.create_task(_lease_watchdog(), name="lease_watchdog")
+        else:
+            logger.info(
+                "canonical_worker_lease: NOT eligible — lease dormant "
+                "(mode=%s, canonical_write=%s, workers=%s, instance=%s)",
+                os.environ.get("DATA_AUTHORITY", "preview"),
+                os.environ.get("CANONICAL_WRITE_ENABLED", "false"),
+                os.environ.get("BACKGROUND_WORKERS_ENABLED", "false"),
+                _instance_id(),
+            )
+    except Exception as _lease_err:
+        logger.warning("canonical_worker_lease wiring failed (non-fatal): %s", _lease_err)
+        _CANONICAL_LEASE = None
+
     def _deferred_task(coro_factory, delay: float, name: str = None):
         """Schedule `coro_factory()` to run after a `delay` second sleep.
         `coro_factory` is a callable returning a fresh coroutine (we
@@ -5284,6 +5344,22 @@ async def on_startup():
                     tname, _mode(),
                 )
                 return None
+            # Distributed-lease gate: even when background workers
+            # are enabled, only the replica that OWNS the canonical
+            # worker lease may launch mutation workers.  Non-owner
+            # Production replicas log the suppression and skip —
+            # exactly like Preview — so API reads keep flowing but
+            # no canonical mutation runs.
+            if _CANONICAL_LEASE is not None and not _CANONICAL_LEASE.owns_local():
+                tname = (name
+                         or getattr(coro_factory, "__name__", None)
+                         or "deferred_worker")
+                logger.info(
+                    "canonical_worker_lease: SUPPRESSED background worker '%s' "
+                    "(mode=%s, this_instance_owns_lease=False)",
+                    tname, _mode(),
+                )
+                return None
         except Exception:
             # If the authority module is missing, fall back to
             # original (unsafe) behavior — never block the pod from
@@ -5293,6 +5369,16 @@ async def on_startup():
         async def _runner():
             try:
                 await asyncio.sleep(delay)
+                # Re-check lease ownership immediately before the
+                # first mutation call — the heartbeat loop may have
+                # flipped ownership during the deferral window.
+                if _CANONICAL_LEASE is not None and not _CANONICAL_LEASE.owns_local():
+                    logger.info(
+                        "canonical_worker_lease: ABORT runner '%s' — "
+                        "ownership lost during deferral",
+                        tname,
+                    )
+                    return
                 await coro_factory()
             except asyncio.CancelledError:
                 pass
@@ -5300,7 +5386,7 @@ async def on_startup():
                 logger.warning("Deferred startup task failed (delay=%.1fs): %s", delay, e)
         tname = name or getattr(coro_factory, "__name__", None) or f"deferred_{uuid.uuid4().hex[:8]}"
         try:
-            return _TASK_REGISTRY.register_and_start(
+            _handle = _TASK_REGISTRY.register_and_start(
                 tname, _runner,
                 task_type="deferred_startup", critical=False,
                 cadence=f"one-shot after {delay:.1f}s",
@@ -5310,11 +5396,19 @@ async def on_startup():
             # Duplicate name — fall back to a uuid-suffixed registration
             # so shutdown still tracks it.
             uid = f"{tname}:{uuid.uuid4().hex[:6]}"
-            return _TASK_REGISTRY.register_and_start(
+            _handle = _TASK_REGISTRY.register_and_start(
                 uid, _runner,
                 task_type="deferred_startup", critical=False,
                 cadence=f"one-shot after {delay:.1f}s",
             )
+        # Track the handle under the lease so the heartbeat loop can
+        # cancel it the instant ownership is lost.
+        try:
+            if _CANONICAL_LEASE is not None and _handle is not None:
+                _CANONICAL_LEASE.register_protected_task(_handle)
+        except Exception:
+            pass
+        return _handle
 
     # ── Phase 3C — Central Index Registry (2026-08) ───────────────────
     # One idempotent call replaces the fragmented `create_index` calls
@@ -7152,6 +7246,21 @@ async def on_shutdown():
       * shared HTTP client close
       * MongoDB close (exactly once)
     """
+    # Phase 3G — gracefully release the canonical worker lease.
+    # Correctness never depends on this call (TTL expiration is the
+    # ultimate crash-recovery authority), but releasing on clean
+    # shutdown lets another eligible Production replica take over
+    # immediately instead of waiting out the TTL.
+    try:
+        from services.canonical_worker_lease import get_lease_authority as _get_lease2
+        _lease = _get_lease2()
+        if _lease is not None:
+            await _lease.stop_supervisor()
+            if _lease.owns_local():
+                await _lease.release()
+                logger.info("canonical_worker_lease: released on shutdown")
+    except Exception as _lrel:
+        logger.warning("canonical_worker_lease shutdown release raised: %s", _lrel)
     try:
         from services.application_lifecycle import get_lifecycle
         lc = get_lifecycle()
