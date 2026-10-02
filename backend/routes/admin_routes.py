@@ -421,6 +421,11 @@ async def admin_data_authority_status(
     from services.data_authority import status as _authority_status
     s = _authority_status()
     try:
+        from services.canonical_worker_lease import status as _lease_status
+        s["canonical_worker_lease"] = await _lease_status()
+    except Exception as _le:
+        s["canonical_worker_lease"] = {"error": str(_le)[:200]}
+    try:
         pick_count = await db.picks.estimated_document_count()
     except Exception:
         pick_count = -1
