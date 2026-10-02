@@ -5258,7 +5258,38 @@ async def on_startup():
         Phase 3F-2: registered with runtime_task_registry so shutdown
         can signal + await this deferred task.  Name defaults to the
         coroutine factory's __name__ (falls back to a uuid suffix on
-        collision)."""
+        collision).
+
+        2026-10-02 — ONE DATABASE AUTHORITY gate.  When the pod runs
+        in Preview mode (BACKGROUND_WORKERS_ENABLED!=true) ALL
+        scheduled background workers are suppressed so Preview cannot
+        duplicate Production's ingestion / settlement / publication
+        loops against the shared canonical database.  The suppression
+        is logged exactly once per worker so an operator can confirm
+        the posture.  Returns None in Preview — callers that await
+        the registration should treat None as "worker skipped".
+        """
+        try:
+            from services.data_authority import (
+                background_workers_enabled as _wk_enabled,
+                authority_mode as _mode,
+            )
+            if not _wk_enabled():
+                tname = (name
+                         or getattr(coro_factory, "__name__", None)
+                         or "deferred_worker")
+                logger.info(
+                    "data_authority: SUPPRESSED background worker '%s' "
+                    "(mode=%s, BACKGROUND_WORKERS_ENABLED=false)",
+                    tname, _mode(),
+                )
+                return None
+        except Exception:
+            # If the authority module is missing, fall back to
+            # original (unsafe) behavior — never block the pod from
+            # starting entirely.
+            pass
+
         async def _runner():
             try:
                 await asyncio.sleep(delay)
@@ -6820,6 +6851,78 @@ async def on_startup():
         from services.nfl_data_ingest import refresh_nfl_weekly as _nfl_weekly_refresh
 
         async def _nfl_player_weekly_loop():
+            # 2026-10-02 PRODUCTION COLD-START FIX — the previous loop
+            # only refreshed the CURRENT season every cycle, under the
+            # assumption that "historical seasons already in Mongo from
+            # prior runs remain intact".  That assumption is FALSE on a
+            # freshly deployed production pod (its own DB has never
+            # seen a backfill) — the user canary "Brock Purdy 5+ Rush
+            # Yds — 0 obs" was caused by nfl_player_weekly being empty
+            # for 2019-2025 in Production.
+            #
+            # On boot we now check whether Mongo has ANY historical
+            # season (2024).  If not, we perform a ONE-TIME 2019-current
+            # multi-season backfill — year-by-year so peak RSS stays
+            # under 400 MB — before entering the weekly refresh loop.
+            # Idempotent (`ordered=False` bulk UpdateOne upserts), so
+            # re-runs on an already-populated DB are no-ops.
+            try:
+                have_historical = await db.nfl_player_weekly.count_documents(
+                    {"season": 2024}, limit=1,
+                )
+            except Exception:
+                have_historical = 0
+            if not have_historical:
+                try:
+                    cur_year = datetime.now(timezone.utc).year
+                    cold_years = tuple(range(2019, cur_year + 1))
+                    logger.info(
+                        "NFL nfl_player_weekly COLD-START backfill (empty DB detected): %s",
+                        cold_years,
+                    )
+                    r0 = await _nfl_weekly_refresh(db, years=cold_years)
+                    logger.info(
+                        "NFL nfl_player_weekly cold-start done: total_upserts=%s",
+                        r0.get("total_upserts"),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "NFL nfl_player_weekly cold-start backfill failed: %s", e,
+                    )
+
+            # 2026-10-02 — bridge `nfl_player_weekly` → `player_game_actuals`
+            # which is the collection Historical Intelligence reads from
+            # for NFL player markets.  Without this, Production's HI
+            # returns "0 obs" for every player (user canary: Brock Purdy
+            # 5+ Rush Yds vs Denver Broncos → 0 obs on Production).
+            # Idempotent — writes only new (player, event) pairs, or
+            # updates existing with the latest atoms.  Safe to re-run.
+            try:
+                have_actuals = await db.player_game_actuals.count_documents(
+                    {"sport": "nfl", "source": "nfl_player_weekly"}, limit=1,
+                )
+            except Exception:
+                have_actuals = 0
+            if not have_actuals:
+                try:
+                    from services.team_history.final_expansion import (
+                        backfill_nfl_from_player_weekly as _nfl_to_actuals,
+                    )
+                    logger.info(
+                        "NFL player_game_actuals COLD-START bridge "
+                        "(nfl_player_weekly → player_game_actuals)",
+                    )
+                    c = await _nfl_to_actuals(db, limit=200_000, dry_run=False)
+                    logger.info(
+                        "NFL player_game_actuals bridge done: inserted=%s updated=%s "
+                        "players=%s seasons=%s",
+                        c.get("inserted"), c.get("updated"),
+                        c.get("players"), c.get("seasons"),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "NFL player_game_actuals cold-start bridge failed: %s", e,
+                    )
             while True:
                 try:
                     # P0-3 CLOSURE (2026-09-20) — the 2019-current 7-season

@@ -295,6 +295,177 @@ async def historical_player_form(
         raise HTTPException(500, f"lookup failed: {e}")
 
 
+@router.post("/admin/historical/nfl-cold-start-backfill")
+async def admin_nfl_cold_start_backfill(
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+):
+    """2026-10-02 — manually fire the NFL cold-start backfill.
+
+    Combines two steps into one request so a freshly deployed
+    Production pod can populate NFL Historical Intelligence without
+    waiting for the 6-minute boot defer:
+
+      1. ``refresh_nfl_weekly(db, years=2019..current)`` populates
+         ``nfl_player_weekly`` (nflverse parquets, year-by-year —
+         peak RSS stays low).
+      2. ``backfill_nfl_from_player_weekly`` bridges those rows into
+         ``player_game_actuals`` (the collection Historical
+         Intelligence reads from).
+
+    Both steps are idempotent — rerunning on an already-populated DB
+    is a no-op.  Runs in background; returns a job id immediately.
+
+    Resolves the user canary: "Brock Purdy 5+ Rushing Yards vs
+    Denver Broncos → 0 obs" on Production.
+
+    2026-10-02 — ONE DATABASE AUTHORITY: refuses to run on Preview
+    pods.  Only Production (CANONICAL_WRITE_ENABLED=true) may
+    mutate the shared canonical corpus.
+    """
+    from services.data_authority import (
+        canonical_write_enabled, authority_mode,
+    )
+    if not canonical_write_enabled():
+        raise HTTPException(
+            status_code=423,
+            detail={
+                "locked": True,
+                "mode": authority_mode(),
+                "reason": "canonical write forbidden on Preview — "
+                          "route this request to the Production pod",
+            },
+        )
+    import asyncio
+
+    async def _runner():
+        try:
+            from services.nfl_data_ingest import refresh_nfl_weekly
+            from services.team_history.final_expansion import (
+                backfill_nfl_from_player_weekly,
+            )
+            cur = datetime.now(timezone.utc).year
+            yrs = tuple(range(2019, cur + 1))
+            r = await refresh_nfl_weekly(db, years=yrs)
+            c = await backfill_nfl_from_player_weekly(
+                db, limit=200_000, dry_run=False,
+            )
+            # Stash a progress crumb so the admin can poll.
+            await db.ops_jobs.update_one(
+                {"job": "nfl_cold_start_backfill"},
+                {"$set": {
+                    "job": "nfl_cold_start_backfill",
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "weekly_upserts": r.get("total_upserts"),
+                    "actuals_inserted": c.get("inserted"),
+                    "actuals_updated":  c.get("updated"),
+                    "players":  c.get("players"),
+                    "seasons":  c.get("seasons"),
+                }},
+                upsert=True,
+            )
+        except Exception as e:
+            await db.ops_jobs.update_one(
+                {"job": "nfl_cold_start_backfill"},
+                {"$set": {"job": "nfl_cold_start_backfill",
+                          "finished_at": datetime.now(timezone.utc).isoformat(),
+                          "error": str(e)}},
+                upsert=True,
+            )
+
+    asyncio.create_task(_runner())
+    return {
+        "queued": True,
+        "poll": "GET /api/admin/historical/nfl-cold-start-status",
+        "note": "Runs in background; typical cold-start is 2-4 minutes.",
+    }
+
+
+@router.get("/admin/historical/nfl-cold-start-status")
+async def admin_nfl_cold_start_status(
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+):
+    """Poll the status of the most recent NFL cold-start backfill."""
+    doc = await db.ops_jobs.find_one({"job": "nfl_cold_start_backfill"})
+    if not doc:
+        return {"status": "not_started"}
+    doc.pop("_id", None)
+    # Add live DB counts so the admin can see progress mid-flight.
+    doc["current_player_game_actuals_count"] = await db.player_game_actuals.count_documents(
+        {"sport": "nfl", "source": "nfl_player_weekly"},
+    )
+    doc["current_nfl_player_weekly_count"] = await db.nfl_player_weekly.estimated_document_count()
+    return doc
+
+
+@router.get("/admin/data-authority/status")
+async def admin_data_authority_status(
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+):
+    """One Database Authority verification endpoint.
+
+    Returns the sanitised authority configuration + a canonical-data
+    sample so an operator can compare Preview and Production side by
+    side without exposing Mongo credentials.
+
+    PASS criteria (compare both environments' responses):
+
+      * ``data_authority``                  — exactly one is "production"
+      * ``canonical_write_enabled``         — exactly one is True
+      * ``background_workers_enabled``      — exactly one is True
+      * ``mongo_fingerprint``               — must MATCH across envs
+      * ``canonical_sample.pick_count``     — must MATCH across envs
+      * ``canonical_sample.nfl_actuals``    — must MATCH across envs
+      * ``canonical_sample.cfb_games_2026`` — must MATCH across envs
+      * ``canonical_sample.mlb_post_games`` — must MATCH across envs
+    """
+    from services.data_authority import status as _authority_status
+    s = _authority_status()
+    try:
+        pick_count = await db.picks.estimated_document_count()
+    except Exception:
+        pick_count = -1
+    try:
+        latest_pub = await db.picks.find({}).sort("event_time", -1).limit(1).to_list(1)
+        latest_pick = (latest_pub[0].get("id") if latest_pub else None)
+    except Exception:
+        latest_pick = None
+    try:
+        nfl_actuals = await db.player_game_actuals.count_documents({"sport": "nfl"})
+    except Exception:
+        nfl_actuals = -1
+    try:
+        cfb_2026 = await db.games.count_documents({"sport": "cfb", "date": {"$gte": "2026-08-01"}})
+    except Exception:
+        cfb_2026 = -1
+    try:
+        mlb_post = await db.games.count_documents({"sport": "mlb", "date": {"$gte": "2026-09-28"}})
+    except Exception:
+        mlb_post = -1
+    try:
+        nhl_games = await db.games.count_documents({"sport": "nhl"})
+    except Exception:
+        nhl_games = -1
+    try:
+        delaware_2026 = await db.games.count_documents({
+            "sport": "cfb",
+            "date": {"$gte": "2026-08-01"},
+            "$or": [{"home": {"$regex": "Delaware Blue", "$options": "i"}},
+                    {"away": {"$regex": "Delaware Blue", "$options": "i"}}],
+        })
+    except Exception:
+        delaware_2026 = -1
+    s["canonical_sample"] = {
+        "pick_count":         pick_count,
+        "latest_pick_id":     latest_pick,
+        "nfl_actuals":        nfl_actuals,
+        "cfb_games_2026":     cfb_2026,
+        "mlb_post_games":     mlb_post,
+        "nhl_games":          nhl_games,
+        "delaware_2026_obs":  delaware_2026,
+    }
+    return s
+
+
 # ──── Multi-Season Backfill (5+ year historical ingestion) ────
 class MultiSeasonBackfillRequest(BaseModel):
     sports: list[str] | None = None      # default: ['mlb','nba','nfl','soccer','tennis','cfb']
@@ -318,7 +489,24 @@ async def historical_backfill_seasons(
     Heads up: MLB full 5-year backfill walks ~1,200 days × ~15 games/day
     = ~18k boxscore fetches paced at 5/sec. Roughly 60 minutes on cold DB.
     Re-runs that hit `skip_if_done` finish in seconds.
+
+    2026-10-02 — ONE DATABASE AUTHORITY: refuses to run on Preview
+    pods.  Only Production (CANONICAL_WRITE_ENABLED=true) may
+    mutate the shared canonical corpus.
     """
+    from services.data_authority import (
+        canonical_write_enabled, authority_mode,
+    )
+    if not canonical_write_enabled():
+        raise HTTPException(
+            status_code=423,
+            detail={
+                "locked": True,
+                "mode": authority_mode(),
+                "reason": "canonical write forbidden on Preview — "
+                          "route this request to the Production pod",
+            },
+        )
     try:
         from historical.multi_season import backfill_seasons
     except Exception as e:
