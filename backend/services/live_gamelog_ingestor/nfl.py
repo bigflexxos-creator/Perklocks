@@ -58,6 +58,56 @@ def _decode_labels(labels: list[str]) -> dict[str, int]:
     return {lab: i for i, lab in enumerate(labels)}
 
 
+def _resolve_compound_label_indices(labels: list[str]) -> dict[str, int]:
+    """2026-10-02 CORRECTNESS FIX — ESPN's compound WR/RB gamelog row
+    emits a single stats array that contains BOTH rushing and
+    receiving blocks concatenated:
+
+        labels = ['CAR','YDS','AVG','TD','LNG',
+                  'REC','TGTS','YDS','AVG','TD','LNG', 'FUM', ...]
+
+    A naive dict comprehension collapses duplicate ``YDS`` / ``TD``
+    labels onto the LAST occurrence (receiving block), silently
+    corrupting the rushing columns.  Downstream this landed Terry
+    McLaurin's 2026 Week 3 "6 catches, 85 rec yds" as
+    ``rush_yds=0, rec_yds=None`` and Historical Intelligence stopped
+    showing current-season NFL rows.
+
+    This resolver walks the label array positionally and emits
+    separate ``RUSH_YDS``, ``RUSH_TD``, ``REC_YDS``, ``REC_TD``,
+    ``PASS_YDS``, ``PASS_TD`` keys so the caller can read each stat
+    column deterministically regardless of row shape.
+    """
+    out: dict[str, int] = {}
+    # First occurrence of a shared label belongs to whichever block
+    # has already started.  We detect block boundaries via the
+    # category-leading tokens: CAR (rushing), REC/TGTS/TAR (receiving),
+    # CMP/ATT (passing).
+    block = None
+    for i, lab in enumerate(labels):
+        if lab == "CAR":   block = "rush"
+        elif lab in ("REC", "TGTS", "TAR"): block = "rec" if block != "rec" else block
+        elif lab in ("CMP", "ATT") and block != "pass":  block = "pass"
+        if lab == "YDS":
+            if block == "rush":  out.setdefault("RUSH_YDS", i)
+            elif block == "rec": out.setdefault("REC_YDS",  i)
+            elif block == "pass":out.setdefault("PASS_YDS", i)
+            else:                out.setdefault("YDS",      i)
+        elif lab == "TD":
+            if block == "rush":  out.setdefault("RUSH_TD", i)
+            elif block == "rec": out.setdefault("REC_TD",  i)
+            elif block == "pass":out.setdefault("PASS_TD", i)
+            else:                out.setdefault("TD",      i)
+        elif lab == "REC":  out.setdefault("REC",  i)
+        elif lab == "TGTS": out.setdefault("TGTS", i)
+        elif lab == "TAR":  out.setdefault("TAR",  i)
+        elif lab == "CAR":  out.setdefault("CAR",  i)
+        elif lab == "CMP":  out.setdefault("CMP",  i)
+        elif lab == "ATT":  out.setdefault("ATT",  i)
+        elif lab == "INT":  out.setdefault("INT",  i)
+    return out
+
+
 def _stats_to_actuals(stats_arr: list, labels: list[str]) -> dict:
     """Best-effort stat extraction across position rows.
 
@@ -65,38 +115,39 @@ def _stats_to_actuals(stats_arr: list, labels: list[str]) -> dict:
     rushing OR receiving), a single-game entry may only carry
     completions/attempts/pass_yds/pass_tds OR rushing OR receiving.
     We produce a merged actuals dict — missing stats stay None.
+
+    2026-10-02 — handles ESPN's compound WR/RB rows which emit
+    rushing + receiving in one array with duplicate YDS/TD labels.
     """
-    lidx = _decode_labels(labels)
-    def g(k: str) -> Optional[float]:
-        i = lidx.get(k)
-        return _f(stats_arr[i]) if (i is not None and i < len(stats_arr)) else None
+    idx = _resolve_compound_label_indices(labels)
+    def pick(key: str) -> Optional[float]:
+        i = idx.get(key)
+        if i is None or i >= len(stats_arr):
+            return None
+        return _f(stats_arr[i])
 
     actuals: dict[str, Optional[float]] = {
-        "pass_yds":       None, "pass_tds":     None,
-        "completions":    g("CMP"), "attempts":  g("ATT"),
-        "interceptions":  g("INT"),
-        "rush_yds":       None, "rush_attempts": g("CAR"),
-        "rush_tds":       None,
-        "rec_yds":        None, "receptions":  g("REC"),
-        "rec_tds":        None, "targets":     g("TGTS") or g("TAR"),
+        "pass_yds":       pick("PASS_YDS"), "pass_tds":    pick("PASS_TD"),
+        "completions":    pick("CMP"),       "attempts":    pick("ATT"),
+        "interceptions":  pick("INT"),
+        "rush_yds":       pick("RUSH_YDS"),  "rush_attempts": pick("CAR"),
+        "rush_tds":       pick("RUSH_TD"),
+        "rec_yds":        pick("REC_YDS"),   "receptions":  pick("REC"),
+        "rec_tds":        pick("REC_TD"),    "targets":     pick("TGTS") or pick("TAR"),
     }
 
-    # Heuristic resolution for YDS / TD ambiguity — check which
-    # position row we're in by inspecting the co-occurring labels.
-    yds = g("YDS")
-    tds = g("TD")
-    is_passing   = "CMP" in lidx and "ATT" in lidx
-    is_rushing   = "CAR" in lidx and "ATT" not in lidx
-    is_receiving = ("REC" in lidx) or ("TGTS" in lidx) or ("TAR" in lidx)
-    if is_passing and yds is not None:
-        actuals["pass_yds"] = yds
-        actuals["pass_tds"] = tds
-    elif is_rushing and yds is not None:
-        actuals["rush_yds"] = yds
-        actuals["rush_tds"] = tds
-    elif is_receiving and yds is not None:
-        actuals["rec_yds"] = yds
-        actuals["rec_tds"] = tds
+    # Compat fallback — a legacy passing-only or rushing-only row
+    # that has a plain unqualified YDS/TD column (block never opened).
+    plain_yds = idx.get("YDS")
+    plain_td  = idx.get("TD")
+    if plain_yds is not None and plain_yds < len(stats_arr):
+        y = _f(stats_arr[plain_yds]); t = _f(stats_arr[plain_td]) if plain_td is not None else None
+        if "CMP" in labels and "ATT" in labels and actuals["pass_yds"] is None:
+            actuals["pass_yds"] = y; actuals["pass_tds"] = t
+        elif "CAR" in labels and actuals["rush_yds"] is None:
+            actuals["rush_yds"] = y; actuals["rush_tds"] = t
+        elif any(l in labels for l in ("REC","TGTS","TAR")) and actuals["rec_yds"] is None:
+            actuals["rec_yds"] = y; actuals["rec_tds"] = t
     return actuals
 
 

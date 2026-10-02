@@ -1,5 +1,41 @@
 # PRD — Perklocks Master Surgical Build
 
+## 2026-10-02 · NFL LIVE GAMELOG LABEL BUG — Current-season Historical Intelligence rows missing
+
+### Problem (user canary)
+Preview + Production Pick Breakdown for `Kyren Williams O30 Rush Yds vs Eagles` and `Terry McLaurin O10 Rec Yds vs Colts` showed L10 starting from `25 11/23` and `25 9/7` respectively — **the three fresh 2026 Week 1-3 games were missing** even though the player_game_actuals corpus contained them.
+
+### Root cause
+`services/live_gamelog_ingestor/nfl.py :: _stats_to_actuals` built a `label→index` dict via a naive comprehension. ESPN's WR/RB gamelog row emits a COMPOUND array that contains both rushing AND receiving blocks in a single stats array, with duplicate `YDS` and `TD` labels — one per block. The dict comprehension kept the LAST occurrence (receiving column), so:
+- Rushing yards column (index 1) was unreachable
+- Receiving yards (index 7) got read for `rush_yds` (wrong row!)
+- `rec_yds` always stayed `None`
+
+Williams's Week 3 should have been `rush_yds=88, rec_yds=70`; was stored as `rush_yds=70, rec_yds=None`.
+McLaurin's Week 3 should have been `rec_yds=77, rec=6, rec_td=1`; was stored as all-None receiving.
+
+### Fix
+New `_resolve_compound_label_indices` walks the label array positionally, tracks the current block (rush/rec/pass) via its leading token (`CAR` / `REC`-`TGTS`-`TAR` / `CMP`-`ATT`), and emits separate `RUSH_YDS`, `RUSH_TD`, `REC_YDS`, `REC_TD`, `PASS_YDS`, `PASS_TD` keys. `_stats_to_actuals` then reads each column deterministically.
+
+### Data recovered (full-roster refresh)
+- 2267 active NFL players reprocessed
+- 3843 game-log actuals corrected
+- 2026-09+ rows with `rec_yds` populated: 0 → **1,113**
+- 2026-09+ rows with `rush_yds` populated: ~partial → **1,287**
+- 2026-09+ rows with `pass_yds` populated: 0 → **235**
+- Williams: wk3 88/70, wk2 85/12, wk1 41/24 — all correct
+- McLaurin: wk3 6/77/1TD, wk2 2/50, wk1 2/14 — all correct
+- LaPorta: wk3 3/44, wk2 6/52/1TD, wk1 5/48 — all correct
+- Stroud: wk3 16/27/167/1TD, wk2 30/55/353, wk1 26/38/274/2TD — all correct
+
+### Files changed
+- `/app/backend/services/live_gamelog_ingestor/nfl.py` — label decoder + stats mapper
+
+### Preserved
+- NO changes to models, scoring, Lock Score, Probability Authority, Rollover, Parlay, canonical publication, NHL anything, probability thresholds. Only the ingestor's label-to-column mapping was corrected.
+
+---
+
 ## 2026-10-02 · UNIVERSAL LIVE HISTORICAL DATA AUTHORITY — FINAL CERTIFICATION
 
 ### Root cause (one line)
