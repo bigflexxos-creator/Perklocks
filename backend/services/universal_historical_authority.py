@@ -233,8 +233,26 @@ async def _loop(db) -> None:
 
 
 def start_background_authority(db) -> None:
-    """Idempotent start — safe to call from server.py on_startup."""
+    """Idempotent start — safe to call from server.py on_startup.
+
+    2026-10-02 — ONE DATABASE AUTHORITY: refuses to start on Preview
+    pods (BACKGROUND_WORKERS_ENABLED!=true) so Preview cannot
+    duplicate Production's historical ingestion against the shared
+    canonical DB.
+    """
     global _loop_task, _loop_stop_event
+    try:
+        from services.data_authority import (
+            background_workers_enabled as _wk, authority_mode as _mode,
+        )
+        if not _wk():
+            logger.info(
+                "data_authority: SUPPRESSED universal_historical_authority "
+                "loop (mode=%s)", _mode(),
+            )
+            return
+    except Exception:
+        pass
     if _loop_task is not None and not _loop_task.done():
         return
     _loop_stop_event = asyncio.Event()

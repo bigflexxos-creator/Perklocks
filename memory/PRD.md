@@ -1,5 +1,63 @@
 # PRD — Perklocks Master Surgical Build
 
+## 2026-10-02 · ONE DATABASE AUTHORITY
+
+### Goal
+Preview and Production share ONE canonical MongoDB.  Only Production
+is allowed to mutate canonical data (picks, settlement, publication,
+historical ingestion).  Preview may read freely.
+
+### Files created
+- `/app/backend/services/data_authority.py` — environment ownership module
+  - `authority_mode()` → "production" | "preview"
+  - `canonical_write_enabled()` / `background_workers_enabled()`
+  - `require_canonical_write(reason)` — raises `CanonicalWriteForbidden`
+  - `status()` — sanitised snapshot incl. 12-char Mongo fingerprint (no creds)
+
+### Files modified
+- `/app/backend/server.py` — `_deferred_task` now suppresses workers when
+  `BACKGROUND_WORKERS_ENABLED!=true` (one-line INFO log per worker)
+- `/app/backend/services/universal_historical_authority.py` —
+  `start_background_authority` refuses to start in Preview mode
+- `/app/backend/routes/admin_routes.py` —
+  - new GET `/api/admin/data-authority/status`
+  - POST `/api/admin/historical/backfill-seasons` returns 423 Locked in Preview
+  - POST `/api/admin/historical/nfl-cold-start-backfill` returns 423 Locked in Preview
+- `/app/backend/.env` — Preview-safe defaults:
+  `DATA_AUTHORITY=preview`, `CANONICAL_WRITE_ENABLED=false`,
+  `BACKGROUND_WORKERS_ENABLED=false`
+
+### Production deployment config (user action)
+Set in the Production pod's env (NOT this Preview .env):
+```
+DATA_AUTHORITY=production
+CANONICAL_WRITE_ENABLED=true
+BACKGROUND_WORKERS_ENABLED=true
+MONGO_URL=<the one shared MongoDB Atlas / cluster URI>
+DB_NAME=lockscore_db
+```
+And set the SAME `MONGO_URL` + `DB_NAME` on Preview, leaving the three
+authority flags defaulted (preview / false / false).
+
+### Verification matrix (Preview pod, 2026-10-02 17:51 UTC)
+| Check | Result |
+|---|---|
+| Preview authority mode | preview |
+| Preview `CANONICAL_WRITE_ENABLED` | false |
+| Preview `BACKGROUND_WORKERS_ENABLED` | false |
+| Distinct suppressed background workers | **17** (plus universal_historical_authority = 18) |
+| Preview `require_canonical_write` guard | ✅ raises `CanonicalWriteForbidden` |
+| Preview `POST /api/admin/historical/backfill-seasons` | ✅ **423 Locked** |
+| Preview `POST /api/admin/historical/nfl-cold-start-backfill` | ✅ **423 Locked** |
+| Preview `GET /api/admin/data-authority/status` | ✅ returns sanitised status |
+| Preview Mongo fingerprint | `ac7ea1130f39` (local — will change once pointed at the shared Atlas) |
+
+### Next session boot (after Production env config)
+Both pods will report the SAME `mongo_fingerprint`, SAME canonical
+sample counts, and Preview will still refuse to mutate.
+
+---
+
 ## 2026-10-02 · NFL LIVE GAMELOG LABEL BUG — Current-season Historical Intelligence rows missing
 
 ### Problem (user canary)
