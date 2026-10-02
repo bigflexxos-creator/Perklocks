@@ -230,13 +230,24 @@ SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
         # (never publishes with a book-implied-derived probability).
         "production_status": "LIVE_SEASON_WIRED",
         "market_status": {
-            "h2h":     "MODEL_UNAVAILABLE",
-            "spreads": "MODEL_UNAVAILABLE",
-            "totals":  "MODEL_UNAVAILABLE",
-            "player_goals":          "MODEL_UNAVAILABLE",
-            "player_shots_on_goal":  "MODEL_UNAVAILABLE",
-            "player_assists":        "MODEL_UNAVAILABLE",
-            "player_points":         "MODEL_UNAVAILABLE",
+            # ── 2026-06-28 · P0-A NHL MARKETS PROMOTED ─────────────
+            # The Monte Carlo NHL simulator (brain.sim_nhl) now runs
+            # against real ingested evidence through the feature
+            # engine (services.nhl_feature_engine).  Game markets
+            # (ML / puck line / total) and the four player families
+            # (goals / SOG / assists / points) each receive an
+            # independent probability that promotes to the published
+            # win_probability via apply_simulations.  Picks with
+            # DATA_INSUFFICIENT still fail closed at the simulator
+            # level — the SUPPORTED label here only means the model
+            # is wired, not that every pick will publish.
+            "h2h":                   "SUPPORTED",
+            "spreads":               "SUPPORTED",
+            "totals":                "SUPPORTED",
+            "player_goals":          "SUPPORTED",
+            "player_shots_on_goal":  "SUPPORTED",
+            "player_assists":        "SUPPORTED",
+            "player_points":         "SUPPORTED",
         },
         "game_markets": ["h2h", "spreads", "totals"],
         "prop_markets": [

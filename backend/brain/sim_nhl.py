@@ -248,17 +248,38 @@ def _simulate_game(pick: dict, kind: str) -> dict:
             return {"ran": False, "reason": "MISSING_SIDE_OR_LINE",
                     "market": pick.get("market")}
         # NHL puck line typically ±1.5.  Cover contract:
-        #   home -L covers iff home_score - away_score > L
-        #   home +L covers iff home_score - away_score > -L  (rarely used)
+        #   home -L covers iff home_score - away_score > L  (favorite)
+        #   home +L covers iff home_score - away_score > -L (underdog)
+        # ── 2026-06-28 · P0-A puck-line sign fix ──────────────────────
+        # ``_extract_line`` returns the number as-written on the pick
+        # (positive for +1.5, negative for -1.5).  If the pick carries
+        # the raw unsigned magnitude we infer sign from the market
+        # string ("+1.5" → underdog, "-1.5" → favorite).
+        signed_line = line
+        if signed_line > 0 and "-" in str(pick.get("market") or ""):
+            # Covers only the ``-1.5`` favorite case written positively.
+            # Default assume positive = underdog +line, negative = -line.
+            pass
+        _m = str(pick.get("market") or "")
+        # Look for an explicit signed token in the market/selection.
+        import re as _re
+        _sm = _re.search(r"([+-])\s*(\d+(?:\.\d+)?)", _m)
+        if _sm:
+            sign = -1.0 if _sm.group(1) == "-" else 1.0
+            signed_line = sign * float(_sm.group(2))
+        # ``cover_target`` = the margin we need to beat.
+        # favorite -L  → cover_target =  +L  (positive)
+        # underdog +L  → cover_target =  -L  (negative)
+        cover_target = -signed_line
         wins = 0
         for h, a in zip(home_scores, away_scores):
             margin = (h - a) if team == "home" else (a - h)
-            if margin > line:
+            if margin > cover_target:
                 wins += 1
         p_win = wins / n
         distribution = [(h - a) if team == "home" else (a - h)
                           for h, a in zip(home_scores, away_scores)]
-        threshold = line
+        threshold = cover_target
     elif kind == "total":
         side = _parse_side(pick)
         line = _extract_line(pick)

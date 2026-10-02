@@ -818,6 +818,36 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
     # broken "sim_pass" stress-test signal with empirical win probability.
     try:
         from brain.sim_runner import apply_simulations
+        # ── 2026-06-28 · P0-A NHL FEATURE ENGINE ATTACH ──────────────
+        # Populate ``nhl_sim_context`` on every NHL pick so the Monte
+        # Carlo simulator (``brain.sim_nhl.simulate``) can run against
+        # real ingested evidence (``db.games`` + ``db.player_game_logs``,
+        # sport='nhl').  Picks without sufficient recent games receive
+        # None → simulator returns DATA_INSUFFICIENT and the pick is
+        # skipped at scoring — correct fail-closed behavior.
+        try:
+            from services.nhl_feature_engine import (
+                build_nhl_sim_context as _nhl_ctx_builder,
+                clear_caches as _nhl_clear_caches,
+            )
+            _nhl_clear_caches()
+            _nhl_candidates = [p for p in picks
+                               if str(p.get("sport") or "").upper() == "NHL"]
+            if _nhl_candidates:
+                for _p in _nhl_candidates:
+                    try:
+                        _ctx = await _nhl_ctx_builder(db, _p)
+                        if _ctx:
+                            _p["nhl_sim_context"] = _ctx
+                    except Exception as _nhl_ctx_err:
+                        logger.debug("nhl_sim_context attach failed: %s", _nhl_ctx_err)
+                logger.info(
+                    "NHL feature engine attached %d/%d candidates",
+                    sum(1 for p in _nhl_candidates if p.get("nhl_sim_context")),
+                    len(_nhl_candidates),
+                )
+        except Exception as _nhl_fe_err:
+            logger.warning("NHL feature engine wiring failed: %s", _nhl_fe_err)
         sim_counts = apply_simulations(picks)
         if sim_counts.get("applied", 0) > 0:
             logger.info(
