@@ -5406,6 +5406,19 @@ PLAYER_PROP_MARKETS = {
         "player_shots",
         "player_shots_on_target",
     ],
+    # ── 2026-06-28 · P0-A NHL PLAYER PROP ACQUISITION ────────────────
+    # NHL live season — enable sportsbook market acquisition for the
+    # 4 canonical player-prop families already registered in
+    # UniversalMarketContract.  Downstream MODEL_UNAVAILABLE gating
+    # remains in place: any pick without a legitimate independent
+    # NHL evidence/model path will FAIL CLOSED and never publish.
+    # Market keys below are the Odds API ``icehockey_nhl`` surface.
+    "NHL": [
+        "player_goals", "player_goals_alternate",
+        "player_shots_on_goal", "player_shots_on_goal_alternate",
+        "player_assists", "player_assists_alternate",
+        "player_points", "player_points_alternate",
+    ],
     # UFC: The Odds API does NOT expose method-of-victory, round-betting, or
     # any MMA prop markets — only `h2h` (moneyline) and `totals` (rounds)
     # which we already get from the bulk /odds endpoint. Confirmed by
@@ -11025,7 +11038,15 @@ async def generate_all_picks(
     #           per-key cap; kept as an explicit hook so future
     #           budget-elastic additions plug in without altering
     #           fairness semantics.
-    prop_sports = [s for s in ("MLB", "NBA", "NFL", "Soccer") if _want(s)]
+    # ── 2026-06-28 · P0-A NHL LIVE-SEASON ACQUISITION ────────────────
+    # NHL is now part of the player-prop acquisition loop so real
+    # provider sportsbook markets (goals / SOG / assists / points)
+    # reach the pipeline.  Preservation guarantee: downstream NHL
+    # scoring still FAILS CLOSED when MODEL_UNAVAILABLE — this change
+    # ONLY opens the acquisition tap, it does NOT remove the model
+    # gate.  Picks without a legitimate independent NHL
+    # model/evidence path never publish.
+    prop_sports = [s for s in ("MLB", "NBA", "NFL", "NHL", "Soccer") if _want(s)]
     # Cheap "has current events" probe: use the already-loaded
     # ``_ACTIVE_KEYS`` catalog rather than an extra provider call.
     _prefix_map = {"Soccer": "soccer_", "Tennis": "tennis_"}

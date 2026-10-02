@@ -51,31 +51,29 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
       hydratedRef.current = true;
       setHydrated(true);
 
-      // Refresh each cached pick against the live backend.
+      // ── 2026-06-28 · P0-B BET SLIP STARTUP STORM FIX ─────────────
+      // Previously we fired up to MAX_SLIP_SIZE (25) parallel
+      // `api.pickDetail(p.id)` calls on every app launch to reconcile
+      // the slip against the backend.  Replaced with ONE canonical
+      // read from `/api/picks/today` (bare board = all sports, all
+      // locks) which already returns every active pick's full
+      // payload.  Slip picks still present on the board are refreshed
+      // from the board row; slip picks no longer on the board are
+      // silently dropped (same semantics as before).  Zero fan-out.
       if (initial.length === 0) return;
       try {
-        const fresh = await Promise.all(
-          initial.map(async (p) => {
-            try {
-              const live = await api.pickDetail(p.id);
-              return live as Pick;
-            } catch {
-              return null;  // pick gone from backend — drop it
-            }
-          }),
-        );
-        const refreshed = fresh.filter((p): p is Pick => p !== null);
-        // Detect ANY user-visible drift between the cached and the
-        // live payload — not just id/explanation. Bug history: a
-        // previous version of this diff only compared `id` and
-        // `explanation`, so when the same pick_id was re-keyed to a
-        // different market label by the generator (e.g. "Tyra Grant
-        // -1.5 Spread" rotated to "Tyra Grant Over 17.0 Games (Alt)"
-        // when the Odds API stopped exposing the spread market for
-        // that match), `changed` evaluated false and the slip kept
-        // showing the stale label forever. Comparing all display-
-        // relevant fields makes the slip always reflect the
-        // backend's current truth.
+        const board = await api.picksToday();
+        const byId: Record<string, Pick> = {};
+        for (const row of board as Pick[]) {
+          if (row && typeof row === "object" && (row as any).id) {
+            byId[(row as any).id] = row;
+          }
+        }
+        const refreshed: Pick[] = [];
+        for (const p of initial) {
+          const live = byId[p.id];
+          if (live) refreshed.push(live);
+        }
         const changed = refreshed.length !== initial.length ||
           refreshed.some((p, i) => {
             const old = initial[i];
@@ -92,7 +90,9 @@ export function BetSlipProvider({ children }: { children: ReactNode }) {
           });
         if (changed) setPicks(refreshed);
       } catch (e) {
-        console.warn("[BetSlip] refresh-on-hydrate failed", e);
+        // Request failed — PRESERVE the cached slip; never clear it on
+        // a transient network error.  Last-known-good semantics.
+        console.warn("[BetSlip] canonical reconcile failed (slip preserved)", e);
       }
     })();
   }, []);

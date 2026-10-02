@@ -220,24 +220,42 @@ SPORT_CAPABILITIES: dict[str, dict[str, Any]] = {
     },
     "NHL": {
         "enabled": True,
-        # PHASE 5 (2026-06) — INTENTIONALLY_DEFERRED per release scope.
-        "production_status": "INTENTIONALLY_DEFERRED",
+        # ── 2026-06-28 · P0-A NHL LIVE-SEASON PRODUCTION ───────────
+        # NHL season is active. Acquisition is wired for ML / puck-
+        # line / total game markets AND the 4 canonical player
+        # families (goals / SOG / assists / points). Settlement
+        # dispatcher resolves through UniversalMarketContract. Any
+        # pick without a legitimate independent NHL model/evidence
+        # path still records MODEL_UNAVAILABLE and FAILS CLOSED
+        # (never publishes with a book-implied-derived probability).
+        "production_status": "LIVE_SEASON_WIRED",
         "market_status": {
             "h2h":     "MODEL_UNAVAILABLE",
             "spreads": "MODEL_UNAVAILABLE",
             "totals":  "MODEL_UNAVAILABLE",
+            "player_goals":          "MODEL_UNAVAILABLE",
+            "player_shots_on_goal":  "MODEL_UNAVAILABLE",
+            "player_assists":        "MODEL_UNAVAILABLE",
+            "player_points":         "MODEL_UNAVAILABLE",
         },
         "game_markets": ["h2h", "spreads", "totals"],
-        "prop_markets": [],   # not yet wired
+        "prop_markets": [
+            "player_goals", "player_goals_alternate",
+            "player_shots_on_goal", "player_shots_on_goal_alternate",
+            "player_assists", "player_assists_alternate",
+            "player_points", "player_points_alternate",
+        ],
         "fallback_sources": [],
-        "supports_alt_lines": False,
+        "supports_alt_lines": True,
         "supports_locks": True,
-        "notes": ("Phase 1B (R2a): icehockey_nhl WIRED into production "
-                  "generation (fetch_nhl_picks → canonical path). Real "
-                  "ML / puck-line / total markets reach evaluation; no "
-                  "authoritative independent NHL model exists yet, so "
-                  "markets record MODEL_UNAVAILABLE funnel telemetry — "
-                  "probability/edge are never fabricated."),
+        "notes": ("NHL live-season acquisition wired (Phase 1B R2a + "
+                  "P0-A 2026-06-28). Real ML / puck-line / total / "
+                  "player goals / SOG / assists / points markets flow "
+                  "into the canonical path. Independent NHL model is "
+                  "still absent; every family records MODEL_UNAVAILABLE "
+                  "and fails closed — probability/edge are never "
+                  "fabricated and no pick publishes until a legitimate "
+                  "model/evidence path is added."),
     },
     # ── Intentionally disabled ─────────────────────────────────────
     "WNBA": {
@@ -300,6 +318,13 @@ def supports_locks(sport: str) -> bool:
 VALID_PRODUCTION_STATUSES: frozenset[str] = frozenset({
     "SUPPORTED", "PROVIDER_UNAVAILABLE", "MODEL_UNAVAILABLE",
     "INTENTIONALLY_UNSUPPORTED", "INTENTIONALLY_DEFERRED",
+    # ── 2026-06-28 · P0-A NHL LIVE-SEASON ────────────────────────────
+    # New sport-level status: acquisition is wired and real markets
+    # flow into evaluation, but no independent model is live yet so
+    # every market still records its OWN per-market MODEL_UNAVAILABLE
+    # funnel telemetry (fail-closed).  Distinguishes an active live
+    # season from a permanent intentional deferral.
+    "LIVE_SEASON_WIRED",
 })
 
 

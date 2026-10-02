@@ -31,14 +31,12 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger("lockscore.snapshot_prewarm")
 
-# GATE 1 P0 (2026-06) — retired dependency on the 12s prewarm/15s TTL
-# race.  Committed board_version is now the primary freshness
-# authority; wall-clock TTL is a 300s failsafe only.  The prewarmer
-# now runs on a long safety cadence (default 300s = same as the
-# failsafe TTL) so we do not endlessly rebuild identical snapshots
-# just because time elapsed.  Set BOARD_SNAPSHOT_PREWARM_SEC=0 to
-# disable the periodic loop entirely (startup warm still runs once).
-_PREWARM_INTERVAL_SEC = int(os.environ.get("BOARD_SNAPSHOT_PREWARM_SEC", "300"))
+# ── 2026-06-28 · P0-B BOARD PREWARM — REVISION-DRIVEN ────────────────
+# The blind 300s periodic 7-board regeneration was replaced by a
+# revision-driven invalidation path.  Startup prewarm still fires once
+# to populate cold caches, but the periodic loop is now opt-in and
+# floored at 900s even if misconfigured.  Default: DISABLED (0).
+_PREWARM_INTERVAL_SEC = int(os.environ.get("BOARD_SNAPSHOT_PREWARM_SEC", "0"))
 _STARTUP_DELAY_SEC = 8  # wait for `_ensure_today_picks` to settle first
 
 # The prewarm filter matrix.  Keep this SHORT — every combo consumes
@@ -113,13 +111,31 @@ async def prewarm_loop_forever(user_public) -> None:
             )
     except Exception as _cycle_err:
         logger.debug("prewarm startup sweep raised: %s", _cycle_err)
-    # GATE 1 P0 — long-safety loop only.  Set interval=0 to disable.
+    # ── 2026-06-28 · P0-B BOARD PREWARM — REVISION-DRIVEN ─────────────
+    # Blind 300s periodic regeneration of all 7 board views is retired.
+    # Startup prewarm above still runs once to populate cold caches; from
+    # here on, revision-driven invalidation is the authority (committed
+    # board revision changes → ``invalidate_boards`` is called → next GET
+    # repopulates on-demand).  The periodic loop is now a long failsafe
+    # only (default disabled; opt-in via ``BOARD_SNAPSHOT_PREWARM_SEC``
+    # with a floor of 900s to prevent accidental storm restoration).
     if _PREWARM_INTERVAL_SEC <= 0:
-        logger.info("prewarm periodic loop disabled (interval=0)")
+        logger.info(
+            "prewarm periodic loop disabled (revision-driven mode); "
+            "startup sweep already executed"
+        )
         return
+    # Floor the configured interval at 900s so even an accidental low
+    # setting cannot restore the pre-fix 300s storm cadence.
+    _safe_interval = max(900, _PREWARM_INTERVAL_SEC)
+    logger.info(
+        "prewarm periodic loop running as long-safety failsafe only "
+        "(configured=%ds, enforced floor=900s, effective=%ds)",
+        _PREWARM_INTERVAL_SEC, _safe_interval,
+    )
     while True:
         try:
-            await asyncio.sleep(_PREWARM_INTERVAL_SEC)
+            await asyncio.sleep(_safe_interval)
             att, ok, errs = await _prime_once(user_public)
             if errs:
                 logger.debug(

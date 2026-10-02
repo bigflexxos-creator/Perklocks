@@ -25,7 +25,18 @@ type LiveMap = Record<string, LiveGame>;
 // to its own event through a keyed selector (useSyncExternalStore) and
 // re-renders only when ITS LiveGame actually changed.  Non-MLB cards pass
 // a null event → constant null snapshot → never re-render from polling.
-const _store: { games: LiveMap; listeners: Set<() => void> } = { games: {}, listeners: new Set() };
+// ── 2026-06-28 · P0-B MLB LIVE POLLING — DEMAND-DRIVEN ─────────────────
+// Previously /api/mlb/live was polled globally every 60s on every
+// authenticated session regardless of whether any surface was consuming
+// live state.  The store now tracks subscriber count and the provider
+// polls ONLY while at least one `useMLBLive(event)` subscription with a
+// non-null event is active.  Non-MLB screens (NFL, Soccer, Tennis…)
+// no longer trigger live polls.
+const _store: { games: LiveMap; listeners: Set<() => void>; subscribers: number; onCountChange?: () => void } = {
+  games: {},
+  listeners: new Set(),
+  subscribers: 0,
+};
 
 function _publish(next: LiveMap): void {
   _store.games = next || {};
@@ -33,7 +44,13 @@ function _publish(next: LiveMap): void {
 }
 function _subscribe(l: () => void): () => void {
   _store.listeners.add(l);
-  return () => { _store.listeners.delete(l); };
+  _store.subscribers += 1;
+  try { _store.onCountChange && _store.onCountChange(); } catch { /* count change hook must not throw */ }
+  return () => {
+    _store.listeners.delete(l);
+    _store.subscribers = Math.max(0, _store.subscribers - 1);
+    try { _store.onCountChange && _store.onCountChange(); } catch { /* count change hook must not throw */ }
+  };
 }
 function _sameGame(a: LiveGame | null, b: LiveGame | null): boolean {
   if (a === b) return true;
@@ -112,6 +129,12 @@ export function MLBLiveProvider({ children }: { children: React.ReactNode }) {
   }, [isAuthed]);
 
   // Kick off + poll loop. Effect re-runs cleanup when the provider unmounts.
+  // ── 2026-06-28 · DEMAND-DRIVEN POLLING ──
+  // Polling is now gated on BOTH auth AND presence of an active
+  // `useMLBLive(event)` subscriber.  When no surface subscribes, no
+  // live state is fetched.  When the first subscriber mounts, we
+  // kick off an immediate fetch + start the 60s loop; when the last
+  // subscriber unmounts, we stop the loop.
   useEffect(() => {
     if (!isAuthed) {
       // Make sure stale data from a previous session isn't shown to the
@@ -123,6 +146,8 @@ export function MLBLiveProvider({ children }: { children: React.ReactNode }) {
     let timer: ReturnType<typeof setInterval> | null = null;
     const start = () => {
       if (!active) return;
+      if (timer) return;              // already polling
+      if (_store.subscribers <= 0) return; // nobody is listening — skip
       refresh();
       timer = setInterval(refresh, POLL_INTERVAL_MS);
     };
@@ -132,16 +157,21 @@ export function MLBLiveProvider({ children }: { children: React.ReactNode }) {
         timer = null;
       }
     };
-    start();
-    // Pause polling when the app/tab is backgrounded — saves battery
-    // without losing freshness because we re-fetch immediately on focus.
+    // React to subscriber count transitions (0↔N) and visibility.
+    const reconcile = () => {
+      if (!active) return;
+      if (typeof document !== "undefined" && document.hidden) {
+        stop();
+        return;
+      }
+      if (_store.subscribers > 0) start();
+      else stop();
+    };
+    _store.onCountChange = reconcile;
+    reconcile();
     const onVisibility = () => {
       if (typeof document === "undefined") return;
-      if (document.hidden) {
-        stop();
-      } else {
-        start();
-      }
+      reconcile();
     };
     if (typeof document !== "undefined" && document.addEventListener) {
       document.addEventListener("visibilitychange", onVisibility);
@@ -149,6 +179,7 @@ export function MLBLiveProvider({ children }: { children: React.ReactNode }) {
     return () => {
       active = false;
       stop();
+      _store.onCountChange = undefined;
       if (typeof document !== "undefined" && document.removeEventListener) {
         document.removeEventListener("visibilitychange", onVisibility);
       }

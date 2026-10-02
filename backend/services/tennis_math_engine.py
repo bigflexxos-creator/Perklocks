@@ -77,9 +77,15 @@ def score_tennis_matchup(
         contribs["surface_elo_baseline"] = round(base_wp - 0.5, 4)
         used.append("surface_elo")
     else:
-        # No Elo → use book_implied as the seed (with a small ballast
-        # so we don't just echo the book back).
-        base_wp = float(home_implied)
+        # ── 2026-06-28 · P0-D TENNIS ML CALIBRATION FIX ───────────────
+        # Previously fell back to ``base_wp = home_implied``.  That
+        # anchored the "independent" prediction to the sportsbook's own
+        # implied probability — a probability-authority double count
+        # that made favorite/chalk calibration appear excellent while
+        # actually just echoing the book price.  No independent base
+        # rate → FAIL CLOSED so the pick never publishes rather than
+        # publishing a biased prediction.
+        return None
 
     # ── Recent form: last-10 W/L + set-win % ───────────────────────────
     sm_a = ctx.get("sackmann_a") or {}

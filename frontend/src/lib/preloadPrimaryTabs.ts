@@ -20,12 +20,11 @@
  */
 import { api } from "@/src/lib/api";
 import { swrCacheWrite } from "@/src/lib/useSWR";
-import { MY_BETS_KEY, PROFILE_STATS_KEY, parlayKey } from "@/src/lib/serverStateKeys";
+import { parlayKey } from "@/src/lib/serverStateKeys";
 
 let _preloaded = false;
 
 const STAGE_B_DELAY_MS = 800;
-const STAGE_C_DELAY_MS = 2500;
 
 const _sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -73,35 +72,13 @@ export async function preloadPrimaryTabs(): Promise<void> {
     })();
   };
 
-  // ── Stage C — later idle window ───────────────────────────────────
-  const stageC = async () => {
-    await _sleep(STAGE_C_DELAY_MS);
-    // My Bets (5-way fan-out, but only if user visits the tab)
-    (async () => {
-      try {
-        const [s, sp, mk, p, h] = await Promise.all([
-          api.myAnalyticsSummary().catch(() => null),
-          api.myAnalyticsBySport().catch(() => null),
-          api.myAnalyticsByMarket().catch(() => null),
-          api.listMyBets({ status: "pending", limit: 200 }).catch(() => null),
-          api.myAnalyticsHistory(100).catch(() => null),
-        ]);
-        if (s || sp || mk || p || h) {
-          swrCacheWrite(MY_BETS_KEY, { summary: s, bySport: sp, byMarket: mk, pending: p, history: h });
-        }
-      } catch { /* silent */ }
-    })();
-    // Profile
-    (async () => {
-      try {
-        const res = await api.stats();
-        if (res) swrCacheWrite(PROFILE_STATS_KEY, res);
-      } catch { /* silent */ }
-    })();
-  };
+  // ── 2026-06-28 · P0-B STAGE-C REMOVED (demand-only loading) ─────
+  // Previously fired a 5-way My Bets fan-out + Profile warm on every
+  // app launch even when the user never visited those tabs — pure
+  // waste.  Both surfaces now load lazily on first navigation
+  // (standard SWR path).  Stage B (Rollover + Parlay) is retained
+  // because those are high-engagement companion tabs to Locks.
 
-  // Fire Stages B and C but do NOT await — the caller's boot flow
-  // continues immediately (Locks paints unimpeded).
+  // Fire Stage B only; Stage C is intentionally no-op.
   void stageB();
-  void stageC();
 }
