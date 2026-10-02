@@ -245,39 +245,44 @@ def _has_book_odds(pick: dict) -> bool:
 def _real_line_state(pick: dict) -> str:
     """Return one of: 'REAL', 'MODEL_ONLY', 'SYNTHETIC', 'MISSING'.
 
-    Fail-closed for KNOWN synthetic labels; accept unclassified
-    labels as REAL so legacy picks (pre-Session-A) that carry a
-    real sportsbook price but omit ``odds_source`` are not
-    misclassified as synthetic.  Every actively-writing producer we
-    control (espn_soccer_fixtures, mls_direct_inject,
-    soccer_prop_inject, canonical_pipeline) explicitly tags its
-    source post-Session-A, so this leniency only affects legacy
-    paths and unit-test fixtures.
+    2026-10-02 — REAL SPORTSBOOK LINE AUTHORITY P0.
+    Positively verified sportsbook provenance is now REQUIRED.
+    Legacy leniency (treating unclassified ``odds_source`` as REAL
+    whenever ``book_odds`` was present) is removed because it let
+    unknown/non-book provenance publish silently.  Every actively
+    writing producer has been tagging its ``odds_source`` since
+    Session-A, so the previous back-compat window is closed.
+
+    New rules:
+      * ``no_real_book_line=True`` always wins (MODEL_ONLY /
+        SYNTHETIC when contradicted by a stray book_odds).
+      * KNOWN synthetic/model-only labels → SYNTHETIC / MODEL_ONLY.
+      * ``book_odds`` present AND ``odds_source`` ∈ _REAL_ODDS_SOURCES
+        (or legitimate per-sport book alias) → REAL.
+      * ``book_odds`` present with UNKNOWN/empty ``odds_source`` →
+        SYNTHETIC (NEW — was REAL in legacy leniency path).
+      * No ``book_odds`` → MISSING / MODEL_ONLY.
     """
-    src = pick.get("odds_source") or ""
-    src_l = str(src).lower()
+    src = pick.get("odds_source") or pick.get("provider") or pick.get("bookmaker") or ""
+    src_l = str(src).lower().strip()
     has_odds = _has_book_odds(pick)
     no_real = bool(pick.get("no_real_book_line") is True)
 
     if no_real and not has_odds:
         return "MODEL_ONLY"
     if has_odds and no_real:
-        # A pick declaring no_real_book_line while carrying a
-        # book_odds value is a contradiction — that pattern is
-        # exactly the synthetic-odds pipe Session A purges.
         return "SYNTHETIC"
     if has_odds and src_l in _SYNTHETIC_ODDS_SOURCES:
         return "SYNTHETIC"
     if has_odds and src_l in _MODEL_ONLY_SOURCES:
         return "SYNTHETIC"
-    if has_odds:
-        # Either an explicit REAL label or an unknown/legacy label —
-        # both accepted.  Fail-closure applies only to KNOWN
-        # synthetic labels (see above).
+    if has_odds and src_l in _REAL_ODDS_SOURCES:
         return "REAL"
-    if not has_odds:
-        return "MODEL_ONLY" if no_real else "MISSING"
-    return "SYNTHETIC"
+    if has_odds:
+        # Unknown or empty provenance — fail-closed per 2026-10-02
+        # P0.  Tag as SYNTHETIC so main-board eligibility blocks it.
+        return "SYNTHETIC"
+    return "MODEL_ONLY" if no_real else "MISSING"
 
 
 def _has_model_provenance(pick: dict) -> bool:
