@@ -83,17 +83,19 @@ def _f(v) -> Optional[float]:
 # regardless of Lock Score.  A missing market line is never permission
 # to fabricate market evidence.
 def _has_real_market_line(pick: dict) -> bool:
-    """Return True iff the pick has a real sportsbook line attached."""
+    """Return True iff the pick has a real sportsbook line attached.
+
+    2026-10-02 — tightened to use the hardened publication boundary.
+    Picks whose provenance is UNKNOWN / SYNTHETIC / MODEL-ONLY are
+    rejected regardless of whether a numeric ``book_odds`` field is
+    present.
+    """
     if not isinstance(pick, dict):
         return False
-    # Explicit tag from ingestion path — highest authority.
     if pick.get("no_real_book_line") is True:
         return False
     if pick.get("model_only") is True:
         return False
-    # Field checks — the ingestion path MUST provide both a numeric
-    # book_odds AND a numeric implied_probability for the pick to
-    # count as book-backed.  ``None``/missing/non-numeric → not real.
     bo = pick.get("book_odds")
     ip = pick.get("implied_probability")
     if bo is None or ip is None:
@@ -102,6 +104,13 @@ def _has_real_market_line(pick: dict) -> bool:
         int(bo); float(ip)
     except (TypeError, ValueError):
         return False
+    try:
+        from services.canonical_publication_boundary import _real_line_state
+        if _real_line_state(pick) != "REAL":
+            return False
+    except Exception:
+        # Boundary unavailable — fall through to best-effort permission.
+        pass
     return True
 
 
