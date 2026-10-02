@@ -72,7 +72,7 @@ async def backfill_current_season(sports: list[str] | None = None) -> dict:
     Returns a per-sport summary dict suitable for /api/admin/backfill
     response.
     """
-    sports = sports or ["soccer", "mlb", "nfl", "nba", "tennis"]
+    sports = sports or ["soccer", "mlb", "nfl", "cfb", "nba", "nhl", "tennis"]
     out: dict = {}
     for sport in sports:
         try:
@@ -98,7 +98,7 @@ async def incremental_sync(sports: list[str] | None = None,
     every requested sport. Useful for ad-hoc admin syncs (e.g. "pull the last
     30 days even though we synced yesterday").
     """
-    sports = sports or ["soccer", "mlb", "nfl", "nba", "tennis"]
+    sports = sports or ["soccer", "mlb", "nfl", "cfb", "nba", "nhl", "tennis"]
     out: dict = {}
     for sport in sports:
         client = _client_for(sport)
@@ -159,6 +159,9 @@ def _client_for(sport: str):
         if sport == "tennis":
             from . import tennis
             return tennis
+        if sport == "cfb":
+            from . import cfb
+            return cfb
     except ImportError as e:
         logger.warning("client %s not yet implemented: %s", sport, e)
     return None

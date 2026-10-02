@@ -177,37 +177,75 @@ async def backfill_current_season(db) -> dict:
 
 
 async def incremental_sync(db, since: Optional[datetime] = None) -> dict:
-    """For NFL we re-walk last 2 weeks since the league only plays weekly."""
-    games_inserted = logs_inserted = 0
+    """2026-10-02 FRESHNESS FIX — walk the last 3 NFL weeks + the
+    current week via ESPN's ``?seasontype=2&week=N&year=YYYY``
+    parameter.  ESPN rejects date-range queries (``dates=A-B`` returns
+    400) and ``?limit=100`` only ever returns the live slate — a
+    Thursday run therefore saw at most 1 regular-season game.  Walking
+    week-by-week recovers Sunday + Monday + Thursday Night games
+    irrespective of what day the loop fires.
+    """
+    from datetime import date as _date
+    games_seen = games_inserted = logs_inserted = 0
+    today = _date.today()
+    # Infer current NFL week from the current scoreboard, then step back
+    # 3 weeks so delayed finals are caught.
     async with httpx.AsyncClient(timeout=_TIMEOUT, headers={"User-Agent": "PerksLocks/1.0"}) as cx:
-        data = await _get(cx, "/scoreboard", {"limit": 100})
-        for ev in (data or {}).get("events", []):
-            status = (((ev.get("status") or {}).get("type") or {}).get("completed")) or False
-            if not status:
+        probe = await _get(cx, "/scoreboard", {"limit": 1})
+        season = _CURRENT_SEASON
+        cur_week = 1
+        season_type = 2
+        try:
+            season = int((probe or {}).get("season", {}).get("year") or _CURRENT_SEASON)
+            cur_week = int((probe or {}).get("week", {}).get("number") or 1)
+            season_type = int((probe or {}).get("season", {}).get("type") or 2)
+        except Exception:
+            pass
+        weeks_to_walk = sorted({max(1, cur_week - i) for i in range(0, 4)})
+        for wk in weeks_to_walk:
+            data = await _get(cx, "/scoreboard",
+                              {"seasontype": season_type, "week": wk, "year": season,
+                               "limit": 200})
+            await asyncio.sleep(_PACE)
+            if not data:
                 continue
-            gid = ev.get("id")
-            competition = (ev.get("competitions") or [{}])[0]
-            comps = competition.get("competitors") or []
-            home = next((c for c in comps if c.get("homeAway") == "home"), {})
-            away = next((c for c in comps if c.get("homeAway") == "away"), {})
-            await db.games.update_one(
-                {"game_id": f"espn_{gid}", "sport": "nfl"},
-                {"$set": {
-                    "sport": "nfl",
-                    "date": ev.get("date"),
-                    "home": (home.get("team") or {}).get("displayName"),
-                    "away": (away.get("team") or {}).get("displayName"),
-                    "result": {
-                        "home": _safe_int(home.get("score")),
-                        "away": _safe_int(away.get("score")),
-                    },
-                    "status": "Final",
-                }},
-                upsert=True,
-            )
-            games_inserted += 1
-            n = await _ingest_summary(cx, db, gid)
-            logs_inserted += n
+            for ev in data.get("events", []):
+                gid = ev.get("id")
+                if not gid:
+                    continue
+                games_seen += 1
+                status = (((ev.get("status") or {}).get("type") or {}).get("completed")) or False
+                if not status:
+                    continue
+                competition = (ev.get("competitions") or [{}])[0]
+                comps = competition.get("competitors") or []
+                home = next((c for c in comps if c.get("homeAway") == "home"), {})
+                away = next((c for c in comps if c.get("homeAway") == "away"), {})
+                wk_num = ((ev.get("week") or {}).get("number")
+                          or (competition.get("week") or {}).get("number")
+                          or wk)
+                ev_date = ev.get("date") or ""
+                await db.games.update_one(
+                    {"game_id": f"espn_{gid}", "sport": "nfl"},
+                    {"$set": {
+                        "sport": "nfl",
+                        "date": ev_date,
+                        "home": (home.get("team") or {}).get("displayName"),
+                        "away": (away.get("team") or {}).get("displayName"),
+                        "result": {
+                            "home": _safe_int(home.get("score")),
+                            "away": _safe_int(away.get("score")),
+                        },
+                        "status": "Final",
+                        "season": season,
+                        "week": wk_num,
+                    }},
+                    upsert=True,
+                )
+                games_inserted += 1
+                n = await _ingest_summary(cx, db, gid, season=season)
+                logs_inserted += n
+                await asyncio.sleep(_PACE)
             await asyncio.sleep(_PACE)
     return {"games_inserted": games_inserted, "player_logs_inserted": logs_inserted}
 

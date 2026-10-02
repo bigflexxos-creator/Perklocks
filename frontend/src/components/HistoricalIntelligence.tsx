@@ -62,18 +62,52 @@ type LogColumn = {
 
 function _shortTeam(name?: string | null): string {
   // ── §9 mobile readability — surgical name projection that
-  // preserves team identity ("Illinois Fighting Illini" stays
-  // recognisable as "Illinois", never "Illinois Fig").  Strategy:
-  //   1. Return the primary school name (drop mascot suffix) when the
-  //      combined name is long.
-  //   2. Preserve compact names verbatim (e.g. "TCU", "USC", "LSU").
-  //   3. Never truncate mid-word — that produced "Illinois Fig",
-  //      "Nebraska Cor", "Maryland Ter", "Western Illi".
+  // preserves team identity.  2026-10-02 CFB fix: the previous
+  // ``cutAt12`` path produced "Florida" from "Florida International
+  // Panthers" (sliced after the first word).  Collisions like
+  // Florida ≠ FIU are canonical-identity bugs, not styling tweaks.
+  // Strategy update:
+  //   1. Explicit canonical-short map for ambiguous multi-word
+  //      schools (FIU, UConn, WKU, UCF, UNLV, SMU, etc.).
+  //   2. Mascot-suffix trim where the remaining school name is
+  //      recognisable WITHOUT losing a required qualifier.
+  //   3. Never slice mid-word.  Never emit a bare "Florida" when the
+  //      canonical team is "Florida International Panthers".
   if (!name) return "—";
   const n = name.trim();
+
+  // 1. Canonical short forms for ambiguous / common multi-word schools.
+  const CANON_SHORT: Record<string, string> = {
+    "florida international panthers": "FIU",
+    "florida international":          "FIU",
+    "connecticut huskies":            "UConn",
+    "uconn huskies":                  "UConn",
+    "western kentucky hilltoppers":   "WKU",
+    "jacksonville state gamecocks":   "Jax State",
+    "middle tennessee blue raiders":  "MTSU",
+    "delaware blue hens":             "Delaware",
+    "delaware state hornets":         "Delaware St",
+    "liberty flames":                 "Liberty",
+    "central florida knights":        "UCF",
+    "south florida bulls":            "USF",
+    "nevada las vegas rebels":        "UNLV",
+    "southern methodist mustangs":    "SMU",
+    "texas christian horned frogs":   "TCU",
+    "north carolina tar heels":       "UNC",
+    "miami hurricanes":               "Miami",
+    "miami (oh) redhawks":            "Miami (OH)",
+    "ohio state buckeyes":            "Ohio State",
+    "oregon state beavers":           "Oregon St",
+    "washington state cougars":       "Wash St",
+    "iowa state cyclones":            "Iowa St",
+    "michigan state spartans":        "Mich St",
+    "mississippi state bulldogs":     "Miss St",
+  };
+  const _canon = CANON_SHORT[n.toLowerCase()];
+  if (_canon) return _canon;
+
   if (n.length <= 12) return n;
-  // Common NCAA / NFL mascot suffixes — trim greedily from the end
-  // and re-check the school-only length.
+
   const MASCOTS = [
     "Fighting Illini", "Thundering Herd", "Crimson Tide",
     "Fighting Irish", "Horned Frogs", "Tar Heels", "Blue Devils",
@@ -98,21 +132,27 @@ function _shortTeam(name?: string | null): string {
     // Soccer club suffixes
     "FC", "United", "City", "Athletic", "Rovers", "Wanderers",
     "Sporting Club",
+    // Expanded CFB mascot suffixes (2026-10-02)
+    "Blue Hens", "Hornets", "Huskies", "RedHawks", "Rainbow Warriors",
   ];
   for (const m of MASCOTS) {
     if (n.endsWith(" " + m)) {
       const trimmed = n.slice(0, n.length - m.length - 1).trim();
-      if (trimmed.length <= 14 && trimmed.length > 0) return trimmed;
+      // Allow up to 22 chars for the school portion so multi-word
+      // schools (e.g. "Florida International") remain intact instead
+      // of collapsing to the first word only.
+      if (trimmed.length <= 22 && trimmed.length > 0) return trimmed;
     }
   }
-  // Long school name (no mascot suffix). Use first 12 chars but ONLY
-  // at a word boundary so we don't emit "Illinois Fig".
-  const cutAt12 = n.slice(0, 12);
-  const lastSpace = cutAt12.lastIndexOf(" ");
-  if (lastSpace >= 6) return cutAt12.slice(0, lastSpace);
-  // No safe boundary → return full name; the UI row will truncate
-  // gracefully via numberOfLines/ellipsizeMode rather than destructive
-  // mid-word slice.
+  // Fallback — word-aware truncation, never mid-word.
+  const words = n.split(/\s+/);
+  if (words.length >= 2) {
+    const two = words.slice(0, 2).join(" ");
+    if (two.length <= 24) return two;
+  }
+  const cutAt16 = n.slice(0, 16);
+  const lastSpace = cutAt16.lastIndexOf(" ");
+  if (lastSpace >= 6) return cutAt16.slice(0, lastSpace);
   return n;
 }
 
@@ -288,20 +328,25 @@ export function HistoricalIntelligence({
   const [tab, setTab]           = useState<Tab>("logs");
   const [sample, setSample]     = useState<SampleScope>("L10");
   const [venue, setVenue]       = useState<VenueScope>("ALL");
+  // 2026-10-02 — Team-market perspective. Non-null when the user has
+  // explicitly chosen the alternate team as the historical subject.
+  const [perspective, setPerspective] = useState<string | null>(null);
 
-  const load = useCallback(async (opts: { sample?: SampleScope; venue?: VenueScope } = {}) => {
+  const load = useCallback(async (opts: { sample?: SampleScope; venue?: VenueScope; perspective?: string | null } = {}) => {
     const s = opts.sample ?? sample;
     const v = opts.venue  ?? venue;
+    const p = opts.perspective === undefined ? perspective : opts.perspective;
     setLoading(true); setFailure(null);
     try { onFailure?.(null); } catch {}
     // Cached scope → paint immediately, then revalidate quietly.
-    const _key = historicalIntelligenceKey(pickId, s, v);
+    const _key = historicalIntelligenceKey(pickId, s, v) + (p ? `|p=${p}` : "");
     const _cached = swrCacheRead<HistoricalIntelligenceResponse>(_key);
     if (_cached) { setData(_cached); try { onData?.(_cached); } catch {} }
     try {
       const r = await api.historicalIntelligence(pickId, {
         sampleScope: s, venueScope: v,
-      });
+        ...(p ? { subject: p } : {}),
+      } as any);
       setData(r);
       swrCacheWrite(_key, r);
       try { onData?.(r); } catch {}
@@ -351,6 +396,10 @@ export function HistoricalIntelligence({
   const onVenue = useCallback((v: VenueScope) => {
     setVenue(v); void load({ venue: v });
   }, [load]);
+  const onPerspective = useCallback((subject: string) => {
+    setPerspective(subject);
+    void load({ perspective: subject });
+  }, [load]);
 
   // ─── Empty / Error states ─────────────────────────────────────────
   if (loading && !data) {
@@ -391,9 +440,50 @@ export function HistoricalIntelligence({
   const supportsHomeAway = !isTennis(sport);
   const hiStatus = data.status || (data.data_coverage.total_observations > 0 ? "AVAILABLE_WITH_DATA" : "AVAILABLE_EMPTY");
 
+  // 2026-10-02 — Universal historical-subject label.
+  // For TEAM markets (moneyline / spread / total / team-level props)
+  // the HI data is a team's history, not a player's. Prefix an
+  // explicit "TEAM HISTORY — <SUBJECT>" header so the user never has
+  // to guess whose rows these are. Player markets keep the player
+  // name hero. Rely on canonical ``entity_type`` from the API — do
+  // not infer from display strings.
+  const entityType: string =
+    (data as any).entity_type || (data as any).subject_type || "player";
+  const isTeamSubject = entityType === "team";
+  const subjectName: string | null =
+    data.entity_name || (data.pick as any)?.subject_name || null;
+
   return (
     <View style={styles.card}>
       <Text style={styles.title}>HISTORICAL INTELLIGENCE</Text>
+
+      {isTeamSubject && subjectName && (
+        <Text style={{
+          color: COLORS.textSecondary, fontSize: 11, letterSpacing: 1.2,
+          marginBottom: 6, marginTop: 2, textTransform: "uppercase",
+        }} testID="hi-team-subject-label">
+          TEAM HISTORY — {subjectName}
+        </Text>
+      )}
+
+      {/* Team-market perspective selector. When the pick carries both
+          home_team and away_team the user may want to inspect either
+          side's recent form. Switching perspective re-queries HI from
+          the backend with the alternate ``entity_id``. */}
+      {isTeamSubject && (data.pick as any)?.home_team && (data.pick as any)?.away_team && (
+        <SegmentedRow
+          label="PERSPECTIVE"
+          options={[
+            String((data.pick as any).home_team),
+            String((data.pick as any).away_team),
+          ] as string[]}
+          value={subjectName || String((data.pick as any).home_team)}
+          onChange={(nextSubject: string) => {
+            (onPerspective as any)?.(nextSubject);
+          }}
+          testID="hi-perspective-toggle"
+        />
+      )}
 
       {/* Current line hero — obvious threshold banner */}
       <CurrentLineHero

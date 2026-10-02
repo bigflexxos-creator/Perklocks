@@ -2446,12 +2446,13 @@ export const api = {
   // genuinely missing — never zero-imputed.
   historicalIntelligence: (
     pickId: string,
-    opts: { sampleScope?: string; venueScope?: string; contextScope?: string } = {},
+    opts: { sampleScope?: string; venueScope?: string; contextScope?: string; subject?: string } = {},
   ) => {
     const p = new URLSearchParams();
     if (opts.sampleScope)  p.set("sample_scope",  opts.sampleScope);
     if (opts.venueScope)   p.set("venue_scope",   opts.venueScope);
     if (opts.contextScope) p.set("context_scope", opts.contextScope);
+    if (opts.subject)      p.set("subject",       opts.subject);
     const qs = p.toString(); const suffix = qs ? `?${qs}` : "";
     return request<HistoricalIntelligenceResponse>(
       `/picks/${pickId}/historical-intelligence${suffix}`,

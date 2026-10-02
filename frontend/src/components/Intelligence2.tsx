@@ -111,7 +111,28 @@ export function Intelligence2({ pick }: { pick: Pick }) {
       const d = new Date(pick.event_time);
       if (!isNaN(d.getTime())) items.push(["Kickoff", d.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })]);
     }
-    if (pick.lineup_status) items.push(["Lineup", String(pick.lineup_status)]);
+    if (pick.lineup_status) {
+      // 2026-10-02 — ``lineup_status`` can arrive as an object
+      // ({ status, confirmed, position, batting_order, ... }) when
+      // the enrichment pipeline hydrates structured data. Rendering
+      // ``String(obj)`` produced "[object Object]". Extract the
+      // display-worthy fields in a stable, user-readable order.
+      let display: string | null = null;
+      const ls: any = pick.lineup_status;
+      if (typeof ls === "string") {
+        display = ls;
+      } else if (ls && typeof ls === "object") {
+        const parts: string[] = [];
+        if (ls.status) parts.push(String(ls.status));
+        if (ls.confirmed === true) parts.push("Confirmed");
+        else if (ls.confirmed === false) parts.push("Projected");
+        if (ls.position) parts.push(String(ls.position));
+        if (ls.batting_order != null) parts.push(`#${ls.batting_order}`);
+        if (ls.starter === true) parts.push("Starter");
+        display = parts.length ? parts.join(" · ") : null;
+      }
+      if (display) items.push(["Lineup", display]);
+    }
     return items;
   }, [pick]);
 

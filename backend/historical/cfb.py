@@ -238,36 +238,68 @@ async def backfill_current_season(db) -> dict:
 
 
 async def incremental_sync(db, since=None) -> dict:
-    """Re-walk last 2 CFB weeks (Saturday-heavy schedule)."""
-    games_inserted = logs_inserted = 0
+    """2026-10-02 FRESHNESS FIX — walk via ESPN's
+    ``?seasontype=X&week=N&year=YYYY&groups=80`` paging so a Thursday
+    run picks up last Saturday's full slate (the previous ``?limit=200``
+    only returned the live scoreboard = ~0 completed CFB events).
+    """
+    games_seen = games_inserted = logs_inserted = 0
     async with httpx.AsyncClient(timeout=_TIMEOUT, headers={"User-Agent": "PerksLocks/1.0"}) as cx:
-        data = await _get(cx, "/scoreboard", {"limit": 200})
-        for ev in (data or {}).get("events", []):
-            status = (((ev.get("status") or {}).get("type") or {}).get("completed")) or False
-            if not status:
-                continue
-            gid = ev.get("id")
-            competition = (ev.get("competitions") or [{}])[0]
-            comps = competition.get("competitors") or []
-            home = next((c for c in comps if c.get("homeAway") == "home"), {})
-            away = next((c for c in comps if c.get("homeAway") == "away"), {})
-            await db.games.update_one(
-                {"game_id": f"espn_cfb_{gid}", "sport": "cfb"},
-                {"$set": {
-                    "sport": "cfb",
-                    "date": ev.get("date"),
-                    "home": (home.get("team") or {}).get("displayName"),
-                    "away": (away.get("team") or {}).get("displayName"),
-                    "result": {
-                        "home": _safe_int(home.get("score")),
-                        "away": _safe_int(away.get("score")),
-                    },
-                    "status": "Final",
-                }},
-                upsert=True,
-            )
-            games_inserted += 1
-            n = await _ingest_summary(cx, db, gid)
-            logs_inserted += n
+        probe = await _get(cx, "/scoreboard", {"groups": 80, "limit": 1})
+        season = _CURRENT_SEASON
+        cur_week = 1
+        season_type = 2
+        try:
+            season = int((probe or {}).get("season", {}).get("year") or _CURRENT_SEASON)
+            cur_week = int((probe or {}).get("week", {}).get("number") or 1)
+            season_type = int((probe or {}).get("season", {}).get("type") or 2)
+        except Exception:
+            pass
+        weeks_to_walk = sorted({max(1, cur_week - i) for i in range(0, 4)})
+        for wk in weeks_to_walk:
+            data = await _get(cx, "/scoreboard",
+                              {"seasontype": season_type, "week": wk,
+                               "year": season, "groups": 80, "limit": 300})
             await asyncio.sleep(_PACE)
-    return {"games_inserted": games_inserted, "player_logs_inserted": logs_inserted}
+            if not data:
+                continue
+            for ev in data.get("events", []):
+                gid = ev.get("id")
+                if not gid:
+                    continue
+                games_seen += 1
+                status = (((ev.get("status") or {}).get("type") or {}).get("completed")) or False
+                if not status:
+                    continue
+                competition = (ev.get("competitions") or [{}])[0]
+                comps = competition.get("competitors") or []
+                home = next((c for c in comps if c.get("homeAway") == "home"), {})
+                away = next((c for c in comps if c.get("homeAway") == "away"), {})
+                wk_num = ((ev.get("week") or {}).get("number")
+                          or (competition.get("week") or {}).get("number")
+                          or wk)
+                ev_date = ev.get("date") or ""
+                await db.games.update_one(
+                    {"game_id": f"espn_cfb_{gid}", "sport": "cfb"},
+                    {"$set": {
+                        "sport": "cfb",
+                        "date": ev_date,
+                        "home": (home.get("team") or {}).get("displayName"),
+                        "away": (away.get("team") or {}).get("displayName"),
+                        "result": {
+                            "home": _safe_int(home.get("score")),
+                            "away": _safe_int(away.get("score")),
+                        },
+                        "status": "Final",
+                        "season": season,
+                        "week": wk_num,
+                    }},
+                    upsert=True,
+                )
+                games_inserted += 1
+                n = await _ingest_summary(cx, db, gid, season=season)
+                logs_inserted += n
+                await asyncio.sleep(_PACE)
+    return {"games_seen": games_seen,
+            "games_inserted": games_inserted,
+            "player_logs_inserted": logs_inserted}
