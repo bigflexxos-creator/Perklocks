@@ -3601,6 +3601,31 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         )
                     except Exception:
                         pass
+            elif sport == "NHL":
+                # ── 2026-10-02 · NHL TOTAL (surgical wiring) ─────────
+                # Uses the pre-built nhl_sim_context attached upstream
+                # in the async caller (``g["_nhl_sim_ctx"]``) so this
+                # sync branch can run ``brain.sim_nhl.simulate`` without
+                # awaiting. No book-follow fallback.
+                try:
+                    from brain.sim_nhl import simulate as _sim_nhl
+                    _ctx_tot = game.get("_nhl_sim_ctx")
+                    if _ctx_tot:
+                        _pick_tot_o = {
+                            "sport": "NHL",
+                            "market": f"Over {float(line)} Total Goals",
+                            "selection": "Over", "line": float(line),
+                            "home_team": home, "away_team": away,
+                            "nhl_sim_context": _ctx_tot,
+                        }
+                        _r_o = _sim_nhl(_pick_tot_o)
+                        if _r_o.get("ran") and _r_o.get("sim_win_probability") is not None:
+                            _cfb_tot_probs["Over"] = float(_r_o["sim_win_probability"]) / 100.0
+                            _cfb_tot_probs["Under"] = round(1.0 - _cfb_tot_probs["Over"], 4)
+                            _totals_model_ok = True
+                except Exception as _nte:
+                    logger.warning("NHL total wiring failed: %s", _nte)
+                    _totals_model_ok = False
             elif not _totals_model_ok:
                 try:
                     from services import funnel_telemetry as _funnel
@@ -3631,6 +3656,9 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         mp_o = _sim_o["prob"]
                     contribs_o = None
                 elif sport == "CFB":
+                    mp_o = _cfb_tot_probs.get("Over")
+                    contribs_o = None
+                elif sport == "NHL":
                     mp_o = _cfb_tot_probs.get("Over")
                     contribs_o = None
                 else:
@@ -3678,6 +3706,9 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                             mp_u = _sim_u["prob"]
                         contribs_u = None
                     elif sport == "CFB":
+                        mp_u = _cfb_tot_probs.get("Under")
+                        contribs_u = None
+                    elif sport == "NHL":
                         mp_u = _cfb_tot_probs.get("Under")
                         contribs_u = None
                     else:
@@ -4209,18 +4240,46 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     factors = {}
                     # Stash so provenance stamp below can reuse it
                     _cfb_sp_ctx.setdefault("_cfb_spread_prob_by_side", {})[side] = _cfb_cover
-                else:
+                elif sport == "NHL":
+                    # ── 2026-10-02 · NHL PUCK LINE (surgical wiring) ──
+                    # Uses the pre-built nhl_sim_context attached by
+                    # the async caller. brain.sim_nhl.simulate handles
+                    # Puck Line markets via the Poisson game model.
                     try:
-                        from services import funnel_telemetry as _funnel
-                        _funnel.record(
-                            sport=sport, market="spread", stage="model",
-                            reason="MODEL_UNAVAILABLE",
-                            event=f"{away} @ {home}", side=str(side),
-                            detail="no authoritative independent spread model wired",
-                        )
-                    except Exception:
-                        pass
-                    continue
+                        from brain.sim_nhl import simulate as _sim_nhl
+                        _ctx_sp = game.get("_nhl_sim_ctx")
+                        if not _ctx_sp:
+                            raise RuntimeError("NO_SIM_CTX")
+                        _pick_sp = {
+                            "sport": "NHL",
+                            "market": f"{side} {float(line) if line is not None else 0} Puck Line",
+                            "selection": side, "line": float(line) if line is not None else 0,
+                            "home_team": home, "away_team": away,
+                            "nhl_sim_context": _ctx_sp,
+                        }
+                        _r_sp = _sim_nhl(_pick_sp)
+                        if not (_r_sp.get("ran") and _r_sp.get("sim_win_probability") is not None):
+                            raise RuntimeError("SIM_UNAVAILABLE")
+                        mp = float(_r_sp["sim_win_probability"]) / 100.0
+                        factors = {
+                            "Recent Home GF/60": _ctx_sp.get("home_lambda"),
+                            "Recent Away GF/60": _ctx_sp.get("away_lambda"),
+                            "Home Recent Games Sampled": _ctx_sp.get("home_recent_games"),
+                            "Away Recent Games Sampled": _ctx_sp.get("away_recent_games"),
+                        }
+                        factors = {k: v for k, v in factors.items() if v is not None}
+                    except Exception as _nhl_sp_err:
+                        try:
+                            from services import funnel_telemetry as _funnel
+                            _funnel.record(
+                                sport=sport, market="spread", stage="model",
+                                reason="MODEL_UNAVAILABLE",
+                                event=f"{away} @ {home}", side=str(side),
+                                detail=f"NHL sim: {_nhl_sp_err}",
+                            )
+                        except Exception:
+                            pass
+                        continue
                 if sport == "NFL" and _nfl_plat_sp and _nfl_plat_sp.get("available"):
                     # PHASE 2A — v3 composite for Platinum spreads.
                     _e_sp = round((mp - implied) * 100, 2)
@@ -4710,6 +4769,32 @@ async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
             except Exception as e:
                 logger.debug("%s context prefetch failed for %s: %s",
                              sport, g.get("id"), e)
+            # ── 2026-10-02 · NHL game-market sim contexts prebuild ──
+            # Pre-build nhl_sim_context for Total / Puck Line / ML in
+            # the async scope so the sync ``_picks_from_game`` branches
+            # can read ready-made ``_ctx_total`` / ``_ctx_puck_line``
+            # dicts without awaiting. Each context is identical per
+            # game (home_team/away_team driven) — we build once and
+            # reuse across total+spread+ML branches.
+            if sport == "NHL":
+                try:
+                    from services.nhl_feature_engine import (
+                        build_nhl_sim_context as _bnc,
+                    )
+                    from services.database import get_database as _get_db
+                    _nhl_db = _get_db()
+                    _probe = {
+                        "sport": "NHL", "market": "Moneyline",
+                        "selection": g.get("home_team"),
+                        "home_team": g.get("home_team"),
+                        "away_team": g.get("away_team"),
+                    }
+                    _ctx_nhl = await _bnc(_nhl_db, _probe)
+                    if _ctx_nhl:
+                        g["_nhl_sim_ctx"] = _ctx_nhl
+                except Exception as _ne:
+                    logger.debug("NHL game ctx prebuild failed for %s: %s",
+                                 g.get("id"), _ne)
             all_picks.extend(_picks_from_game(sport, league_label, g, date_str))
             # ─── Tennis alt-line augmentation ────────────────────────
             # Per user spec: "Tennis have alt line available pls add and
@@ -7188,6 +7273,12 @@ def _prop_market_label(market_key: str, side: str, point: float | None,
         "pitcher_outs": "Outs Recorded",
         "player_points": "Points", "player_rebounds": "Rebounds",
         "player_assists": "Assists",
+        # 2026-10-02 — NHL player-prop labels (goals / SOG; assists /
+        # points already covered). Base keys match The Odds API
+        # icehockey_nhl surface; alternates strip the suffix via
+        # ``base_key`` upstream.
+        "player_goals": "Goals",
+        "player_shots_on_goal": "Shots on Goal",
     }.get(base_key, base_key.replace("_", " ").title())
 
     # ─────────────────────────────────────────────────────────────
@@ -8799,6 +8890,23 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     )
                 except Exception:
                     pass
+        elif sport == "NHL" and mk and mk.startswith("player_"):
+            # ── 2026-10-02 · NHL player-prop evidence attachment ───────
+            _nhl_game_ctx = (payload.get("_ctx") if isinstance(payload, dict) else None) or {}
+            _nhl_pc = ((_nhl_game_ctx.get("nhl_precomputed") or {})
+                        .get(player.strip().lower()) or {})
+            _nhl_pc_entry = _nhl_pc.get(mk) if isinstance(_nhl_pc.get(mk), dict) else _nhl_pc
+            if isinstance(_nhl_pc_entry, dict) and _nhl_pc_entry.get("factors"):
+                factors = _nhl_pc_entry["factors"]
+                _mlb_features_used = _nhl_pc_entry.get("sources") or ["player_game_logs:nhl"]
+            else:
+                _skip_pick = True
+                try:
+                    from services.pipeline_diagnostic import log_reason as _plog
+                    _plog(sport="NHL", market=mk, player=player,
+                          reason="MISSING_FEATURE_DATA",
+                          meta={"stage": "nhl_prop_evidence_gate"})
+                except Exception: pass
         else:
             # Non-MLB / non-NBA / non-CFB batter / skater / scorer props.
             # ── Phase 2A.5 DEFECT #1 FIX (2026-08) ─────────────────────
@@ -10399,6 +10507,98 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                             "soccer_scorer_precompute_status"] = (
                             f"error:{type(_ctx_err).__name__}"
                         )
+                # ── 2026-10-02 · NHL player-prop precompute ─────────
+                # Walk the per-event bookmaker payload once, collect
+                # every distinct skater name across the four
+                # player_* NHL markets, then batch-fetch each
+                # player's L10 regular-season stat line from
+                # ``player_game_logs`` (sport=nhl).  Downstream
+                # ``_props_picks_from_event`` NHL branch reads
+                # ``_ctx['nhl_precomputed'][player.lower()][mk]``
+                # with factor dict + sources.  Fail-closed when a
+                # player has 0 historical rows — no synthesized
+                # evidence.
+                if sport == "NHL":
+                    try:
+                        from services.database import get_database as _get_db
+                        _nhl_db = _get_db()
+                        _players: set[str] = set()
+                        for _bk in (payload.get("bookmakers") or []):
+                            for _mk in (_bk.get("markets") or []):
+                                _k = _mk.get("key") or ""
+                                if not _k.startswith("player_"): continue
+                                for _o in (_mk.get("outcomes") or []):
+                                    _p = (_o.get("description")
+                                           or _o.get("name") or "")
+                                    _p = _clean_player_name(_p)
+                                    if _p: _players.add(_p)
+                        # Convert "Adam Fox" → "A. Fox" to match the
+                        # name convention stored in player_game_logs.
+                        def _initial_form(name: str) -> str:
+                            _parts = (name or "").strip().split()
+                            if len(_parts) < 2: return name
+                            return f"{_parts[0][:1].upper()}. {' '.join(_parts[1:])}"
+                        _initial_map: dict[str, str] = {
+                            _initial_form(p): p for p in _players
+                        }
+                        _nhl_pre: dict = {}
+                        if _initial_map:
+                            _rows = await _nhl_db.player_game_logs.find(
+                                {"sport": "nhl",
+                                 "name": {"$in": list(_initial_map.keys())}},
+                                {"_id": 0, "name": 1, "goals": 1,
+                                 "shots": 1, "assists": 1, "points": 1,
+                                 "game_date": 1},
+                            ).sort("game_date", -1).to_list(length=2000)
+                            _by_name: dict[str, list] = {}
+                            for _r in _rows:
+                                _nk = _r.get("name") or ""
+                                _by_name.setdefault(_nk, []).append(_r)
+                            for _init_name, _logs in _by_name.items():
+                                _l10 = _logs[:10]
+                                n = len(_l10)
+                                if not n: continue
+                                def _avg(k, logs=_l10):
+                                    return sum((float(r.get(k) or 0)
+                                                 for r in logs)) / len(logs)
+                                _factors = {
+                                    "L10 Games Sampled": n,
+                                    "L10 Goals Avg": round(_avg("goals"), 3),
+                                    "L10 Shots Avg": round(_avg("shots"), 3),
+                                    "L10 Assists Avg": round(_avg("assists"), 3),
+                                    "L10 Points Avg": round(_avg("points"), 3),
+                                }
+                                _entry = {"factors": _factors,
+                                           "sources": ["player_game_logs:nhl"]}
+                                # Key on the ORIGINAL bookmaker-form
+                                # player name (lower-cased) so the sync
+                                # branch's lookup
+                                #   ``nhl_precomputed[player.lower()]``
+                                # resolves without the initial dance.
+                                _orig = _initial_map.get(_init_name) or _init_name
+                                _ndict = _nhl_pre.setdefault(
+                                    _orig.strip().lower(), {})
+                                for _mkey in ("player_goals", "player_goals_alternate",
+                                               "player_shots_on_goal",
+                                               "player_shots_on_goal_alternate",
+                                               "player_assists", "player_assists_alternate",
+                                               "player_points", "player_points_alternate"):
+                                    _ndict[_mkey] = _entry
+                        payload.setdefault("_ctx", {})[
+                            "nhl_precomputed"] = _nhl_pre
+                        payload["_ctx"]["nhl_precompute_status"] = (
+                            "ok" if _nhl_pre else "no_candidates")
+                        logger.info(
+                            "NHL prop precompute ev=%s: players=%d hydrated=%d",
+                            (ev.get("id") or "?")[:12],
+                            len(_players), len(_nhl_pre),
+                        )
+                    except Exception as _nhl_pre_err:
+                        logger.warning(
+                            "NHL prop precompute failed: %s", _nhl_pre_err)
+                        payload.setdefault("_ctx", {})[
+                            "nhl_precompute_status"] = (
+                            f"error:{type(_nhl_pre_err).__name__}")
                 rng = random.Random(abs(hash(ev["id"])) % 10000)
                 all_picks.extend(_props_picks_from_event(
                     sport, LEAGUE_LABELS.get(key, sport), payload,
