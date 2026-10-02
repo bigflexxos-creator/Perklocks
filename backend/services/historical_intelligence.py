@@ -1555,12 +1555,36 @@ class NBATeamHistoricalAdapter(HistoricalAdapter):
         return obs
 
 
+# ── 2026-06-28 · P1-F NHL HISTORICAL ADAPTER (fail-closed stub) ──────
+# NHL historical game-log collections are not yet ingested.  Registering
+# an empty-but-well-formed adapter prevents the dispatcher from throwing
+# "sport unsupported" for NHL and lets the frontend render the standard
+# "no historical data" state (coverage=0) via the canonical path.  When
+# NHL game logs land in the DB, this stub becomes the natural
+# extension point without any changes to the dispatcher wiring.
+class NHLPlayerHistoricalAdapter(HistoricalAdapter):
+    sport = "NHL"
+
+    async def fetch_observations(self, db, q: HistoricalQuery) -> list[HistoricalObservation]:
+        # No ingestion yet — fail closed with empty observations.
+        return []
+
+
+class NHLTeamHistoricalAdapter(HistoricalAdapter):
+    sport = "NHL"
+
+    async def fetch_observations(self, db, q: HistoricalQuery) -> list[HistoricalObservation]:
+        return []
+
+
 register_adapter("NBA",    _SportDispatcher(
     "NBA", NBAPlayerHistoricalAdapter(), NBATeamHistoricalAdapter()))
 register_adapter("NFL",    _SportDispatcher(
     "NFL", NFLPlayerHistoricalAdapter(), NFLTeamHistoricalAdapter()))
 register_adapter("MLB",    _SportDispatcher(
     "MLB", MLBPlayerHistoricalAdapter(), MLBTeamHistoricalAdapter()))
+register_adapter("NHL",    _SportDispatcher(
+    "NHL", NHLPlayerHistoricalAdapter(), NHLTeamHistoricalAdapter()))
 register_adapter("Soccer", _SportDispatcher(
     "Soccer", SoccerPlayerHistoricalAdapter(), SoccerTeamHistoricalAdapter()))
 register_adapter("Tennis", _SportDispatcher(
@@ -1582,6 +1606,23 @@ def resolve_market_family(sport: str, market: str) -> Optional[str]:
     if sport == "Soccer": return _soccer_market_family(market)
     if sport == "Tennis": return _tennis_market_family(market)
     if sport == "CFB":    return _nfl_game_market_family(market)  # ML/spread/total same shape
+    # ── 2026-06-28 · P1-F NHL market-family dispatch ─────────────────
+    # Keep NHL dispatchable so the historical-intelligence route and
+    # coverage matrix return a well-formed empty payload instead of
+    # 404/unsupported until game-log ingestion lands.
+    if sport == "NHL":
+        m = (market or "").lower()
+        if "moneyline" in m or m.endswith(" ml") or " ml" in m:
+            return "moneyline"
+        if "puck line" in m or "spread" in m:
+            return "puck_line"
+        if "total" in m or "over/under" in m:
+            return "total"
+        if "goals" in m:    return "player_goals"
+        if "shots on goal" in m or "sog" in m: return "player_sog"
+        if "assists" in m:  return "player_assists"
+        if "points" in m:   return "player_points"
+        return None
     if sport == "NBA":
         # ── 2026-06-22 · NBA market-family dispatch (P0-C) ────────────
         # Previously `resolve_market_family("NBA", ...)` returned None,
