@@ -5784,6 +5784,49 @@ def _extract_cfb_prop_candidates(payload: dict) -> list[dict]:
     return list(cands.values())
 
 
+# ─────────────────────────────────────────────────────────────────────
+# NFL FANDUEL PARITY — REAL LIVE_ALT_LINES CONSUMER (2026-06-27)
+# ─────────────────────────────────────────────────────────────────────
+# The provider bundle returned by ``_fetch_event_props_payload`` can vary
+# between refresh cycles (per-book coverage, cache staleness, partial
+# 422 recovery).  The dedicated ``alt_lines_feed`` refresh persists
+# every real observed FanDuel + DraftKings alternate row into
+# ``db.live_alt_lines``.  This helper surfaces those rows so the NFL
+# writer can honor EVERY exact sportsbook threshold that reached the
+# provider path, regardless of which books the current bundle returned.
+#
+# Contract (per user directive):
+#   * Never invents a threshold.  Only returns rows that were persisted
+#     from a real provider response.
+#   * Preserves ``sportsbook``, ``line``, ``price``, ``last_seen`` for
+#     downstream provenance stamping (``line_source=OBSERVED_BOOK``).
+#   * Scoped to the 4 supported NFL alt families.
+_NFL_ALT_FAMILIES = (
+    "player_pass_yds_alternate",
+    "player_rush_yds_alternate",
+    "player_reception_yds_alternate",
+    "player_receptions_alternate",
+)
+
+
+async def _load_nfl_live_alt_lines(event_id: str) -> list[dict]:
+    if not event_id:
+        return []
+    try:
+        from server import db as _db
+    except Exception:
+        return []
+    try:
+        cur = _db.live_alt_lines.find(
+            {"event_id": event_id, "sport": "nfl",
+             "market_key": {"$in": list(_NFL_ALT_FAMILIES)}},
+            {"_id": 0},
+        )
+        return await cur.to_list(length=5000)
+    except Exception:
+        return []
+
+
 async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) -> dict:
     markets = PLAYER_PROP_MARKETS.get(sport)
     if not markets:
@@ -7218,6 +7261,13 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
     if not home or not away or not payload.get("bookmakers"):
         return []
     bucket: dict = {}
+    # ── 2026-06-27 · NFL FANDUEL PARITY WRITER FIX ─────────────────
+    # Per-bucket-key provenance for NFL alt rows so the writer can
+    # stamp ``sportsbook`` / ``provider_market_key`` / ``line_source``
+    # onto every published NFL alt pick.  Populated below both from
+    # the bookmakers[] loop (first-seen book wins) and from the real
+    # observed rows persisted upstream in ``db.live_alt_lines``.
+    _nfl_alt_lineage: dict[tuple, dict] = {}
     # Track birth-year hints per (clean) player name so we can disambiguate
     # name-collision pairs (Max Muncy LAD vs OAK) when both teams have the
     # same player name on their roster.
@@ -7362,6 +7412,79 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                             continue
                     point_key = point
                 bucket.setdefault((mk, player, point_key, side), []).append(int(price))
+                # ── 2026-06-27 · NFL FANDUEL PARITY (bookmaker path) ──
+                # First-seen sportsbook wins for provenance so a real
+                # book price emitted from the bundle always carries
+                # its origin book through to publication.
+                if sport == "NFL" and mk in _NFL_ALT_FAMILIES:
+                    _key_prov = (mk, player, point_key, side)
+                    if _key_prov not in _nfl_alt_lineage:
+                        _nfl_alt_lineage[_key_prov] = {
+                            "sportsbook": b.get("key"),
+                            "provider": "the_odds_api",
+                            "provider_event_id": payload.get("id"),
+                            "provider_market_key": mk,
+                            "provider_outcome": raw_player,
+                            "provider_last_seen": b.get("last_update"),
+                            "line_source": "OBSERVED_BOOK",
+                        }
+    # ── 2026-06-27 · NFL FANDUEL PARITY (live_alt_lines injection) ─
+    # Merge every real observed FanDuel/DraftKings alt row persisted
+    # upstream into the candidate bucket.  Guarantees that any exact
+    # sportsbook threshold reaching the provider path (e.g. FanDuel
+    # 174.5 Dak / 149.5 Lamar) is honored by the writer regardless
+    # of what the current provider bundle returned this cycle.  Uses
+    # normalized player names + capitalized side to align with the
+    # bookmakers[] loop above so identical (mk, player, point, side)
+    # keys collapse into ONE bucket entry.
+    if sport == "NFL":
+        _alt_rows = payload.get("_nfl_live_alt_lines") or []
+        for _r in _alt_rows:
+            _mk_alt = _r.get("market_key")
+            if _mk_alt not in _NFL_ALT_FAMILIES:
+                continue
+            _sel_raw = _r.get("selection") or ""
+            _player_alt = _clean_player_name(_sel_raw)
+            if not _player_alt:
+                continue
+            _side_raw = (_r.get("side") or "Over").strip()
+            _side_lo = _side_raw.lower()
+            if _side_lo not in ("over", "under"):
+                continue
+            _side_bucket = "Over" if _side_lo == "over" else "Under"
+            _line_val = _r.get("line")
+            _price_val = _r.get("price")
+            if _line_val is None or _price_val is None:
+                continue
+            try:
+                _line_key = float(_line_val)
+                _price_i = int(_price_val)
+            except (TypeError, ValueError):
+                continue
+            _bkey = (_mk_alt, _player_alt, _line_key, _side_bucket)
+            # Only append if this (book, price) is not already in the
+            # bucket for the same key to avoid double-counting the
+            # same real quote when the bundle also returned it.
+            _existing_prices = bucket.setdefault(_bkey, [])
+            if _price_i not in _existing_prices:
+                _existing_prices.append(_price_i)
+            # Provenance — prefer the row with the freshest last_seen
+            # so publication reflects the most recent sportsbook state.
+            _prov_cur = _nfl_alt_lineage.get(_bkey)
+            _new_seen = _r.get("last_seen")
+            if (_prov_cur is None
+                    or (_new_seen and (
+                        _prov_cur.get("provider_last_seen") is None
+                        or str(_new_seen) > str(_prov_cur.get("provider_last_seen"))))):
+                _nfl_alt_lineage[_bkey] = {
+                    "sportsbook": _r.get("sportsbook"),
+                    "provider": "the_odds_api",
+                    "provider_event_id": _r.get("event_id") or payload.get("id"),
+                    "provider_market_key": _mk_alt,
+                    "provider_outcome": _sel_raw,
+                    "provider_last_seen": _new_seen,
+                    "line_source": "OBSERVED_BOOK",
+                }
     # ── 2026-07-28 DEFECT #1 FIX: emission-time symmetric-pair defense ──
     # ────────────────────────────────────────────────────────────────────
     # Before Odds-API iteration order got to decide which side of a
@@ -8853,8 +8976,24 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     # authoritative while retaining a small context
                     # signal so a distribution outlier can't fully
                     # ignore an ambiguous matchup/game-script.
-                    _blended = 0.85 * float(_p_hat) + 0.15 * _cal_mp
-                    mp = max(0.02, min(0.99, _blended))
+                    _mk_alt_local = "_alternate" in (mk or "")
+                    if _mk_alt_local:
+                        # ── 2026-06-27 · NFL WRITER-SIDE MONOTONICITY ──
+                        # For NFL alt ladders, use the PURE per-rung
+                        # distribution probability so P(threshold) is
+                        # monotonic across the ladder by construction.
+                        # Every rung on the same (player, market)
+                        # ladder shares the same underlying
+                        # distribution samples in ``_dist`` — mp thus
+                        # comes from ONE distribution and satisfies
+                        # ``P(lower) >= P(higher)`` for OVER without
+                        # relying on the read-time clamp.  Factor
+                        # evidence still governs Lock Score via the
+                        # factors dict passed to compute_lock_score.
+                        mp = max(0.02, min(0.99, float(_p_hat)))
+                    else:
+                        _blended = 0.85 * float(_p_hat) + 0.15 * _cal_mp
+                        mp = max(0.02, min(0.99, _blended))
         # ── Phase 2A.5 DEFECT #4 (2026-08) ─────────────────────────────
         # Elite-scorer factor manipulation (+10 %) and forced Lock Score
         # floor (88.0) RETIRED.  No player receives an artificial Lock
@@ -8953,6 +9092,41 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         # it here.  Falls open (no attach) when resolution failed — the
         # gate will then correctly reject the pick.
         if new_pick is not None and sport == "NFL":
+            # ── 2026-06-27 · NFL FANDUEL PARITY (writer provenance) ──
+            # Stamp the sportsbook + provider provenance captured at
+            # bucket-population time so every published NFL alt pick
+            # carries the real book/market key/timestamp it was
+            # sourced from (``line_source=OBSERVED_BOOK``).
+            try:
+                if mk in _NFL_ALT_FAMILIES:
+                    _prov_key = (mk, player, point, side)
+                    _prov = _nfl_alt_lineage.get(_prov_key)
+                    if isinstance(_prov, dict) and _prov:
+                        _book = _prov.get("sportsbook")
+                        if _book:
+                            new_pick["sportsbook"] = _book
+                            new_pick["book"] = _book
+                        _pev = _prov.get("provider_event_id")
+                        if _pev:
+                            new_pick["provider_event_id"] = _pev
+                        _pmk = _prov.get("provider_market_key")
+                        if _pmk:
+                            new_pick["provider_market_key"] = _pmk
+                            new_pick["market_key"] = _pmk
+                        _pout = _prov.get("provider_outcome")
+                        if _pout:
+                            new_pick["provider_outcome"] = _pout
+                        _pls = _prov.get("provider_last_seen")
+                        if _pls is not None:
+                            new_pick["provider_last_seen"] = str(_pls)
+                        _prov_field = _prov.get("provider")
+                        if _prov_field:
+                            new_pick["provider"] = _prov_field
+                        new_pick["line_source"] = (
+                            _prov.get("line_source") or "OBSERVED_BOOK"
+                        )
+            except Exception:
+                pass
             # NFL Player-Prop Lock Authority provenance stamp (2026-06-10).
             # Copy the authority breadcrumbs from the scoring shim onto
             # the final pick so downstream consumers / audit trails can
@@ -9454,17 +9628,36 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         fam = _prop_family(m)
         if not fam:
             return None
+        import re
         player_hint = None
         for delim in (" (", " over ", " under "):
             _idx = m_lower.find(delim)
             if _idx >= 0:
                 player_hint = m[:_idx].strip()
                 break
+        # ── 2026-06-27 · NFL milestone-format player hint ───────
+        # NFL alt-OVER picks use the milestone label format
+        # "{Player Name} {N}+ Passing Yards" with NO over/under
+        # token, so none of the delimiters above match and
+        # ``player_hint`` would end up None → unkeyed (preserved).
+        # That is safe for dedup but means we lose contradiction
+        # detection against the matching main-line Over.  Infer
+        # the player name as "everything before `<digits>+`".
+        if not player_hint:
+            _ms = re.search(r"^(.+?)\s+\d+\+\s", m, flags=re.IGNORECASE)
+            if _ms:
+                player_hint = _ms.group(1).strip()
         if not player_hint:
             return None
-        import re
         _m = re.search(r"(?:Over|Under)\s+(\d+\.?\d*)", m, flags=re.IGNORECASE)
-        line_hint = float(_m.group(1)) if _m else None
+        if _m:
+            line_hint = float(_m.group(1))
+        else:
+            # Milestone format fallback — "175+" means Over 174.5
+            # (floor + 1); we return the integer so each rung has a
+            # distinct key within the (player, family) group.
+            _ms2 = re.search(r"\b(\d+)\+", m)
+            line_hint = float(_ms2.group(1)) if _ms2 else None
         return (player_hint.lower(), fam, line_hint)
 
     prop_best: dict[tuple, dict] = {}
@@ -9794,6 +9987,22 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                 )
             if book_had_player_markets:
                 payload["id"] = ev["id"]
+                # ── 2026-06-27 · NFL FANDUEL PARITY (writer fix) ──
+                # Attach the real observed FanDuel/DK rows persisted by
+                # ``alt_lines_feed`` so the writer surfaces EVERY exact
+                # sportsbook threshold that reached the provider path,
+                # not only what the current bundle returned.  Never
+                # invents a threshold — surfaces only real provider
+                # rows scoped to the 4 supported NFL alt families.
+                if sport == "NFL":
+                    try:
+                        payload["_nfl_live_alt_lines"] = \
+                            await _load_nfl_live_alt_lines(ev.get("id") or "")
+                    except Exception as _lal_err:
+                        logger.debug(
+                            "NFL live_alt_lines attach failed for %s: %s",
+                            (ev.get("id") or "?")[:12], _lal_err,
+                        )
                 # 2026-07-21 — attach real game context to prop payload
                 # so the MLB feature engine sees pitchers, hitters,
                 # team_k_intel, park factors, etc. Without this, every
@@ -10996,9 +11205,21 @@ async def generate_all_picks(
         sel = p.get("selection") or ""
         market_l = market.lower()
         sel_l = sel.lower()
+        # ── 2026-06-27 · NFL ALT-LADDER DEDUP FIX ────────────────────
+        # NFL alt labels use the milestone format "175+ Passing Yards"
+        # (integer threshold, no decimal), so the decimal-only regex
+        # below collapsed every rung of a player's alt ladder (Dak's
+        # 175+ / 200+ / 225+ Pass Yds) into one dedup bucket because
+        # ``threshold`` was always "" for milestone picks.  Try the
+        # milestone pattern first so each rung produces a UNIQUE key
+        # and the full real-sportsbook ladder reaches publication.
+        _m_ms = _re.search(r"\b(\d+)\+\s+(Passing|Rushing|Receiving)\s+Yards\b", market, flags=_re.IGNORECASE)
+        if _m_ms is None:
+            _m_ms = _re.search(r"\b(\d+)\+\s+Receptions\b", market, flags=_re.IGNORECASE)
+        milestone_thresh = _m_ms.group(1) if _m_ms else ""
         # First decimal in the market is the line ("0.5", "1.5", "8.5", ...).
         m = _re.search(r"(-?\d+\.\d+)", market)
-        threshold = m.group(1) if m else ""
+        threshold = m.group(1) if m else milestone_thresh
 
         # CRITICAL: For Totals markets (Over/Under) and Spreads (team A +X /
         # team B -X), the two sides are MUTUALLY EXCLUSIVE — they can never
@@ -11020,6 +11241,23 @@ async def generate_all_picks(
             base_market = _re.sub(r"\b(over|under)\b", "", market_l).strip()
             base_market = _re.sub(r"\s+", " ", base_market)
             return (p.get("sport"), p.get("event"), base_market, threshold)
+        # ── 2026-06-27 · NFL milestone alt dedup ──────────────────
+        # NFL alt-OVER picks carry the milestone format "{N}+
+        # Passing/Rushing/Receiving Yards" / "{N}+ Receptions" with
+        # ``selection=<player name>`` (no over/under token).  Each
+        # rung must get its OWN dedup key per (player, stat family,
+        # threshold); otherwise every rung for the same player
+        # collapses to one key and only one survives.
+        if _m_ms is not None and threshold:
+            # Normalise the stat family out of the matched phrase so
+            # 175+ Passing Yards and 175+ Rushing Yards keep separate
+            # keys for the same player.
+            try:
+                _fam_tok = (_m_ms.group(2) if _m_ms.lastindex and _m_ms.lastindex >= 2
+                            else "receptions").lower()
+            except Exception:
+                _fam_tok = "yards"
+            return (p.get("sport"), p.get("event"), sel_l, _fam_tok, threshold)
         # GAME OUTCOME family — Moneyline + Win-or-Draw + Double Chance ALL
         # resolve from the same 3-way h2h market. Any two picks from
         # different sides of this family (e.g. "Sweden ML" vs "Netherlands

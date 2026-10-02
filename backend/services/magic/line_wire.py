@@ -50,6 +50,11 @@ _STRUCTURED_SOURCES: frozenset[str] = frozenset({
     "sportsbook_structured",
     "the_odds_api_structured",
     "book_line_structured",
+    # 2026-06-27 · NFL FanDuel parity writer provenance — observed-book
+    # rows persisted from live_alt_lines carry OBSERVED_BOOK; preserve
+    # them verbatim so downstream readers can distinguish real
+    # sportsbook-sourced lines from deterministic parse fallbacks.
+    "OBSERVED_BOOK",
 })
 
 
