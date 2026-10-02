@@ -160,6 +160,19 @@ async def _player_recent_stats(db, player_name: str, stat_key: str,
     if not player_name:
         return {"recent_n": 0}
     nname = _norm_name(player_name)
+    # ── 2026-06-28 · P0-A NHL identity bridge ───────────────────────
+    # Odds API names are FULL (e.g. "Auston Matthews") while NHL API
+    # ingestion stored "A. Matthews" style (first-initial + last).
+    # Build a tolerant match regex: first_initial + "." + last_name.
+    _tokens = [t for t in nname.split() if t]
+    if len(_tokens) >= 2:
+        _first_init = _tokens[0][0]
+        _last = _tokens[-1]
+        _init_last_pat = f"^{_first_init}\\.\\s+{re.escape(_last)}$"
+    elif len(_tokens) == 1:
+        _init_last_pat = f"^[A-Z]\\.\\s+{re.escape(_tokens[0])}$"
+    else:
+        return {"recent_n": 0}
     # Points is a derived sum of goals + assists; use that when the
     # stored log carries them separately.
     stat_field_map = {
@@ -175,7 +188,7 @@ async def _player_recent_stats(db, player_name: str, stat_key: str,
     # Pull up to 40 most-recent logs for this player (identity by name).
     try:
         cur = db.player_game_logs.find(
-            {"sport": "nhl", "name": {"$regex": f"^{re.escape(player_name)}$", "$options": "i"}},
+            {"sport": "nhl", "name": {"$regex": _init_last_pat, "$options": "i"}},
             {"goals": 1, "assists": 1, "points": 1, "shots": 1,
              "game_id": 1, "team": 1, "is_home": 1},
         ).sort("game_id", -1).limit(40)

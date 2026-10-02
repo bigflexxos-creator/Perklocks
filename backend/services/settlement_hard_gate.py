@@ -101,6 +101,23 @@ _CFB_FAMILY_HINTS: tuple[tuple[str, str], ...] = (
     ("spread",                Family.POINT_SPREAD),
     ("total",                 Family.GAME_TOTAL),
 )
+# ── 2026-06-28 · P0-A NHL FAMILY HINTS ────────────────────────────
+# NHL game markets (ML / puck line / total) + player families
+# (goals / SOG / assists / points) now register with the hard gate
+# so settlement is routed through the authoritative path.  Picks
+# without authoritative actuals continue to fail-closed as
+# UNRESOLVED — never fabricated.
+_NHL_FAMILY_HINTS: tuple[tuple[str, str], ...] = (
+    ("moneyline",             Family.MONEYLINE),
+    ("puck line",             Family.NHL_PUCK_LINE),
+    ("spread",                Family.NHL_PUCK_LINE),
+    ("total",                 Family.GAME_TOTAL),
+    ("shots on goal",         Family.NHL_SOG),
+    (" sog",                  Family.NHL_SOG),
+    ("assists",               Family.NHL_ASSISTS),
+    ("points",                Family.NHL_POINTS),
+    ("goals",                 Family.NHL_GOALS),
+)
 _FAMILY_MAP: Dict[str, tuple[tuple[str, str], ...]] = {
     "MLB":    _MLB_FAMILY_HINTS,
     "NFL":    _NFL_FAMILY_HINTS,
@@ -108,6 +125,7 @@ _FAMILY_MAP: Dict[str, tuple[tuple[str, str], ...]] = {
     "Soccer": _SOCCER_FAMILY_HINTS,
     "NBA":    _NBA_FAMILY_HINTS,
     "CFB":    _CFB_FAMILY_HINTS,
+    "NHL":    _NHL_FAMILY_HINTS,
 }
 
 
@@ -186,7 +204,7 @@ def extract_actuals(pick: Dict[str, Any],
     treats None as MISSING_ACTUAL_DATA."""
     out: Dict[str, Any] = {}
     if not isinstance(score_payload, dict):
-        return out
+        score_payload = {}
     scores = score_payload.get("scores")
     away, home = _parse_event_teams(pick.get("event"))
     home_score = _score_for(scores, home)
@@ -198,8 +216,23 @@ def extract_actuals(pick: Dict[str, Any],
             away if away_score > home_score else None
         )
         out["total_games"] = home_score + away_score  # Tennis: games; approx
-    # Player-prop actuals are pulled via prop_settlement; leave None here
-    # so the gate correctly refuses to grade a prop from a game-score payload.
+    # ── 2026-06-28 · P0-A NHL player-prop actuals bridge ──────────
+    # When the caller has pre-populated authoritative player actuals
+    # on the pick (``pick["player_actuals"] = {"goals":1, ...}``), fan
+    # those values out under the required_actual_fields names used by
+    # the SettlementCapabilityRegistry so the hard gate can observe
+    # them.  Missing keys stay absent (MISSING_ACTUAL_DATA preserved).
+    pa = pick.get("player_actuals") or score_payload.get("player_actuals") or {}
+    if isinstance(pa, dict):
+        if "goals" in pa and pa["goals"] is not None:
+            out["player_goals"] = pa["goals"]
+        if "assists" in pa and pa["assists"] is not None:
+            out["player_assists"] = pa["assists"]
+        if "points" in pa and pa["points"] is not None:
+            out["player_points"] = pa["points"]
+        sog = pa.get("shots_on_goal") if pa.get("shots_on_goal") is not None else pa.get("shots")
+        if sog is not None:
+            out["player_shots_on_goal"] = sog
     return out
 
 
