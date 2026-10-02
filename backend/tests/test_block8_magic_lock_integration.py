@@ -543,9 +543,16 @@ class TestSportMarketWhitelist:
         allowed, reason = apex_market_allowed("MMA", "moneyline", {})
         assert allowed is False
 
-    def test_nhl_apex_unavailable(self):
+    def test_nhl_apex_allowed_after_uea_wiring(self):
+        # 2026-10-02 — NHL promoted into APEX_ELIGIBLE_SPORTS after
+        # being wired into the Universal Evidence Authority.  The
+        # categorical NHL exclusion was lifted — NHL now has to clear
+        # every universal Apex gate (97+ base, 5/6 categories, context
+        # category, market_intel, no contradictions, no risk flags).
+        # No NHL-specific shortcut.  Any further rejection must come
+        # from a legitimate universal gate, NOT from a sport block.
         allowed, reason = apex_market_allowed("NHL", "puckline", {})
-        assert allowed is False
+        assert allowed is True, f"NHL puckline unexpectedly blocked: {reason}"
 
     def test_kbo_apex_unavailable(self):
         # KBO reuse-MLB rules until explicit certification.

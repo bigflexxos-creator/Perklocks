@@ -71,11 +71,21 @@ class TestScopePreservation:
             {"sport": "NBA", "market": "LeBron James Points Over 25.5"},
             None, None) is None
 
-    def test_nhl_not_enabled(self):
-        assert not enabled("NHL")
-        assert build_contract_for_pick(
-            {"sport": "NHL", "market": "Rangers Moneyline"},
-            None, None) is None
+    def test_nhl_enabled(self):
+        # 2026-10-02 — NHL promoted into UEA (see
+        # services/evidence_authority_contract.py:55 and the NHL
+        # final-closure pass).  The adapter now routes NHL picks
+        # through the universal contract; the categorical NHL
+        # exclusion in APEX_UNAVAILABLE_SPORTS was likewise lifted.
+        assert enabled("NHL")
+        contract = build_contract_for_pick(
+            {"sport": "NHL", "market": "Rangers Moneyline",
+             "probability_provenance": "nhl_v1_sim",
+             "model_win_probability": 0.56},
+            None, None)
+        assert contract is not None
+        assert contract.sport == "NHL"
+        assert contract.market_family in ("NHL_PLAYER", "NHL_GAME")
 
     def test_ufc_not_enabled(self):
         assert not enabled("UFC")

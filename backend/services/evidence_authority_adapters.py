@@ -7,13 +7,13 @@ sport-specific models and produces an ``EvidenceAuthorityContract``.
 Adapters must NEVER invent evidence, downgrade legitimate data, or
 recompute win probability — they only reshape what is already there.
 
-Sports in scope: MLB · NFL · CFB · SOCCER · TENNIS.
+Sports in scope: MLB · NFL · CFB · SOCCER · TENNIS · NHL.
 
 The adapter dispatch is:
     build_contract_for_pick(pick, factors, scoring_factors) ->
         EvidenceAuthorityContract | None
 Returning ``None`` means "this pick's sport / market isn't handled by
-UEA" (e.g. NBA / NHL / UFC).  Callers should fall back to legacy
+UEA" (e.g. NBA / UFC).  Callers should fall back to legacy
 authority in that case.
 """
 from __future__ import annotations
@@ -462,6 +462,15 @@ def _classify_market_family(sport: str, market: str) -> str:
         return "SOCCER_GAME"
     if s == "TENNIS":
         return "TENNIS"
+    if s == "NHL":
+        # NHL player prop families: goals / assists / points /
+        # shots_on_goal (+ `_alternate` variants).  Everything else
+        # (moneyline, puck_line, total) is a game market.
+        if any(t in m for t in ("player_", "goal_scorer", "goalscorer",
+                                 "anytime goal", "shots on goal", "sog",
+                                 "shots_on_goal")):
+            return "NHL_PLAYER"
+        return "NHL_GAME"
     return "UNKNOWN"
 
 

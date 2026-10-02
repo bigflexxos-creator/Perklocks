@@ -13,8 +13,8 @@ Lock-Score ceiling that can legitimately reach:
     99     = PEAK_NON_APEX      (near-complete coverage + all axes agree)
     100    = Apex               (handled by the separate Apex gate — never here)
 
-SPORTS IN SCOPE:  MLB · NFL · CFB · SOCCER · TENNIS
-OUT OF SCOPE:     NBA · NHL · UFC/MMA  (not touched by this pass)
+SPORTS IN SCOPE:  MLB · NFL · CFB · SOCCER · TENNIS · NHL
+OUT OF SCOPE:     NBA · UFC/MMA  (not touched by this pass)
 
 ────────────────────────────────────────────────────────────────
 KEY DESIGN CONTRACTS
@@ -58,7 +58,17 @@ UEA_ENABLED_SPORTS: set[str] = {
     "CFB",
     "SOCCER",
     "TENNIS",
-    # NBA / NHL / UFC intentionally excluded.
+    "NHL",     # 2026-10-02 — NHL opted into UEA.  NHL historical
+               # intelligence (player_game_actuals + player_game_logs
+               # + games + team_game_actuals) is live, nhl_feature_
+               # engine provides matchup evidence, brain.sim_nhl
+               # produces calibrated independent probabilities and
+               # a Monte-Carlo distribution.  The universal adapter
+               # extracts every axis from standardised pick fields —
+               # no NHL-specific adapter required.  Book-implied
+               # provenance is still rejected at the model axis
+               # (see _model_probability_axis).
+    # NBA / UFC intentionally excluded.
 }
 
 UEA_VERSION = "uea.v1.2026-06"
