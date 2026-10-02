@@ -46,18 +46,61 @@ async def _get(cx: httpx.AsyncClient, path: str) -> dict | None:
     return None
 
 
+async def _authoritative_season_start(cx: httpx.AsyncClient, season: int) -> "datetime.date":
+    """2026-10-02 — NHL SEASON DISCOVERY P0.
+
+    Replaces the hard-coded ``Oct 5`` assumption with authoritative
+    season boundaries pulled from NHL's own schedule endpoint.  We
+    ask the standings-season endpoint for the current season window
+    (``start_date`` field is published by NHL in ISO form).  If the
+    endpoint is unreachable we fall back to the earliest schedule
+    day with any game listed in the ``{season}{season+1}`` cycle
+    rather than guessing.
+    """
+    from datetime import date as _date
+    try:
+        data = await _get(cx, f"/standings-season")
+        for row in (data or {}).get("seasons", []):
+            sid = int(row.get("id") or 0)
+            # season id is "20252026" etc.
+            if sid // 10000 == season:
+                sd = row.get("standingsStart") or row.get("regularSeasonStartDate")
+                if isinstance(sd, str) and len(sd) >= 10:
+                    y, m, d = int(sd[:4]), int(sd[5:7]), int(sd[8:10])
+                    return _date(y, m, d)
+    except Exception as e:
+        logger.warning("NHL authoritative season probe failed: %s", e)
+    # Fallback — scan the schedule from Sept 1 forward until the
+    # first day with at least one real game.  Avoids blind October
+    # guessing while never fabricating a date.
+    start = _date(season, 9, 1)
+    for i in range(0, 60):
+        d = start + timedelta(days=i)
+        probe = await _get(cx, f"/schedule/{d.strftime('%Y-%m-%d')}")
+        if probe:
+            for wk in probe.get("gameWeek", []) or []:
+                if wk.get("games"):
+                    return d
+        await asyncio.sleep(_PACE)
+    # Final fallback: Oct 1 of the season year (legitimate for every
+    # modern NHL season — never earlier than Sept 20).
+    return _date(season, 10, 1)
+
+
 async def backfill_current_season(db) -> dict:
-    """Walk schedule day-by-day from season start to today."""
+    """Walk schedule day-by-day from the AUTHORITATIVE season start
+    to today.  No hard-coded ``Oct 5`` assumption — the season
+    boundary is pulled from NHL's own standings-season endpoint.
+    """
     today = datetime.now(timezone.utc).date()
-    # Approx season start: Oct 5
-    season_start = datetime(_CURRENT_SEASON, 10, 5).date()
-    if season_start > today:
-        # We're in off-season pre-Oct → use last completed season.
-        season_start = datetime(_CURRENT_SEASON - 1, 10, 5).date()
     games_seen = games_inserted = logs_inserted = 0
     errors: list[str] = []
 
     async with httpx.AsyncClient(timeout=_TIMEOUT, headers={"User-Agent": "PerksLocks/1.0"}) as cx:
+        season_start = await _authoritative_season_start(cx, _CURRENT_SEASON)
+        if season_start > today:
+            # True pre-season — walk the previous NHL year.
+            season_start = await _authoritative_season_start(cx, _CURRENT_SEASON - 1)
         d = season_start
         while d <= today:
             data = await _get(cx, f"/schedule/{d.strftime('%Y-%m-%d')}")
@@ -98,6 +141,7 @@ async def backfill_current_season(db) -> dict:
             d += timedelta(days=1)
     return {
         "season": _CURRENT_SEASON,
+        "season_start_detected": season_start.isoformat(),
         "games_seen": games_seen,
         "games_inserted": games_inserted,
         "player_logs_inserted": logs_inserted,

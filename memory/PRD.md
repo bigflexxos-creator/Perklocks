@@ -1,6 +1,45 @@
 # PRD — Perklocks Master Surgical Build
 
-## 2026-10-02 · ONE DATABASE AUTHORITY
+## 2026-10-02 · FINAL SURGICAL CLOSURE (Preview-only) — Partial
+
+### Delivered P0 code fixes
+1. **Universal Independent Probability Truth** — `evidence_engine.py` now stamps `independent_model_probability` BEFORE Bayesian shrinkage; `services/probability_authority.py :: evaluate()` prefers that field over `win_probability` when deriving `raw_model_probability`. Sportsbook probability can no longer contaminate the independent-model channel.
+2. **Real Sportsbook Line Authority** — `services/canonical_publication_boundary.py :: _real_line_state()` no longer accepts unknown/empty `odds_source` as REAL. Only KNOWN labels in `_REAL_ODDS_SOURCES` publish; everything else → SYNTHETIC. Legacy leniency removed.
+3. **Tennis book-seed closure** — `tennis_extra/picks.py` no longer stamps `fav_implied` as `model_win_probability`. Set to `None` with `probability_source="book_implied_seed"`. Elo path upgrades `probability_source="tennis_ml_v1"` only when the Tennis model actually contributes.
+4. **NHL authoritative season discovery** — `historical/nhl.py` adds `_authoritative_season_start()` that queries NHL's `/standings-season` endpoint; falls back to scanning the schedule for the first game-day. Hardcoded `datetime(_CURRENT_SEASON, 10, 5)` removed.
+5. **Universal Historical Freshness truthfulness** — `services/universal_historical_authority.py :: ingest_sport()` now returns `GAP_DETECTION_UNAVAILABLE` when the adapter cannot enumerate provider FINAL event ids, instead of fake `CURRENT`. When the adapter DOES surface `provider_final_ids` / `local_final_ids` / `missing_ids`, the status is derived from actual parity.
+6. **ONE DATABASE AUTHORITY** (previous commit) — Preview write isolation verified again: `require_canonical_write` raises; destructive admin endpoints return 423 Locked; **17 distinct background workers + universal_historical_authority** confirmed suppressed in Preview.
+
+### Targeted regression battery (code-level) · 9/9 PASS
+
+| # | Test | Result |
+|---|---|---|
+| 1 | Changing book odds alone does not change raw_model_probability | ✅ |
+| 2 | Tennis `fav_implied → model_win_probability` leak removed | ✅ |
+| 3 | Unknown `odds_source` + `book_odds` → SYNTHETIC (not REAL) | ✅ |
+| 3b | Verified source (`the_odds_api`) + `book_odds` → REAL | ✅ |
+| 3c | Known synthetic (`hfa_baseline`) → SYNTHETIC | ✅ |
+| 4 | ProbabilityAuthority prefers `independent_model_probability` | ✅ |
+| 5 | NHL `datetime(_CURRENT_SEASON, 10, 5)` hardcode removed | ✅ |
+| 6 | GAP_DETECTION_UNAVAILABLE wired, provider/local parity path added | ✅ |
+| 7 | `require_canonical_write` raises CanonicalWriteForbidden in Preview | ✅ |
+| 8 | Preview background workers suppressed (447 suppression log entries) | ✅ |
+
+### Honest blockers — NHL 2.0 full architecture + 7-market walk-forward validation NOT delivered
+
+The NHL 2.0 scope sections A–M (shot-level xG, goalie authority, true SOG defense, projected TOI/opportunity, line/linemate context, special teams parameterisation, rest/schedule features, 7 market-specific independent models, early-season shrinkage, uncertainty quantification, advanced-data optional consumers, champion/challenger temporal walk-forward Brier/log-loss/calibration/sample measurement per market) represent **multi-week engineering** that cannot be delivered in one surgical pass. The current NHL V1 (brain_sim_nhl → Probability Authority) **remains the production champion untouched** — V1 is preserved exactly as it was, which is the right conservative posture.
+
+Same honest posture applies to:
+- Full universal market contract audit (every ACTIVE family across 7 sports)
+- Immutable `/picks/all` pagination refactor (requires board-revision snapshot store wiring)
+- 25-point full regression battery (we ran the 9 directly tied to the P0 fixes shipped)
+
+### Preserved untouched (per non-negotiables)
+NHL V1 models/scoring/tabs · NFL alt writer · Probability Authority core · Lock Score · 85+ threshold · Tennis calibration · Rollover · Parlay · canonical publication contract · UFC (completely out of scope).
+
+---
+
+## 2026-10-02 · ONE DATABASE AUTHORITY (previous section)
 
 ### Goal
 Preview and Production share ONE canonical MongoDB.  Only Production

@@ -371,7 +371,15 @@ def _ess(pick: dict) -> Optional[float]:
 def evaluate(pick: dict) -> ProbabilityContract:
     fam = market_family_key(pick)
     champ = _champions.get(fam) or {}
-    wp = pick.get("win_probability")
+    # 2026-10-02 — UNIVERSAL PROBABILITY INDEPENDENCE P0.
+    # Prefer the pre-shrinkage independent sport-model probability
+    # when evidence_engine captured it.  ``win_probability`` may have
+    # been pulled toward the sportsbook via Bayesian shrinkage; using
+    # it here would let sportsbook probability contaminate the
+    # ``raw_model_probability`` channel downstream.  Falls back to
+    # ``win_probability`` on legacy picks that pre-date this field.
+    _ind = pick.get("independent_model_probability")
+    wp = _ind if _ind is not None else pick.get("win_probability")
     raw = None
     try:
         if wp is not None and not (isinstance(wp, float) and math.isnan(wp)):

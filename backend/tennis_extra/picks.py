@@ -406,8 +406,26 @@ async def fetch_extra_tennis_picks(
             # otherwise it is None.
             "implied_probability": (implied_final
                                      if not no_real_book_line else None),
+            # 2026-10-02 — TENNIS BOOK-SEED CLOSURE P0.
+            # ``fav_implied`` is market consensus (de-vigged book
+            # implied), NOT independent model probability.  It must
+            # NEVER be stamped as ``model_win_probability`` — doing so
+            # lets sportsbook probability masquerade as the Elo/Tennis
+            # model's own estimate.  We leave ``model_win_probability``
+            # unset here; the authoritative Tennis model (Elo) below
+            # populates it when ``dd["mp"]`` is available.  If Elo
+            # cannot evaluate the matchup, the pick remains
+            # fail-closed (no independent model = not publishable).
+            #
+            # ``win_probability`` is a UI/display seed only — it is
+            # mirrored into ``win_probability_raw`` by evidence_engine
+            # and REPLACED by the shrunk calibrated value for display.
+            # ``probability_source`` makes the provenance explicit so
+            # ProbabilityAuthority can refuse to publish a seed-only
+            # pick (SEED_SOURCES → BOOK_IMPLIED_SEED_NOT_PUBLISHABLE).
             "win_probability": round(fav_implied * 100.0, 2),
-            "model_win_probability": round(fav_implied * 100.0, 2),
+            "model_win_probability": None,
+            "probability_source": "book_implied_seed",
             "edge_percent": edge_pct,
             "lock_score": lock,
             "lock_score_v2": lock,
@@ -517,6 +535,10 @@ async def fetch_extra_tennis_picks(
                 pick_doc["data_driven_contribs"] = dd["contributions"]
                 pick_doc["win_probability"] = round(dd["mp"] * 100, 2)
                 pick_doc["model_win_probability"] = round(dd["mp"] * 100, 2)
+                # 2026-10-02 — upgrade probability source once Elo/
+                # Sackmann context has actually contributed; otherwise
+                # the pick remains flagged as a BOOK seed (fail-closed).
+                pick_doc["probability_source"] = "tennis_ml_v1"
                 # P0-3 (2026-08-11): only surface an edge when we have
                 # a REAL sportsbook line to compare against.  Without a
                 # real book line the "edge" would be model-vs-scrape,

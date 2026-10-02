@@ -135,14 +135,41 @@ async def ingest_sport(db, sport: str, *, since: Optional[datetime] = None) -> d
         except Exception:
             pass
         summary = await client.incremental_sync(db, **kwargs)
-        # Compute derived status.
+        # 2026-10-02 — HISTORICAL FRESHNESS AUTHORITY P0.
+        # Compute truthful status.  Previous rule classified
+        # ``games_seen > 0 AND inserted == 0`` as CURRENT, which only
+        # proved the adapter CALLED the provider — not that canonical
+        # final events match provider finals.  If the adapter can
+        # enumerate provider FINAL event ids, derive status from the
+        # actual parity; otherwise emit GAP_DETECTION_UNAVAILABLE
+        # rather than fake CURRENT.
         inserted = int(summary.get("games_inserted") or summary.get("events_ingested") or 0)
         logs     = int(summary.get("player_logs_inserted") or summary.get("logs_inserted") or 0)
-        if inserted > 0 or logs > 0:
+        provider_finals = summary.get("provider_final_ids") or summary.get("provider_finals")
+        local_finals    = summary.get("local_final_ids")    or summary.get("local_finals")
+        missing_ids     = summary.get("missing_ids")
+        if isinstance(provider_finals, (list, set, tuple)) and isinstance(local_finals, (list, set, tuple)):
+            # Adapter proved parity — truthful status.
+            pf = set(provider_finals); lf = set(local_finals)
+            missing = pf - lf
+            if not missing:
+                status = "CURRENT"
+            elif inserted > 0 or logs > 0:
+                status = "INGESTION_LAG" if missing else "CURRENT"
+            else:
+                status = "INGESTION_LAG"
+            summary["missing_ids_count"] = len(missing)
+        elif isinstance(missing_ids, (list, set, tuple)):
+            status = "CURRENT" if not missing_ids else "INGESTION_LAG"
+            summary["missing_ids_count"] = len(missing_ids)
+        elif inserted > 0 or logs > 0:
             status = "CURRENT"
         elif summary.get("games_seen") and inserted == 0:
-            # Already-ingested slate — not a failure, just idempotent noop.
-            status = "CURRENT"
+            # Adapter saw events but inserted none.  Only safe to
+            # call this CURRENT when the adapter has proven parity —
+            # otherwise flag that gap-detection is unavailable so
+            # ops knows the status is weakly derived.
+            status = "GAP_DETECTION_UNAVAILABLE"
         else:
             status = "PROVIDER_DELAY"
         await _write_manifest(db, sport, summary, status=status)

@@ -705,6 +705,23 @@ def govern_pick(
             except (TypeError, ValueError):
                 pick["win_probability_raw"] = raw_wp
     if raw_wp is not None:
+        # 2026-10-02 — UNIVERSAL PROBABILITY INDEPENDENCE P0.
+        # Capture the untouched sport-model probability BEFORE
+        # sportsbook-informed shrinkage.  Downstream
+        # ProbabilityAuthority must consume this canonical field
+        # (never `win_probability`) when stamping
+        # ``raw_model_probability``, otherwise sportsbook probability
+        # contaminates the independent-model channel.
+        try:
+            _ind_wp = float(raw_wp)
+            # Store as 0..1 fraction to match ProbabilityAuthority's
+            # existing contract (`raw_model_probability` is 0..1).
+            pick["independent_model_probability"] = round(_ind_wp / 100.0, 6)
+            pick["independent_model_probability_source"] = (
+                "sport_model_pre_shrinkage"
+            )
+        except (TypeError, ValueError):
+            pass
         # Edge math uses the BOOK's implied probability. Most picks
         # already have `implied_probability` populated upstream; fall
         # back to deriving from `book_odds` if not.
