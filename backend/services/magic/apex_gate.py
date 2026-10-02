@@ -42,7 +42,7 @@ APEX_GATE_VERSION = "apex_gate.v1.0"
 
 
 APEX_ELIGIBLE_SPORTS: frozenset[str] = frozenset({
-    "MLB", "Soccer", "NBA", "Tennis", "NFL", "CFB",
+    "MLB", "Soccer", "NBA", "Tennis", "NFL", "CFB", "NHL",
 })
 
 # Explicit sport-level unavailability list — evidence infrastructure
@@ -50,10 +50,20 @@ APEX_ELIGIBLE_SPORTS: frozenset[str] = frozenset({
 # still receive normal scoring; only APEX is denied.
 #
 # 2026-06-11 · CFB HIGH-TIER REACHABILITY CLOSURE — CFB removed from
-# the unavailability list per the surgical directive.  The blacklist
-# was a "sport-specific CFB ceiling" that made Apex 100 mathematically
-# unreachable regardless of evidence convergence — the very ceiling the
-# directive forbids.
+# the unavailability list per the surgical directive.
+#
+# 2026-10-02 · NHL FINAL CLOSURE — NHL removed from the unavailability
+# list.  NHL is now wired into the Universal Evidence Authority
+# (``services/evidence_authority_contract.UEA_ENABLED_SPORTS``) with
+# live Historical Intelligence (``player_game_actuals`` +
+# ``player_game_logs`` fallback for players; ``team_game_actuals`` +
+# ``games`` fallback for teams), ``nhl_feature_engine`` matchup
+# evidence, and ``brain.sim_nhl`` producing calibrated independent
+# probabilities + Monte-Carlo distribution.  The Apex contract is
+# **unchanged** — NHL still has to clear every universal gate
+# (97+ base BEFORE Magic delta, 5/6 categories, ≥1 context category,
+# market_intel present, no CONTRADICTORY cores, no risk flags).  No
+# NHL-specific shortcut, no weaker thresholds.
 #
 # CFB Apex remains EXCEPTIONALLY RARE (0-Apex slates are expected and
 # valid) because ``evaluate_apex()`` still requires ALL of:
@@ -70,7 +80,7 @@ APEX_ELIGIBLE_SPORTS: frozenset[str] = frozenset({
 # portal-net, so 5+ independent-category convergence is uncommon; that
 # scarcity is intended, not a hard block.
 APEX_UNAVAILABLE_SPORTS: frozenset[str] = frozenset({
-    "UFC", "MMA", "NHL", "KBO",
+    "UFC", "MMA", "KBO",
 })
 
 APEX_MIN_BASE_SCORE = 97.0
