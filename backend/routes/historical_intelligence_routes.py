@@ -373,6 +373,12 @@ async def historical_intelligence(
     sample_scope: str = Query("L10", pattern="^(L5|L10|L20|SEASON|ALL)$"),
     venue_scope:  str = Query("ALL", pattern="^(ALL|HOME|AWAY)$"),
     context_scope: Optional[str] = None,
+    # 2026-10-02 — team-market perspective override.  When the pick is
+    # a team-level market (moneyline / spread / total) the caller may
+    # ask for the ALTERNATE team's history by passing its canonical
+    # name as ``subject``.  Unknown subjects fall back to the pick's
+    # default-resolved entity (no synthetic history).
+    subject: Optional[str] = Query(None, max_length=120),
 ):
     t0 = time.perf_counter()
     db = _get_db()
@@ -384,6 +390,17 @@ async def historical_intelligence(
     market        = pick.get("market") or ""
     family        = resolve_market_family(sport, market)
     entity_type, entity_id, entity_name = _resolve_entity(pick, sport, family)
+
+    # Team-market perspective override — only honored for team subjects
+    # AND only when the requested team matches the pick's home/away
+    # pair (canonical names).  Never fabricates an identity.
+    if entity_type == "team" and subject:
+        _subj = subject.strip()
+        _home = (pick.get("home_team") or "").strip()
+        _away = (pick.get("away_team") or "").strip()
+        if _subj and _subj in (_home, _away):
+            entity_name = _subj
+            entity_id   = None  # re-resolve by name in the adapter
 
     # Player-team fallback — when the pick payload lacks player_team_name,
     # look it up from player_identities so opponent resolution can work.
@@ -450,6 +467,12 @@ async def historical_intelligence(
     d = resp.to_dict()
     d["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
     d["served_by"] = _served_by(request, db)
+    # 2026-10-02 — Expose the canonical ``entity_type`` on the response
+    # so the UI can render "TEAM HISTORY — <subject>" without inferring
+    # from display strings.  Also echo back the active ``subject`` so
+    # the frontend knows which perspective was served.
+    d["entity_type"] = entity_type
+    d["subject_name"] = entity_name
     d["pick"] = {
         "id":            pick.get("id"),
         "sport":         sport,
@@ -461,6 +484,7 @@ async def historical_intelligence(
         "player_name":   pick.get("player_name"),
         "player_team":   pick.get("player_team_name") or pick.get("player_team"),
         "opponent":      opponent_name,
+        "subject_name":  entity_name,
         "commence_time": pick.get("commence_time") or pick.get("event_time"),
     }
     return d

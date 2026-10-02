@@ -4960,6 +4960,23 @@ async def on_startup():
             _sh_err,
         )
 
+    # ── 2026-10-02 · UNIVERSAL HISTORICAL AUTHORITY ──────────────
+    # One loop keeps NFL/CFB/MLB/NBA/NHL/Soccer/Tennis Historical
+    # Intelligence fresh for the current (and postseason) slates.
+    # Boot-time catch-up fires immediately; subsequent cycles every
+    # ~3 hours (jittered). Idempotent per sport — adapters dedupe by
+    # provider event id, so re-running inserts 0 new rows when the
+    # slate is already current.
+    try:
+        from services.universal_historical_authority import (
+            start_background_authority as _start_univ_hist,
+        )
+        _start_univ_hist(db)
+    except Exception as _uh_err:
+        logger.warning(
+            "universal_historical_authority: start skipped: %s", _uh_err,
+        )
+
     # Run the lifecycle preflight (settings + DB + ping + indexes +
     # lease recovery).  All steps are idempotent — the existing
     # inline blocks below run again for observability but no work is
