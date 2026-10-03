@@ -1,0 +1,247 @@
+{
+  "archive_path": "/app/reconcile_workspace/preview_baseline_v2/perklocks_preview_baseline_v2_scoped_20261003_181544Z.zip",
+  "archive_sha256": "26cd67d0648ef62f495807c5303fdc1acafb28a3015e249718a7b47a3728d78b",
+  "archive_size_bytes": 205074775,
+  "authority_posture": {
+    "BACKGROUND_WORKERS_ENABLED": "false",
+    "CANONICAL_WRITE_ENABLED": "false",
+    "DATA_AUTHORITY": "preview"
+  },
+  "baseline_tag": "PREVIEW_BASELINE_V2_SCOPED_21_COLLECTIONS",
+  "db_fingerprint": "ac7ea1130f39",
+  "db_name": "lockscore_db",
+  "empty_collections": [],
+  "environment": "preview",
+  "export_completion_timestamp": "2026-10-03T18:16:25.501734+00:00",
+  "export_start_timestamp": "2026-10-03T18:15:44.615520+00:00",
+  "failed_collections": [],
+  "files_count": 43,
+  "generated_by": "preview_baseline_v2_scoped.py",
+  "scope": "SCOPED_21_RECONCILIATION_COLLECTIONS",
+  "scoped_collections": [
+    "games",
+    "historical_ingestion_state",
+    "nfl_ingest_meta",
+    "nfl_player_weekly",
+    "parlay_history",
+    "picks",
+    "player_game_actuals",
+    "player_game_logs",
+    "player_identities",
+    "prediction_snapshots",
+    "pregame_snapshots",
+    "publication_events",
+    "rollover_slate_events",
+    "rollover_slates",
+    "settlement_events",
+    "soccer_matches",
+    "soccer_player_game_logs",
+    "team_game_actuals",
+    "tennis_matches_history",
+    "user_bets",
+    "users"
+  ],
+  "source_inventory": {
+    "final_counts": {
+      "games": 12476,
+      "historical_ingestion_state": 10,
+      "nfl_ingest_meta": 1,
+      "nfl_player_weekly": 133077,
+      "parlay_history": 1012,
+      "picks": 275997,
+      "player_game_actuals": 403784,
+      "player_game_logs": 374795,
+      "player_identities": 62315,
+      "prediction_snapshots": 155638,
+      "pregame_snapshots": 6514,
+      "publication_events": 55500,
+      "rollover_slate_events": 12,
+      "rollover_slates": 12,
+      "settlement_events": 31243,
+      "soccer_matches": 25662,
+      "soccer_player_game_logs": 100025,
+      "team_game_actuals": 60206,
+      "tennis_matches_history": 38380,
+      "user_bets": 7,
+      "users": 241
+    },
+    "initial_counts": {
+      "games": 12476,
+      "historical_ingestion_state": 10,
+      "nfl_ingest_meta": 1,
+      "nfl_player_weekly": 133077,
+      "parlay_history": 1012,
+      "picks": 276076,
+      "player_game_actuals": 403784,
+      "player_game_logs": 374795,
+      "player_identities": 62315,
+      "prediction_snapshots": 155638,
+      "pregame_snapshots": 6514,
+      "publication_events": 55500,
+      "rollover_slate_events": 12,
+      "rollover_slates": 12,
+      "settlement_events": 31243,
+      "soccer_matches": 25662,
+      "soccer_player_game_logs": 100025,
+      "team_game_actuals": 60206,
+      "tennis_matches_history": 38380,
+      "user_bets": 7,
+      "users": 241
+    },
+    "scoped_collections": [
+      "games",
+      "historical_ingestion_state",
+      "nfl_ingest_meta",
+      "nfl_player_weekly",
+      "parlay_history",
+      "picks",
+      "player_game_actuals",
+      "player_game_logs",
+      "player_identities",
+      "prediction_snapshots",
+      "pregame_snapshots",
+      "publication_events",
+      "rollover_slate_events",
+      "rollover_slates",
+      "settlement_events",
+      "soccer_matches",
+      "soccer_player_game_logs",
+      "team_game_actuals",
+      "tennis_matches_history",
+      "user_bets",
+      "users"
+    ],
+    "total_collections": 21,
+    "total_documents": 1736907
+  },
+  "total_backup_size_bytes": 205053300,
+  "verification": {
+    "games": {
+      "exported": 12476,
+      "final": 12476,
+      "initial": 12476,
+      "status": "PASS"
+    },
+    "historical_ingestion_state": {
+      "exported": 10,
+      "final": 10,
+      "initial": 10,
+      "status": "PASS"
+    },
+    "nfl_ingest_meta": {
+      "exported": 1,
+      "final": 1,
+      "initial": 1,
+      "status": "PASS"
+    },
+    "nfl_player_weekly": {
+      "exported": 133077,
+      "final": 133077,
+      "initial": 133077,
+      "status": "PASS"
+    },
+    "parlay_history": {
+      "exported": 1012,
+      "final": 1012,
+      "initial": 1012,
+      "status": "PASS"
+    },
+    "picks": {
+      "exported": 275997,
+      "final": 275997,
+      "initial": 276076,
+      "status": "PASS"
+    },
+    "player_game_actuals": {
+      "exported": 403784,
+      "final": 403784,
+      "initial": 403784,
+      "status": "PASS"
+    },
+    "player_game_logs": {
+      "exported": 374795,
+      "final": 374795,
+      "initial": 374795,
+      "status": "PASS"
+    },
+    "player_identities": {
+      "exported": 62315,
+      "final": 62315,
+      "initial": 62315,
+      "status": "PASS"
+    },
+    "prediction_snapshots": {
+      "exported": 155638,
+      "final": 155638,
+      "initial": 155638,
+      "status": "PASS"
+    },
+    "pregame_snapshots": {
+      "exported": 6514,
+      "final": 6514,
+      "initial": 6514,
+      "status": "PASS"
+    },
+    "publication_events": {
+      "exported": 55500,
+      "final": 55500,
+      "initial": 55500,
+      "status": "PASS"
+    },
+    "rollover_slate_events": {
+      "exported": 12,
+      "final": 12,
+      "initial": 12,
+      "status": "PASS"
+    },
+    "rollover_slates": {
+      "exported": 12,
+      "final": 12,
+      "initial": 12,
+      "status": "PASS"
+    },
+    "settlement_events": {
+      "exported": 31243,
+      "final": 31243,
+      "initial": 31243,
+      "status": "PASS"
+    },
+    "soccer_matches": {
+      "exported": 25662,
+      "final": 25662,
+      "initial": 25662,
+      "status": "PASS"
+    },
+    "soccer_player_game_logs": {
+      "exported": 100025,
+      "final": 100025,
+      "initial": 100025,
+      "status": "PASS"
+    },
+    "team_game_actuals": {
+      "exported": 60206,
+      "final": 60206,
+      "initial": 60206,
+      "status": "PASS"
+    },
+    "tennis_matches_history": {
+      "exported": 38380,
+      "final": 38380,
+      "initial": 38380,
+      "status": "PASS"
+    },
+    "user_bets": {
+      "exported": 7,
+      "final": 7,
+      "initial": 7,
+      "status": "PASS"
+    },
+    "users": {
+      "exported": 241,
+      "final": 241,
+      "initial": 241,
+      "status": "PASS"
+    }
+  },
+  "warning_this_is_scoped_not_full": true
+}

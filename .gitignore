@@ -94,3 +94,8 @@ credentials.json
 .credentials
 memory/reconcile_offline/production_input_inventory.json
 memory/reconcile_offline/conflict_report.json
+reconcile_workspace/reconciliation_v2/conflict_report.json
+reconcile_workspace/preview_baseline_v2/perklocks_preview_baseline_v2_scoped_20261003_181544Z.zip
+reconcile_workspace/checkpoints/phase2_20261003_182401Z.tar.gz
+reconcile_workspace/checkpoints/phase3_20261003_190513Z.tar.gz
+reconcile_workspace/checkpoints/phase5_20261003_190628Z.tar.gz
