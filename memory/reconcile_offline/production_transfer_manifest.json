@@ -1,6 +1,6 @@
 {
-  "spec_version": "2026-10-03.rev2.1",
-  "spec_revision_note": "rev2 \u2014 publication_events reclassified REQUIRED_FULL_DATA (not losslessly reconstructible from picks/prediction_snapshots/pregame_snapshots/settlement_events: _id, immutable `at` per PUBLISHED/REPUBLISHED event, and `publication_source` are irrecoverable). Original Production export filenames are accepted as-is; no re-export, no slim-projection required. `_slim` suffix accepted but NOT mandatory. | rev2.1 \u2014 projection + logical-key labels corrected from observed Production exports (nfl_ingest_meta, user_bets, users, rollover_slates, rollover_slate_events, historical_ingestion_state).",
+  "spec_version": "2026-10-03.rev2.2",
+  "spec_revision_note": "rev2 \u2014 publication_events reclassified REQUIRED_FULL_DATA (not losslessly reconstructible from picks/prediction_snapshots/pregame_snapshots/settlement_events: _id, immutable `at` per PUBLISHED/REPUBLISHED event, and `publication_source` are irrecoverable). Original Production export filenames are accepted as-is; no re-export, no slim-projection required. `_slim` suffix accepted but NOT mandatory. | rev2.1 \u2014 projection + logical-key labels corrected from observed Production exports (nfl_ingest_meta, user_bets, users, rollover_slates, rollover_slate_events, historical_ingestion_state). | rev2.2 \u2014 publication_events.production_count_known updated 97659\u2192101833 after validated complete export (11 contiguous parts, 0 dups).",
   "goal": "Minimum Production transfer set \u2014 reconstructs record-level canonical reconciliation PLAN without moving the 645 MB Production archive.",
   "input_dir": "/tmp/production_reconcile_input",
   "ingest_tool": "backend/scripts/reconcile_input_ingest.py",
@@ -359,7 +359,7 @@
       "action_change_note": "rev2 \u2014 reclassified from MANIFEST_ONLY to REQUIRED_FULL_DATA. Lossless reconstruction from picks/prediction_snapshots/pregame_snapshots/settlement_events is NOT possible: `_id`, the per-event immutable `at` timestamp, and the `publication_source` tag are irrecoverable (publication_source is written only on this collection). Count-only is NOT sufficient for an append-only audit ledger.",
       "logical_key": "prediction_id+publication_version+at",
       "preview_count": 55500,
-      "production_count_known": 97659,
+      "production_count_known": 101833,
       "projection": "FULL",
       "projected_fields": [
         "_id",
@@ -388,7 +388,18 @@
       "multipart_supported": true,
       "ingest_supported": true,
       "priority_rank": 10,
-      "reason": "Append-only publication audit ledger \u2014 irreplaceable. The reconciliation PLAN performs UNION_SAFE merge on the (prediction_id+publication_version+at) key; actual rows are required to compute the union."
+      "reason": "Append-only publication audit ledger \u2014 irreplaceable. The reconciliation PLAN performs UNION_SAFE merge on the (prediction_id+publication_version+at) key; actual rows are required to compute the union.",
+      "production_count_known_history": {
+        "previous": 97659,
+        "adjusted_to": 101833,
+        "reason": "complete Production backup export, 11 contiguous parts; append-only ledger drift from earlier shadow inventory",
+        "integrity": {
+          "parts": "1..11 contiguous",
+          "dup_ids": 0,
+          "dup_logical_keys": 0,
+          "docs_without_logical_key": 0
+        }
+      }
     },
     {
       "collection": "tennis_matches_history",
