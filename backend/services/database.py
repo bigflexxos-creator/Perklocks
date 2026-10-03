@@ -130,6 +130,31 @@ def _resolve_env_config() -> tuple[str, str]:
     return mongo_url, db_name
 
 
+# ── Canonical / legacy routing (Perklocks cutover) ───────────────────
+# Phase 7 cutover: a second logical database `lockscore_canonical` lives
+# on the same managed Mongo cluster alongside the existing legacy DB.
+# When `USE_CANONICAL_DB=true`, ALL application reads and writes
+# resolve through `lockscore_canonical`.  Legacy remains untouched as
+# rollback truth.  The switch is centralised in `get_database()` so no
+# consumer can accidentally keep reading legacy after cutover.
+def _canonical_name() -> str:
+    return (os.environ.get("CANONICAL_DB_NAME") or "lockscore_canonical").strip() \
+           or "lockscore_canonical"
+
+
+def _use_canonical() -> bool:
+    return (os.environ.get("USE_CANONICAL_DB") or "false").strip().lower() == "true"
+
+
+def _active_db_name() -> str:
+    """Resolve the active DB name right-now, taking USE_CANONICAL_DB
+    into account.  Legacy DB_NAME is retained as the rollback target."""
+    if _use_canonical():
+        return _canonical_name()
+    _, legacy = _resolve_env_config()
+    return legacy
+
+
 def initialize_database(
     mongo_url:  Optional[str] = None,
     db_name:    Optional[str] = None,
@@ -193,9 +218,53 @@ def get_client() -> AsyncIOMotorClient:
 
 
 def get_database() -> AsyncIOMotorDatabase:
+    """Return the ACTIVE application database handle.
+
+    Honours ``USE_CANONICAL_DB``: when true, routes to
+    ``CANONICAL_DB_NAME`` (default ``lockscore_canonical``); when
+    false, routes to the legacy ``DB_NAME``.  The underlying Mongo
+    client is shared — only the database handle switches.
+    """
     if _state.database is None:
         initialize_database()
-    return _state.database   # type: ignore[return-value]
+    # Test override is immutable — honour it regardless of the flag.
+    if _state.is_override:
+        return _state.database   # type: ignore[return-value]
+    name = _active_db_name()
+    if name == _state.db_name:
+        return _state.database   # type: ignore[return-value]
+    # Different logical DB on the same shared client.
+    return _state.client[name]   # type: ignore[index,return-value]
+
+
+def get_legacy_database() -> AsyncIOMotorDatabase:
+    """Return the legacy ``DB_NAME`` handle regardless of
+    ``USE_CANONICAL_DB``.  Used by admin cutover tooling only."""
+    if _state.client is None:
+        initialize_database()
+    if _state.is_override:
+        return _state.database   # type: ignore[return-value]
+    _, legacy_name = _resolve_env_config()
+    return _state.client[legacy_name]   # type: ignore[index,return-value]
+
+
+def get_canonical_database() -> AsyncIOMotorDatabase:
+    """Return the canonical ``CANONICAL_DB_NAME`` handle regardless of
+    ``USE_CANONICAL_DB``.  Used by admin cutover tooling only."""
+    if _state.client is None:
+        initialize_database()
+    if _state.is_override:
+        return _state.database   # type: ignore[return-value]
+    return _state.client[_canonical_name()]   # type: ignore[index,return-value]
+
+
+def active_database_name() -> str:
+    """The CURRENTLY routed DB name — honours ``USE_CANONICAL_DB``."""
+    return _active_db_name()
+
+
+def use_canonical_db_enabled() -> bool:
+    return _use_canonical()
 
 
 def is_initialized() -> bool:
@@ -238,6 +307,8 @@ def safe_database_diagnostics() -> dict[str, Any]:
     """Diagnostics safe for admin surfaces.  Never includes the raw
     connection string, credentials, or database contents."""
     mu = _state.mongo_url or ""
+    _, legacy_name = _resolve_env_config()
+    canonical_name = _canonical_name()
     return {
         "initialized":         is_initialized(),
         "override_active":     _state.is_override,
@@ -246,6 +317,11 @@ def safe_database_diagnostics() -> dict[str, Any]:
         "mongo_url_length":    len(mu),
         "db_name":             _state.db_name,  # not secret
         "pool_kwargs":         dict(_state.pool_kwargs),
+        # Perklocks cutover routing
+        "legacy_db_name":      legacy_name,
+        "canonical_db_name":   canonical_name,
+        "active_db_name":      _active_db_name(),
+        "use_canonical_db":    _use_canonical(),
     }
 
 
@@ -350,6 +426,10 @@ __all__ = [
     "initialize_database",
     "get_client",
     "get_database",
+    "get_legacy_database",
+    "get_canonical_database",
+    "active_database_name",
+    "use_canonical_db_enabled",
     "is_initialized",
     "close_database",
     "ping_database",
