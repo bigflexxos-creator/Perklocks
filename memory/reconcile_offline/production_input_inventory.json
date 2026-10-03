@@ -1,8 +1,51 @@
 {
+  "collections": {
+    "nfl_ingest_meta": {
+      "docs_without_logical_key": 0,
+      "duplicate_ids_across_parts": [],
+      "duplicate_logical_keys_across_parts": [],
+      "ids_seen": [
+        "nfl_player_weekly"
+      ],
+      "logical_keys_seen": [
+        "[\"_id\", \"nfl_player_weekly\"]"
+      ],
+      "parts": [
+        {
+          "doc_count": 1,
+          "docs_without_logical_key_in_file": 0,
+          "duplicate_ids_within_file": 0,
+          "duplicate_logical_keys_within_file": 0,
+          "file": "nfl_ingest_meta.json",
+          "part": null,
+          "sha256": "8c987ccf39bc96aa317a80701bfa3c027f7795c1a68243ac202eb1f91452e1ff"
+        }
+      ],
+      "total_docs": 1,
+      "total_parts_declared": null,
+      "unique_logical_keys": 1,
+      "unique_mongo_ids": 1
+    }
+  },
+  "files": {
+    "nfl_ingest_meta.json": {
+      "collection": "nfl_ingest_meta",
+      "doc_count": 1,
+      "docs_without_logical_key_in_file": 0,
+      "duplicate_ids_across_parts_contrib": 0,
+      "duplicate_ids_within_file": 0,
+      "duplicate_logical_keys_across_parts_contrib": 0,
+      "duplicate_logical_keys_within_file": 0,
+      "file": "nfl_ingest_meta.json",
+      "ingested_at": "2026-10-03T15:16:46.923575+00:00",
+      "part": null,
+      "sha256": "8c987ccf39bc96aa317a80701bfa3c027f7795c1a68243ac202eb1f91452e1ff",
+      "size_bytes": 161,
+      "status": "INGESTED"
+    }
+  },
+  "generated_at": "2026-10-03T15:16:46.923586+00:00",
   "input_dir": "/tmp/production_reconcile_input",
-  "files": {},
-  "collections": {},
-  "generated_at": null,
-  "ready": false,
-  "notes": "rev2 — publication_events reclassified REQUIRED_FULL_DATA. Original Production export filenames accepted (no re-export, no slim). Drop files into /tmp/production_reconcile_input/ and run `python /app/backend/scripts/reconcile_input_ingest.py`. Strictly offline."
+  "notes": "rev2 \u2014 publication_events reclassified REQUIRED_FULL_DATA. Original Production export filenames accepted (no re-export, no slim). Drop files into /tmp/production_reconcile_input/ and run `python /app/backend/scripts/reconcile_input_ingest.py`. Strictly offline.",
+  "ready": false
 }
