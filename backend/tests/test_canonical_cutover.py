@@ -194,18 +194,32 @@ async def test_fingerprint_deterministic(canon_db):
 
 # ─── N: logical key contract matches Phase 6 ─────────────────────────
 def test_logical_key_contract():
-    from services.canonical_cutover import logical_key_fields, RECONCILIATION_COLLECTIONS
-    # Spot-check 6 critical collections from the reconciliation contract
-    assert logical_key_fields("picks") == ("pick_id",)
+    from services.canonical_cutover import logical_key_fields, RECONCILIATION_COLLECTIONS, _LOGICAL_KEYS
+    # Spot-check 6 critical collections from the Phase-5-R2 reconciliation
+    # contract (surgical fix 2026-10-03 — logical keys realigned to match
+    # the certified Phase 5 + Phase 6 canonical NDJSON schemas).
+    assert logical_key_fields("picks") == ("id",)
     assert logical_key_fields("users") == ("id",)
-    assert logical_key_fields("user_bets") == ("bet_id",)
+    assert logical_key_fields("user_bets") == ("id",)
     assert logical_key_fields("publication_events") == ("payload_hash",)
     assert logical_key_fields("prediction_snapshots") == ("prediction_id", "snapshot_version")
-    assert logical_key_fields("player_game_actuals") == ("sport", "event_id", "player_id", "market")
-    # All 21 reconciled collections must have an explicit logical-key spec
+    assert logical_key_fields("player_game_actuals") == ("sport", "event_id", "player_id")
+    assert logical_key_fields("settlement_events") == ("settlement_id",)
+    assert logical_key_fields("games") == ("sport", "game_id")
+    assert logical_key_fields("rollover_slate_events") == ("slate_date", "event", "at")
+    assert logical_key_fields("soccer_matches") == (
+        "league", "season", "home_team", "away_team", "date")
+    assert logical_key_fields("tennis_matches_history") == (
+        "tourney_id", "winner_id", "loser_id")
+    assert logical_key_fields("team_game_actuals") == (
+        "sport", "event_id", "canonical_team_id")
+    # Every one of the 21 reconciled collections must have an EXPLICIT
+    # logical-key entry — no silent fallback to the generic default.
     for coll in RECONCILIATION_COLLECTIONS:
+        assert coll in _LOGICAL_KEYS, f"{coll} missing explicit logical-key spec"
         kf = logical_key_fields(coll)
-        assert kf != ("_id",), f"{coll} missing logical-key specification"
+        assert isinstance(kf, tuple) and len(kf) >= 1, \
+            f"{coll} logical-key must be a non-empty tuple"
 
 
 # ─── Collection allowlist completeness ───────────────────────────────
@@ -220,12 +234,17 @@ def test_allowlist_is_exactly_21():
 # ─── Required indexes defined for every reconciled collection ────────
 def test_every_reconciled_collection_has_indexes():
     from services.canonical_cutover import (RECONCILIATION_COLLECTIONS,
-                                               required_indexes_for)
+                                               required_indexes_for,
+                                               logical_key_fields)
     for coll in RECONCILIATION_COLLECTIONS:
         specs = required_indexes_for(coll)
         assert len(specs) >= 1, f"{coll} has no required indexes"
         # Every reconciled collection must have at least one UNIQUE index
-        # (the logical-identity index).
+        # (the logical-identity index) — UNLESS its logical key is `_id`,
+        # in which case Mongo's implicit `_id` primary-key index enforces
+        # uniqueness and no secondary unique index is required.
+        if logical_key_fields(coll) == ("_id",):
+            continue
         assert any(s.get("unique") for s in specs), \
             f"{coll} missing unique logical-identity index"
 
@@ -234,13 +253,13 @@ def test_every_reconciled_collection_has_indexes():
 @pytest.mark.asyncio
 async def test_ensure_indexes_enforces_uniqueness(canon_db):
     from services.canonical_cutover import ensure_canonical_indexes
-    # Insert two docs that violate the unique game_id constraint
+    # Insert two docs that violate the new unique (sport, game_id) constraint
     await canon_db["games"].insert_many([
         {"game_id": "dup", "sport": "mlb"},
-        {"game_id": "dup", "sport": "nfl"},
+        {"game_id": "dup", "sport": "mlb"},
     ])
     res = await ensure_canonical_indexes(canon_db, "games")
     # Must fail — we never silently weaken the constraint
-    assert not res["ok"], "unique index should fail on duplicate data"
+    assert not res["ok"], "unique (sport, game_id) index should fail on duplicate data"
     assert any(f.get("error") in ("DUPLICATE_KEY", "DuplicateKeyError")
                  for f in res["failed"])

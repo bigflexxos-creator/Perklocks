@@ -67,27 +67,34 @@ REBUILDABLE_COLLECTIONS: frozenset[str] = frozenset({
 # ─── Logical-identity resolution per collection ──────────────────────
 # Mirrors the Phase 2 reconciliation contract.  Determines which
 # field(s) form the canonical upsert key.  Fallback is `_id`.
+# Phase 5-R2 surgical fix (2026-10-03) — the previous key spec was built from
+# an older schema assumption and did not match the certified reconciliation
+# checkpoints (Phase 5 + Phase 6 canonical NDJSONs).  The entries below were
+# derived by auditing the reconciled checkpoints: for every one of the 21
+# collections, the field tuple is proven to be present and deterministic in
+# the certified canonical output.  Never relax these to make import pass —
+# if a doc is missing a required logical-key field, fail closed and report.
 _LOGICAL_KEYS: dict[str, tuple[str, ...]] = {
-    "games":                       ("game_id",),
-    "historical_ingestion_state":  ("provider", "sport", "season"),
-    "nfl_ingest_meta":             ("key",),
+    "games":                       ("sport", "game_id"),
+    "historical_ingestion_state":  ("_id",),
+    "nfl_ingest_meta":             ("_id",),
     "nfl_player_weekly":           ("player_id", "season", "week"),
-    "parlay_history":              ("parlay_id",),
-    "picks":                       ("pick_id",),
-    "player_game_actuals":         ("sport", "event_id", "player_id", "market"),
+    "parlay_history":              ("_id",),
+    "picks":                       ("id",),
+    "player_game_actuals":         ("sport", "event_id", "player_id"),
     "player_game_logs":            ("sport", "game_id", "player_id"),
     "player_identities":           ("canonical_player_id",),
     "prediction_snapshots":        ("prediction_id", "snapshot_version"),
     "pregame_snapshots":           ("snapshot_hash",),
     "publication_events":          ("payload_hash",),
-    "rollover_slate_events":       ("event_id",),
+    "rollover_slate_events":       ("slate_date", "event", "at"),
     "rollover_slates":             ("slate_id",),
-    "settlement_events":           ("event_id",),
-    "soccer_matches":              ("match_id",),
+    "settlement_events":           ("settlement_id",),
+    "soccer_matches":              ("league", "season", "home_team", "away_team", "date"),
     "soccer_player_game_logs":     ("match_id", "player_id"),
-    "team_game_actuals":           ("sport", "event_id", "team"),
-    "tennis_matches_history":      ("match_id",),
-    "user_bets":                   ("bet_id",),
+    "team_game_actuals":           ("sport", "event_id", "canonical_team_id"),
+    "tennis_matches_history":      ("tourney_id", "winner_id", "loser_id"),
+    "user_bets":                   ("id",),
     "users":                       ("id",),
 }
 
@@ -108,9 +115,14 @@ def extract_logical_key(coll: str, doc: dict) -> tuple[Any, ...]:
 # ─── Canonical indexes per collection ────────────────────────────────
 # Specifications must include EVERYTHING required for correctness —
 # unique constraints, TTL expirations, partial filters, collations.
+# Phase 5-R2 surgical fix (2026-10-03): every unique index below is aligned
+# with the Phase-5-R2 `_LOGICAL_KEYS` table above.  Any divergence between
+# the unique index and the logical key is a correctness bug and must be
+# treated as a safety-gate failure.
 _INDEX_SPECS: dict[str, list[dict[str, Any]]] = {
     "games": [
-        {"keys": [("game_id", ASCENDING)], "name": "ux_game_id", "unique": True},
+        {"keys": [("sport", ASCENDING), ("game_id", ASCENDING)],
+         "name": "ux_sport_game_id", "unique": True},
         {"keys": [("sport", ASCENDING), ("event_date", DESCENDING)], "name": "ix_sport_date"},
     ],
     "users": [
@@ -118,11 +130,11 @@ _INDEX_SPECS: dict[str, list[dict[str, Any]]] = {
         {"keys": [("email", ASCENDING)], "name": "ux_user_email", "unique": True, "sparse": True},
     ],
     "user_bets": [
-        {"keys": [("bet_id", ASCENDING)], "name": "ux_bet_id", "unique": True},
+        {"keys": [("id", ASCENDING)], "name": "ux_user_bets_id", "unique": True},
         {"keys": [("user_id", ASCENDING), ("created_at", DESCENDING)], "name": "ix_user_created"},
     ],
     "picks": [
-        {"keys": [("pick_id", ASCENDING)], "name": "ux_pick_id", "unique": True},
+        {"keys": [("id", ASCENDING)], "name": "ux_pick_id", "unique": True},
         {"keys": [("sport", ASCENDING), ("published_at", DESCENDING)], "name": "ix_sport_published"},
         {"keys": [("board_version", ASCENDING)], "name": "ix_board_version"},
     ],
@@ -138,12 +150,13 @@ _INDEX_SPECS: dict[str, list[dict[str, Any]]] = {
         {"keys": [("snapshot_hash", ASCENDING)], "name": "ux_snapshot_hash", "unique": True},
     ],
     "settlement_events": [
-        {"keys": [("event_id", ASCENDING)], "name": "ux_settlement_event_id", "unique": True},
+        {"keys": [("settlement_id", ASCENDING)], "name": "ux_settlement_id", "unique": True},
+        {"keys": [("event_id", ASCENDING)], "name": "ix_settlement_event_id"},
         {"keys": [("sport", ASCENDING), ("settled_at", DESCENDING)], "name": "ix_sport_settled"},
     ],
     "player_game_actuals": [
         {"keys": [("sport", ASCENDING), ("event_id", ASCENDING),
-                  ("player_id", ASCENDING), ("market", ASCENDING)],
+                  ("player_id", ASCENDING)],
          "name": "ux_pga_identity", "unique": True},
     ],
     "player_game_logs": [
@@ -154,38 +167,53 @@ _INDEX_SPECS: dict[str, list[dict[str, Any]]] = {
         {"keys": [("canonical_player_id", ASCENDING)], "name": "ux_pi_canonical", "unique": True},
     ],
     "team_game_actuals": [
-        {"keys": [("sport", ASCENDING), ("event_id", ASCENDING), ("team", ASCENDING)],
+        {"keys": [("sport", ASCENDING), ("event_id", ASCENDING),
+                  ("canonical_team_id", ASCENDING)],
          "name": "ux_tga_identity", "unique": True},
     ],
     "soccer_matches": [
-        {"keys": [("match_id", ASCENDING)], "name": "ux_sm_match_id", "unique": True},
+        {"keys": [("league", ASCENDING), ("season", ASCENDING),
+                  ("home_team", ASCENDING), ("away_team", ASCENDING),
+                  ("date", ASCENDING)],
+         "name": "ux_sm_identity", "unique": True},
     ],
     "soccer_player_game_logs": [
         {"keys": [("match_id", ASCENDING), ("player_id", ASCENDING)],
          "name": "ux_spgl_identity", "unique": True},
     ],
     "tennis_matches_history": [
-        {"keys": [("match_id", ASCENDING)], "name": "ux_tmh_match_id", "unique": True},
+        {"keys": [("tourney_id", ASCENDING), ("winner_id", ASCENDING),
+                  ("loser_id", ASCENDING)],
+         "name": "ux_tmh_identity", "unique": True},
     ],
     "nfl_player_weekly": [
         {"keys": [("player_id", ASCENDING), ("season", ASCENDING), ("week", ASCENDING)],
          "name": "ux_nflpw_identity", "unique": True},
     ],
     "nfl_ingest_meta": [
-        {"keys": [("key", ASCENDING)], "name": "ux_nflim_key", "unique": True},
+        # `_id` is already the Mongo primary key and inherently unique.
+        # Register a no-op secondary ascending index so index-coverage
+        # reporting still returns a canonical-identity index entry.
+        {"keys": [("_id", ASCENDING)], "name": "ix_nflim_id"},
     ],
     "parlay_history": [
-        {"keys": [("parlay_id", ASCENDING)], "name": "ux_parlay_id", "unique": True},
+        # Logical identity is `_id`; secondary unique index on `signature`
+        # for business-level dedupe where it is present.
+        {"keys": [("_id", ASCENDING)], "name": "ix_parlay_id"},
+        {"keys": [("signature", ASCENDING)], "name": "ux_parlay_signature",
+         "unique": True, "sparse": True},
     ],
     "rollover_slates": [
         {"keys": [("slate_id", ASCENDING)], "name": "ux_rollover_slate_id", "unique": True},
     ],
     "rollover_slate_events": [
-        {"keys": [("event_id", ASCENDING)], "name": "ux_rollover_event_id", "unique": True},
+        {"keys": [("slate_date", ASCENDING), ("event", ASCENDING), ("at", ASCENDING)],
+         "name": "ux_rollover_event_identity", "unique": True},
     ],
     "historical_ingestion_state": [
-        {"keys": [("provider", ASCENDING), ("sport", ASCENDING), ("season", ASCENDING)],
-         "name": "ux_his_identity", "unique": True},
+        {"keys": [("_id", ASCENDING)], "name": "ix_his_id"},
+        {"keys": [("sport", ASCENDING), ("season", ASCENDING)],
+         "name": "ux_his_sport_season", "unique": True, "sparse": True},
     ],
 }
 
