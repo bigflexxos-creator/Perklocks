@@ -142,6 +142,75 @@ def _canonical_name() -> str:
            or "lockscore_canonical"
 
 
+def _fallback_mode() -> bool:
+    """Emergent-managed Mongo often restricts a pod user to a single DB.
+    When ``CANONICAL_FALLBACK_MODE=true``, the canonical database is
+    *logically* represented as a set of ``canonical_``-prefixed
+    collections living INSIDE the legacy DB (the only one the pod
+    user is authorised to write).  All reconciliation code paths go
+    through :func:`get_canonical_database`, so this is transparent to
+    consumers once the flag is on."""
+    return (os.environ.get("CANONICAL_FALLBACK_MODE") or "false").strip().lower() == "true"
+
+
+def _canonical_prefix() -> str:
+    return (os.environ.get("CANONICAL_FALLBACK_PREFIX") or "canonical_").strip() or "canonical_"
+
+
+class _PrefixedDatabase:
+    """Thin wrapper around an :class:`AsyncIOMotorDatabase` that applies
+    a configured prefix to every collection access.  Supports the full
+    attribute + item access protocol used by Motor consumers.  Used
+    only in canonical-fallback mode where a second physical DB cannot
+    be created.  Internal ``_canonical_import_*`` collections already
+    live under their distinctive underscore prefix and are passed
+    through *without* a second prefix.
+    """
+    __slots__ = ("_db", "_prefix")
+
+    _PASS_THROUGH_PREFIXES = ("_canonical_import_",)
+
+    def __init__(self, db, prefix: str):
+        self._db     = db
+        self._prefix = prefix
+
+    def _apply(self, name: str) -> str:
+        if any(name.startswith(p) for p in self._PASS_THROUGH_PREFIXES):
+            return name
+        if name.startswith(self._prefix):
+            return name
+        return f"{self._prefix}{name}"
+
+    def __getitem__(self, name):
+        return self._db[self._apply(name)]
+
+    def __getattr__(self, name):
+        # Mirror pymongo/motor convention: db.foo == db["foo"].  But
+        # expose non-collection attributes (list_collection_names,
+        # command, etc.) via the underlying db.
+        if name.startswith("_") or name in {
+            "name", "client", "command", "list_collection_names",
+            "list_collections", "watch", "drop_collection",
+            "create_collection", "codec_options", "read_concern",
+            "read_preference", "write_concern",
+        }:
+            return getattr(self._db, name)
+        return self._db[self._apply(name)]
+
+    @property
+    def _underlying_name(self) -> str:
+        return self._db.name
+
+    @property
+    def _active_prefix(self) -> str:
+        return self._prefix
+
+
+def _canonical_name() -> str:
+    return (os.environ.get("CANONICAL_DB_NAME") or "lockscore_canonical").strip() \
+           or "lockscore_canonical"
+
+
 def _use_canonical() -> bool:
     return (os.environ.get("USE_CANONICAL_DB") or "false").strip().lower() == "true"
 
@@ -220,26 +289,27 @@ def get_client() -> AsyncIOMotorClient:
 def get_database() -> AsyncIOMotorDatabase:
     """Return the ACTIVE application database handle.
 
-    Honours ``USE_CANONICAL_DB``: when true, routes to
-    ``CANONICAL_DB_NAME`` (default ``lockscore_canonical``); when
-    false, routes to the legacy ``DB_NAME``.  The underlying Mongo
-    client is shared — only the database handle switches.
+    Honours ``USE_CANONICAL_DB`` and ``CANONICAL_FALLBACK_MODE``.
+    * flag off → legacy DB
+    * flag on, fallback off → canonical DB (``lockscore_canonical``)
+    * flag on, fallback on  → legacy DB wrapped with the
+                              ``canonical_`` collection prefix
     """
     if _state.database is None:
         initialize_database()
-    # Test override is immutable — honour it regardless of the flag.
     if _state.is_override:
         return _state.database   # type: ignore[return-value]
     name = _active_db_name()
+    if _use_canonical() and _fallback_mode():
+        _, legacy_name = _resolve_env_config()
+        return _PrefixedDatabase(_state.client[legacy_name], _canonical_prefix())  # type: ignore[return-value]
     if name == _state.db_name:
         return _state.database   # type: ignore[return-value]
-    # Different logical DB on the same shared client.
     return _state.client[name]   # type: ignore[index,return-value]
 
 
 def get_legacy_database() -> AsyncIOMotorDatabase:
-    """Return the legacy ``DB_NAME`` handle regardless of
-    ``USE_CANONICAL_DB``.  Used by admin cutover tooling only."""
+    """Legacy ``DB_NAME`` handle regardless of flags.  Admin-only."""
     if _state.client is None:
         initialize_database()
     if _state.is_override:
@@ -249,22 +319,35 @@ def get_legacy_database() -> AsyncIOMotorDatabase:
 
 
 def get_canonical_database() -> AsyncIOMotorDatabase:
-    """Return the canonical ``CANONICAL_DB_NAME`` handle regardless of
-    ``USE_CANONICAL_DB``.  Used by admin cutover tooling only."""
+    """Canonical database handle regardless of ``USE_CANONICAL_DB``.
+    In fallback mode returns the legacy DB wrapped with the canonical
+    collection prefix (same storage, different logical namespace).
+    """
     if _state.client is None:
         initialize_database()
     if _state.is_override:
         return _state.database   # type: ignore[return-value]
+    if _fallback_mode():
+        _, legacy_name = _resolve_env_config()
+        return _PrefixedDatabase(_state.client[legacy_name], _canonical_prefix())  # type: ignore[return-value]
     return _state.client[_canonical_name()]   # type: ignore[index,return-value]
 
 
 def active_database_name() -> str:
-    """The CURRENTLY routed DB name — honours ``USE_CANONICAL_DB``."""
+    """Human-readable active DB identifier.  In fallback mode returns
+    ``<legacy_db>::canonical_*`` to signal the logical overlay."""
+    if _use_canonical() and _fallback_mode():
+        _, legacy_name = _resolve_env_config()
+        return f"{legacy_name}::{_canonical_prefix()}*"
     return _active_db_name()
 
 
 def use_canonical_db_enabled() -> bool:
     return _use_canonical()
+
+
+def canonical_fallback_enabled() -> bool:
+    return _fallback_mode()
 
 
 def is_initialized() -> bool:
@@ -322,6 +405,8 @@ def safe_database_diagnostics() -> dict[str, Any]:
         "canonical_db_name":   canonical_name,
         "active_db_name":      _active_db_name(),
         "use_canonical_db":    _use_canonical(),
+        "canonical_fallback_mode":   _fallback_mode(),
+        "canonical_fallback_prefix": _canonical_prefix() if _fallback_mode() else None,
     }
 
 

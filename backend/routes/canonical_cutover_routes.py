@@ -49,7 +49,7 @@ from pydantic import BaseModel, Field
 from auth import UserPublic, require_admin_user, oauth2_scheme
 from services.database import (
     get_canonical_database, get_legacy_database, safe_database_diagnostics,
-    use_canonical_db_enabled, active_database_name,
+    use_canonical_db_enabled, active_database_name, canonical_fallback_enabled,
 )
 from services.canonical_cutover import (
     RECONCILIATION_COLLECTIONS, ENVIRONMENT_STATE_COLLECTIONS,
@@ -269,6 +269,7 @@ async def data_authority_status(
         "env_flags": {
             "USE_CANONICAL_DB":            use_canonical_db_enabled(),
             "CANONICAL_IMPORT_ENABLED":    _import_enabled(),
+            "CANONICAL_FALLBACK_MODE":     canonical_fallback_enabled(),
             "BACKGROUND_WORKERS_ENABLED":  (os.environ.get("BACKGROUND_WORKERS_ENABLED") or "false").strip().lower() == "true",
             "DATA_AUTHORITY":              os.environ.get("DATA_AUTHORITY") or "",
             "CANONICAL_WRITE_ENABLED":     (os.environ.get("CANONICAL_WRITE_ENABLED") or "false").strip().lower() == "true",
