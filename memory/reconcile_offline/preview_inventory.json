@@ -1,0 +1,647 @@
+{
+  "auto_elite_players": {
+    "class": "UNCLASSIFIED",
+    "count": 9,
+    "file": "auto_elite_players.bson.gz"
+  },
+  "bandit_arms": {
+    "class": "UNCLASSIFIED",
+    "count": 10,
+    "file": "bandit_arms.bson.gz"
+  },
+  "board_generations": {
+    "class": "C",
+    "count": 6532,
+    "file": "board_generations.bson.gz"
+  },
+  "calibrated_probabilities": {
+    "class": "UNCLASSIFIED",
+    "count": 50607,
+    "file": "calibrated_probabilities.bson.gz"
+  },
+  "calibration_shadow_evaluation": {
+    "class": "UNCLASSIFIED",
+    "count": 1,
+    "file": "calibration_shadow_evaluation.bson.gz"
+  },
+  "calibrator_registry": {
+    "class": "UNCLASSIFIED",
+    "count": 1928,
+    "file": "calibrator_registry.bson.gz"
+  },
+  "candidate_dispositions": {
+    "class": "UNCLASSIFIED",
+    "count": 975347,
+    "file": "candidate_dispositions.bson.gz"
+  },
+  "canonical_worker_leases": {
+    "class": "C",
+    "count": 0,
+    "file": "canonical_worker_leases.bson.gz"
+  },
+  "cfb_advanced_stats": {
+    "class": "UNCLASSIFIED",
+    "count": 138,
+    "file": "cfb_advanced_stats.bson.gz"
+  },
+  "cfb_portal": {
+    "class": "UNCLASSIFIED",
+    "count": 7368,
+    "file": "cfb_portal.bson.gz"
+  },
+  "cfb_returning_production": {
+    "class": "UNCLASSIFIED",
+    "count": 270,
+    "file": "cfb_returning_production.bson.gz"
+  },
+  "cfb_sp_ratings": {
+    "class": "UNCLASSIFIED",
+    "count": 276,
+    "file": "cfb_sp_ratings.bson.gz"
+  },
+  "cfb_teams": {
+    "class": "UNCLASSIFIED",
+    "count": 138,
+    "file": "cfb_teams.bson.gz"
+  },
+  "circuit_breaker_state": {
+    "class": "UNCLASSIFIED",
+    "count": 1,
+    "file": "circuit_breaker_state.bson.gz"
+  },
+  "client_errors": {
+    "class": "UNCLASSIFIED",
+    "count": 73,
+    "file": "client_errors.bson.gz"
+  },
+  "csl_espn_state": {
+    "class": "UNCLASSIFIED",
+    "count": 2,
+    "file": "csl_espn_state.bson.gz"
+  },
+  "espn_form_cache": {
+    "class": "UNCLASSIFIED",
+    "count": 374,
+    "file": "espn_form_cache.bson.gz"
+  },
+  "espn_injury_notes": {
+    "class": "UNCLASSIFIED",
+    "count": 161,
+    "file": "espn_injury_notes.bson.gz"
+  },
+  "espn_mls_stats": {
+    "class": "UNCLASSIFIED",
+    "count": 140,
+    "file": "espn_mls_stats.bson.gz"
+  },
+  "espn_team_meta": {
+    "class": "UNCLASSIFIED",
+    "count": 669,
+    "file": "espn_team_meta.bson.gz"
+  },
+  "foundation_probe": {
+    "class": "UNCLASSIFIED",
+    "count": 1,
+    "file": "foundation_probe.bson.gz"
+  },
+  "funnel_telemetry": {
+    "class": "UNCLASSIFIED",
+    "count": 2949597,
+    "file": "funnel_telemetry.bson.gz"
+  },
+  "fusion_predictions": {
+    "class": "UNCLASSIFIED",
+    "count": 162233,
+    "file": "fusion_predictions.bson.gz"
+  },
+  "games": {
+    "class": "A",
+    "count": 12476,
+    "file": "games.bson.gz"
+  },
+  "gs_v2_predictions": {
+    "class": "UNCLASSIFIED",
+    "count": 1064,
+    "file": "gs_v2_predictions.bson.gz"
+  },
+  "historical_freshness": {
+    "class": "UNCLASSIFIED",
+    "count": 7,
+    "file": "historical_freshness.bson.gz"
+  },
+  "historical_ingestion_state": {
+    "class": "A",
+    "count": 10,
+    "file": "historical_ingestion_state.bson.gz"
+  },
+  "historical_meta": {
+    "class": "UNCLASSIFIED",
+    "count": 7,
+    "file": "historical_meta.bson.gz"
+  },
+  "injuries": {
+    "class": "UNCLASSIFIED",
+    "count": 0,
+    "file": "injuries.bson.gz"
+  },
+  "job_audit_log": {
+    "class": "B",
+    "count": 24612,
+    "file": "job_audit_log.bson.gz"
+  },
+  "job_execution_log": {
+    "class": "B",
+    "count": 12160,
+    "file": "job_execution_log.bson.gz"
+  },
+  "lab_signal_registry": {
+    "class": "UNCLASSIFIED",
+    "count": 2,
+    "file": "lab_signal_registry.bson.gz"
+  },
+  "learned_weights": {
+    "class": "UNCLASSIFIED",
+    "count": 1,
+    "file": "learned_weights.bson.gz"
+  },
+  "learning_bucket_snapshots": {
+    "class": "UNCLASSIFIED",
+    "count": 5,
+    "file": "learning_bucket_snapshots.bson.gz"
+  },
+  "learning_buckets": {
+    "class": "UNCLASSIFIED",
+    "count": 18,
+    "file": "learning_buckets.bson.gz"
+  },
+  "learning_log": {
+    "class": "UNCLASSIFIED",
+    "count": 173791,
+    "file": "learning_log.bson.gz"
+  },
+  "learning_snapshots": {
+    "class": "UNCLASSIFIED",
+    "count": 59,
+    "file": "learning_snapshots.bson.gz"
+  },
+  "learning_state": {
+    "class": "UNCLASSIFIED",
+    "count": 1,
+    "file": "learning_state.bson.gz"
+  },
+  "live_alt_lines": {
+    "class": "B",
+    "count": 51850,
+    "file": "live_alt_lines.bson.gz"
+  },
+  "lock_calibration_curve": {
+    "class": "UNCLASSIFIED",
+    "count": 1,
+    "file": "lock_calibration_curve.bson.gz"
+  },
+  "mlb_hitter_intel_cache": {
+    "class": "UNCLASSIFIED",
+    "count": 8231,
+    "file": "mlb_hitter_intel_cache.bson.gz"
+  },
+  "mlb_hr_slate": {
+    "class": "UNCLASSIFIED",
+    "count": 26,
+    "file": "mlb_hr_slate.bson.gz"
+  },
+  "mlb_matchup_resolver_cache": {
+    "class": "UNCLASSIFIED",
+    "count": 7952,
+    "file": "mlb_matchup_resolver_cache.bson.gz"
+  },
+  "mlb_player_game_logs": {
+    "class": "UNCLASSIFIED",
+    "count": 20,
+    "file": "mlb_player_game_logs.bson.gz"
+  },
+  "mlb_statcast_players": {
+    "class": "UNCLASSIFIED",
+    "count": 1106,
+    "file": "mlb_statcast_players.bson.gz"
+  },
+  "mlb_stuff_plus_players": {
+    "class": "UNCLASSIFIED",
+    "count": 618,
+    "file": "mlb_stuff_plus_players.bson.gz"
+  },
+  "mlb_team_k_splits": {
+    "class": "UNCLASSIFIED",
+    "count": 30,
+    "file": "mlb_team_k_splits.bson.gz"
+  },
+  "mls_player_matchup_history": {
+    "class": "UNCLASSIFIED",
+    "count": 100,
+    "file": "mls_player_matchup_history.bson.gz"
+  },
+  "model_research_evidence": {
+    "class": "UNCLASSIFIED",
+    "count": 2868,
+    "file": "model_research_evidence.bson.gz"
+  },
+  "nfl_atd_universe_rows": {
+    "class": "UNCLASSIFIED",
+    "count": 194,
+    "file": "nfl_atd_universe_rows.bson.gz"
+  },
+  "nfl_ingest_meta": {
+    "class": "A",
+    "count": 1,
+    "file": "nfl_ingest_meta.bson.gz"
+  },
+  "nfl_player_usage": {
+    "class": "UNCLASSIFIED",
+    "count": 1911,
+    "file": "nfl_player_usage.bson.gz"
+  },
+  "nfl_player_weekly": {
+    "class": "A",
+    "count": 133077,
+    "file": "nfl_player_weekly.bson.gz"
+  },
+  "odds_api_cache": {
+    "class": "B",
+    "count": 16722,
+    "file": "odds_api_cache.bson.gz"
+  },
+  "odds_api_quota_state": {
+    "class": "UNCLASSIFIED",
+    "count": 1,
+    "file": "odds_api_quota_state.bson.gz"
+  },
+  "odds_api_request_log": {
+    "class": "UNCLASSIFIED",
+    "count": 1465521,
+    "file": "odds_api_request_log.bson.gz"
+  },
+  "odds_bad_market_registry": {
+    "class": "UNCLASSIFIED",
+    "count": 11,
+    "file": "odds_bad_market_registry.bson.gz"
+  },
+  "odds_request_flights": {
+    "class": "B",
+    "count": 194,
+    "file": "odds_request_flights.bson.gz"
+  },
+  "odds_tournament_registry": {
+    "class": "UNCLASSIFIED",
+    "count": 370,
+    "file": "odds_tournament_registry.bson.gz"
+  },
+  "parlay_history": {
+    "class": "A",
+    "count": 1012,
+    "file": "parlay_history.bson.gz"
+  },
+  "parlay_learning_events": {
+    "class": "UNCLASSIFIED",
+    "count": 493,
+    "file": "parlay_learning_events.bson.gz"
+  },
+  "parlay_leg_reliability": {
+    "class": "UNCLASSIFIED",
+    "count": 16,
+    "file": "parlay_leg_reliability.bson.gz"
+  },
+  "parlay_synergy": {
+    "class": "UNCLASSIFIED",
+    "count": 19,
+    "file": "parlay_synergy.bson.gz"
+  },
+  "pick_enrichment": {
+    "class": "UNCLASSIFIED",
+    "count": 2449,
+    "file": "pick_enrichment.bson.gz"
+  },
+  "pick_line_history": {
+    "class": "UNCLASSIFIED",
+    "count": 0,
+    "file": "pick_line_history.bson.gz"
+  },
+  "picks": {
+    "class": "A",
+    "count": 275112,
+    "file": "picks.bson.gz"
+  },
+  "player_form": {
+    "class": "UNCLASSIFIED",
+    "count": 132,
+    "file": "player_form.bson.gz"
+  },
+  "player_game_actuals": {
+    "class": "A",
+    "count": 403784,
+    "file": "player_game_actuals.bson.gz"
+  },
+  "player_game_logs": {
+    "class": "A",
+    "count": 374795,
+    "file": "player_game_logs.bson.gz"
+  },
+  "player_history": {
+    "class": "UNCLASSIFIED",
+    "count": 0,
+    "file": "player_history.bson.gz"
+  },
+  "player_identities": {
+    "class": "A",
+    "count": 62306,
+    "file": "player_identities.bson.gz"
+  },
+  "player_identity_redirects": {
+    "class": "UNCLASSIFIED",
+    "count": 389,
+    "file": "player_identity_redirects.bson.gz"
+  },
+  "player_media": {
+    "class": "UNCLASSIFIED",
+    "count": 537,
+    "file": "player_media.bson.gz"
+  },
+  "player_profiles": {
+    "class": "UNCLASSIFIED",
+    "count": 39,
+    "file": "player_profiles.bson.gz"
+  },
+  "player_profiles_v2": {
+    "class": "UNCLASSIFIED",
+    "count": 837,
+    "file": "player_profiles_v2.bson.gz"
+  },
+  "player_stats": {
+    "class": "UNCLASSIFIED",
+    "count": 7435,
+    "file": "player_stats.bson.gz"
+  },
+  "players": {
+    "class": "UNCLASSIFIED",
+    "count": 44220,
+    "file": "players.bson.gz"
+  },
+  "prediction_snapshots": {
+    "class": "A",
+    "count": 155638,
+    "file": "prediction_snapshots.bson.gz"
+  },
+  "pregame_snapshots": {
+    "class": "A",
+    "count": 6514,
+    "file": "pregame_snapshots.bson.gz"
+  },
+  "producer_health": {
+    "class": "UNCLASSIFIED",
+    "count": 18,
+    "file": "producer_health.bson.gz"
+  },
+  "production_truth_observations": {
+    "class": "B",
+    "count": 9970,
+    "file": "production_truth_observations.bson.gz"
+  },
+  "propline_alt_lines": {
+    "class": "UNCLASSIFIED",
+    "count": 0,
+    "file": "propline_alt_lines.bson.gz"
+  },
+  "props_history": {
+    "class": "UNCLASSIFIED",
+    "count": 32715,
+    "file": "props_history.bson.gz"
+  },
+  "provider_budget_state": {
+    "class": "C",
+    "count": 7,
+    "file": "provider_budget_state.bson.gz"
+  },
+  "provider_fixture_map": {
+    "class": "UNCLASSIFIED",
+    "count": 19,
+    "file": "provider_fixture_map.bson.gz"
+  },
+  "provider_request_intents": {
+    "class": "C",
+    "count": 35512,
+    "file": "provider_request_intents.bson.gz"
+  },
+  "provider_stat_cache": {
+    "class": "UNCLASSIFIED",
+    "count": 30,
+    "file": "provider_stat_cache.bson.gz"
+  },
+  "publication_events": {
+    "class": "A",
+    "count": 55500,
+    "file": "publication_events.bson.gz"
+  },
+  "publication_mismatch_report": {
+    "class": "B",
+    "count": 1054499,
+    "file": "publication_mismatch_report.bson.gz"
+  },
+  "reconciliation_downstream": {
+    "class": "UNCLASSIFIED",
+    "count": 232,
+    "file": "reconciliation_downstream.bson.gz"
+  },
+  "refresh_health": {
+    "class": "UNCLASSIFIED",
+    "count": 80,
+    "file": "refresh_health.bson.gz"
+  },
+  "rollover_slate_events": {
+    "class": "A",
+    "count": 12,
+    "file": "rollover_slate_events.bson.gz"
+  },
+  "rollover_slates": {
+    "class": "A",
+    "count": 12,
+    "file": "rollover_slates.bson.gz"
+  },
+  "scheduled_jobs": {
+    "class": "C",
+    "count": 21,
+    "file": "scheduled_jobs.bson.gz"
+  },
+  "scheduler_leases": {
+    "class": "UNCLASSIFIED",
+    "count": 3,
+    "file": "scheduler_leases.bson.gz"
+  },
+  "season_totals": {
+    "class": "UNCLASSIFIED",
+    "count": 898,
+    "file": "season_totals.bson.gz"
+  },
+  "services_active_registry": {
+    "class": "UNCLASSIFIED",
+    "count": 22778,
+    "file": "services_active_registry.bson.gz"
+  },
+  "settlement_events": {
+    "class": "A",
+    "count": 31243,
+    "file": "settlement_events.bson.gz"
+  },
+  "settlement_telemetry": {
+    "class": "UNCLASSIFIED",
+    "count": 11933,
+    "file": "settlement_telemetry.bson.gz"
+  },
+  "simulator_outputs": {
+    "class": "UNCLASSIFIED",
+    "count": 14991,
+    "file": "simulator_outputs.bson.gz"
+  },
+  "soccer_accuracy": {
+    "class": "UNCLASSIFIED",
+    "count": 1,
+    "file": "soccer_accuracy.bson.gz"
+  },
+  "soccer_fixtures": {
+    "class": "UNCLASSIFIED",
+    "count": 1332,
+    "file": "soccer_fixtures.bson.gz"
+  },
+  "soccer_ingest_log": {
+    "class": "UNCLASSIFIED",
+    "count": 4696,
+    "file": "soccer_ingest_log.bson.gz"
+  },
+  "soccer_matches": {
+    "class": "A",
+    "count": 25662,
+    "file": "soccer_matches.bson.gz"
+  },
+  "soccer_player_form": {
+    "class": "UNCLASSIFIED",
+    "count": 5647,
+    "file": "soccer_player_form.bson.gz"
+  },
+  "soccer_player_game_logs": {
+    "class": "A",
+    "count": 100025,
+    "file": "soccer_player_game_logs.bson.gz"
+  },
+  "soccer_predictions": {
+    "class": "UNCLASSIFIED",
+    "count": 643,
+    "file": "soccer_predictions.bson.gz"
+  },
+  "soccer_standings": {
+    "class": "UNCLASSIFIED",
+    "count": 286,
+    "file": "soccer_standings.bson.gz"
+  },
+  "soccer_teams": {
+    "class": "UNCLASSIFIED",
+    "count": 710,
+    "file": "soccer_teams.bson.gz"
+  },
+  "soccer_transfer_registry": {
+    "class": "UNCLASSIFIED",
+    "count": 1,
+    "file": "soccer_transfer_registry.bson.gz"
+  },
+  "sport_refresh_state": {
+    "class": "UNCLASSIFIED",
+    "count": 7,
+    "file": "sport_refresh_state.bson.gz"
+  },
+  "sportdb_cache": {
+    "class": "UNCLASSIFIED",
+    "count": 25,
+    "file": "sportdb_cache.bson.gz"
+  },
+  "sportdb_scorer_cache": {
+    "class": "UNCLASSIFIED",
+    "count": 116,
+    "file": "sportdb_scorer_cache.bson.gz"
+  },
+  "sports_catalog_snapshots": {
+    "class": "B",
+    "count": 54,
+    "file": "sports_catalog_snapshots.bson.gz"
+  },
+  "survival_coverage": {
+    "class": "UNCLASSIFIED",
+    "count": 797,
+    "file": "survival_coverage.bson.gz"
+  },
+  "system_state": {
+    "class": "UNCLASSIFIED",
+    "count": 1,
+    "file": "system_state.bson.gz"
+  },
+  "team_form": {
+    "class": "UNCLASSIFIED",
+    "count": 366,
+    "file": "team_form.bson.gz"
+  },
+  "team_game_actuals": {
+    "class": "A",
+    "count": 60206,
+    "file": "team_game_actuals.bson.gz"
+  },
+  "tennis_league_averages": {
+    "class": "UNCLASSIFIED",
+    "count": 1,
+    "file": "tennis_league_averages.bson.gz"
+  },
+  "tennis_matches": {
+    "class": "UNCLASSIFIED",
+    "count": 24459,
+    "file": "tennis_matches.bson.gz"
+  },
+  "tennis_matches_history": {
+    "class": "A",
+    "count": 38380,
+    "file": "tennis_matches_history.bson.gz"
+  },
+  "tennis_player_stats": {
+    "class": "UNCLASSIFIED",
+    "count": 2381,
+    "file": "tennis_player_stats.bson.gz"
+  },
+  "tennis_players": {
+    "class": "UNCLASSIFIED",
+    "count": 10330,
+    "file": "tennis_players.bson.gz"
+  },
+  "thesportsdb_cache": {
+    "class": "UNCLASSIFIED",
+    "count": 4306,
+    "file": "thesportsdb_cache.bson.gz"
+  },
+  "user_activity": {
+    "class": "UNCLASSIFIED",
+    "count": 10,
+    "file": "user_activity.bson.gz"
+  },
+  "user_bets": {
+    "class": "A",
+    "count": 7,
+    "file": "user_bets.bson.gz"
+  },
+  "users": {
+    "class": "A",
+    "count": 241,
+    "file": "users.bson.gz"
+  },
+  "wiki_team_records": {
+    "class": "UNCLASSIFIED",
+    "count": 1108,
+    "file": "wiki_team_records.bson.gz"
+  },
+  "wiki_top_scorers": {
+    "class": "UNCLASSIFIED",
+    "count": 46,
+    "file": "wiki_top_scorers.bson.gz"
+  }
+}

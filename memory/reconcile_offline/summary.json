@@ -1,0 +1,27 @@
+{
+  "generated_at": "2026-10-03T14:50:08.855000+00:00",
+  "preview_backup": "/tmp/perklocks_preview_FULL_backup_20261003.zip",
+  "preview_collections": 129,
+  "preview_db_dir": "/tmp/recon_preview_tzdjy1s0/dump/lockscore_db",
+  "preview_sha256": "55788ead6f3f509dfca727a9a0e5c7c97a7eff7edc12018fb66e9660e33589c1",
+  "preview_total_docs": 8958936,
+  "reports": [
+    "/app/memory/reconcile_offline/preview_inventory.json",
+    "/app/memory/reconcile_offline/reconciliation_manifest_diff.json",
+    "/app/memory/reconcile_offline/reconciliation_manifest_diff.md"
+  ],
+  "safety_confirmations": {
+    "atlas_created": false,
+    "background_workers_started": false,
+    "canonical_dataset_imported": false,
+    "canonical_lease_acquired": false,
+    "db_name_changed": false,
+    "deployment": false,
+    "model_scoring_pub_changes": false,
+    "mongo_url_changed": false,
+    "preview_live_db_touched": false,
+    "production_live_db_touched": false,
+    "settlement_regen_backfill": false
+  },
+  "status": "STOPPED_PRODUCTION_BACKUP_NOT_SUPPLIED"
+}

@@ -1,0 +1,1292 @@
+[
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "auto_elite_players",
+    "delta": 9,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 9,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "bandit_arms",
+    "delta": 10,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 10,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "C",
+    "collection": "board_generations",
+    "delta": 6532,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 6532,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "calibrated_probabilities",
+    "delta": 50607,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 50607,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "calibration_shadow_evaluation",
+    "delta": 1,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "calibrator_registry",
+    "delta": 1928,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1928,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "candidate_dispositions",
+    "delta": 975347,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 975347,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "C",
+    "collection": "canonical_worker_leases",
+    "delta": 0,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 0,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "cfb_advanced_stats",
+    "delta": 138,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 138,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "cfb_portal",
+    "delta": 7368,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 7368,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "cfb_returning_production",
+    "delta": 270,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 270,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "cfb_sp_ratings",
+    "delta": 276,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 276,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "cfb_teams",
+    "delta": 138,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 138,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "circuit_breaker_state",
+    "delta": 1,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "client_errors",
+    "delta": 73,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 73,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "csl_espn_state",
+    "delta": 2,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 2,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "espn_form_cache",
+    "delta": 374,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 374,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "espn_injury_notes",
+    "delta": 161,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 161,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "espn_mls_stats",
+    "delta": 140,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 140,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "espn_team_meta",
+    "delta": 669,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 669,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "foundation_probe",
+    "delta": 1,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "funnel_telemetry",
+    "delta": 2949597,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 2949597,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "fusion_predictions",
+    "delta": 162233,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 162233,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "games",
+    "delta": 12476,
+    "logical_key": "sport+game_id",
+    "preview_count": 12476,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "gs_v2_predictions",
+    "delta": 1064,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1064,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "historical_freshness",
+    "delta": 7,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 7,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "historical_ingestion_state",
+    "delta": 10,
+    "logical_key": "_id",
+    "preview_count": 10,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "historical_meta",
+    "delta": 7,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 7,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "injuries",
+    "delta": 0,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 0,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "B",
+    "collection": "job_audit_log",
+    "delta": 24612,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 24612,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "B",
+    "collection": "job_execution_log",
+    "delta": 12160,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 12160,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "lab_signal_registry",
+    "delta": 2,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 2,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "learned_weights",
+    "delta": 1,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "learning_bucket_snapshots",
+    "delta": 5,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 5,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "learning_buckets",
+    "delta": 18,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 18,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "learning_log",
+    "delta": 173791,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 173791,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "learning_snapshots",
+    "delta": 59,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 59,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "learning_state",
+    "delta": 1,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "B",
+    "collection": "live_alt_lines",
+    "delta": 51850,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 51850,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "lock_calibration_curve",
+    "delta": 1,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "mlb_hitter_intel_cache",
+    "delta": 8231,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 8231,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "mlb_hr_slate",
+    "delta": 26,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 26,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "mlb_matchup_resolver_cache",
+    "delta": 7952,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 7952,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "mlb_player_game_logs",
+    "delta": 20,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 20,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "mlb_statcast_players",
+    "delta": 1106,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1106,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "mlb_stuff_plus_players",
+    "delta": 618,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 618,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "mlb_team_k_splits",
+    "delta": 30,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 30,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "mls_player_matchup_history",
+    "delta": 100,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 100,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "model_research_evidence",
+    "delta": 2868,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 2868,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "nfl_atd_universe_rows",
+    "delta": 194,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 194,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "nfl_ingest_meta",
+    "delta": 1,
+    "logical_key": "_id",
+    "preview_count": 1,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "nfl_player_usage",
+    "delta": 1911,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1911,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "nfl_player_weekly",
+    "delta": 133077,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 133077,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "B",
+    "collection": "odds_api_cache",
+    "delta": 16722,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 16722,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "odds_api_quota_state",
+    "delta": 1,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "odds_api_request_log",
+    "delta": 1465521,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1465521,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "odds_bad_market_registry",
+    "delta": 11,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 11,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "B",
+    "collection": "odds_request_flights",
+    "delta": 194,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 194,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "odds_tournament_registry",
+    "delta": 370,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 370,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "parlay_history",
+    "delta": 1012,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1012,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "parlay_learning_events",
+    "delta": 493,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 493,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "parlay_leg_reliability",
+    "delta": 16,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 16,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "parlay_synergy",
+    "delta": 19,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 19,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "pick_enrichment",
+    "delta": 2449,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 2449,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "pick_line_history",
+    "delta": 0,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 0,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "picks",
+    "delta": 275112,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 275112,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "player_form",
+    "delta": 132,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 132,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "player_game_actuals",
+    "delta": 403784,
+    "logical_key": "sport+player+event+market",
+    "preview_count": 403784,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "player_game_logs",
+    "delta": 374795,
+    "logical_key": "sport+player+game+stat_block",
+    "preview_count": 374795,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "player_history",
+    "delta": 0,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 0,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "player_identities",
+    "delta": 62306,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 62306,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "player_identity_redirects",
+    "delta": 389,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 389,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "player_media",
+    "delta": 537,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 537,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "player_profiles",
+    "delta": 39,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 39,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "player_profiles_v2",
+    "delta": 837,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 837,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "player_stats",
+    "delta": 7435,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 7435,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "players",
+    "delta": 44220,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 44220,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "prediction_snapshots",
+    "delta": 155638,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 155638,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "pregame_snapshots",
+    "delta": 6514,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 6514,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "producer_health",
+    "delta": 18,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 18,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "B",
+    "collection": "production_truth_observations",
+    "delta": 9970,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 9970,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "propline_alt_lines",
+    "delta": 0,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 0,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "props_history",
+    "delta": 32715,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 32715,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "C",
+    "collection": "provider_budget_state",
+    "delta": 7,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 7,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "provider_fixture_map",
+    "delta": 19,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 19,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "C",
+    "collection": "provider_request_intents",
+    "delta": 35512,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 35512,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "provider_stat_cache",
+    "delta": 30,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 30,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "publication_events",
+    "delta": 55500,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 55500,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "B",
+    "collection": "publication_mismatch_report",
+    "delta": 1054499,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1054499,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "reconciliation_downstream",
+    "delta": 232,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 232,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "refresh_health",
+    "delta": 80,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 80,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "rollover_slate_events",
+    "delta": 12,
+    "logical_key": "slate_date+event+at",
+    "preview_count": 12,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "rollover_slates",
+    "delta": 12,
+    "logical_key": "slate_date+scope",
+    "preview_count": 12,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "C",
+    "collection": "scheduled_jobs",
+    "delta": 21,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 21,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "scheduler_leases",
+    "delta": 3,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 3,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "season_totals",
+    "delta": 898,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 898,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "services_active_registry",
+    "delta": 22778,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 22778,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "settlement_events",
+    "delta": 31243,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 31243,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "settlement_telemetry",
+    "delta": 11933,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 11933,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "simulator_outputs",
+    "delta": 14991,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 14991,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "soccer_accuracy",
+    "delta": 1,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "soccer_fixtures",
+    "delta": 1332,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1332,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "soccer_ingest_log",
+    "delta": 4696,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 4696,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "soccer_matches",
+    "delta": 25662,
+    "logical_key": "league+season+home+away+date",
+    "preview_count": 25662,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "soccer_player_form",
+    "delta": 5647,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 5647,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "soccer_player_game_logs",
+    "delta": 100025,
+    "logical_key": "match+player",
+    "preview_count": 100025,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "soccer_predictions",
+    "delta": 643,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 643,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "soccer_standings",
+    "delta": 286,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 286,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "soccer_teams",
+    "delta": 710,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 710,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "soccer_transfer_registry",
+    "delta": 1,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "sport_refresh_state",
+    "delta": 7,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 7,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "sportdb_cache",
+    "delta": 25,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 25,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "sportdb_scorer_cache",
+    "delta": 116,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 116,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "B",
+    "collection": "sports_catalog_snapshots",
+    "delta": 54,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 54,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "survival_coverage",
+    "delta": 797,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 797,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "system_state",
+    "delta": 1,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "team_form",
+    "delta": 366,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 366,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "team_game_actuals",
+    "delta": 60206,
+    "logical_key": "sport+team+event",
+    "preview_count": 60206,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "tennis_league_averages",
+    "delta": 1,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "tennis_matches",
+    "delta": 24459,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 24459,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "tennis_matches_history",
+    "delta": 38380,
+    "logical_key": "tourney+winner+loser",
+    "preview_count": 38380,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "tennis_player_stats",
+    "delta": 2381,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 2381,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "tennis_players",
+    "delta": 10330,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 10330,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "thesportsdb_cache",
+    "delta": 4306,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 4306,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "user_activity",
+    "delta": 10,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 10,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "user_bets",
+    "delta": 7,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 7,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "A",
+    "collection": "users",
+    "delta": 241,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 241,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "wiki_team_records",
+    "delta": 1108,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 1108,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  },
+  {
+    "classification": "UNCLASSIFIED",
+    "collection": "wiki_top_scorers",
+    "delta": 46,
+    "logical_key": "n/a (D-review or SOURCE_ABSENT)",
+    "preview_count": 46,
+    "preview_only": true,
+    "production_count": 0,
+    "production_only": false
+  }
+]
