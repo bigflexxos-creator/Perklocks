@@ -1,0 +1,523 @@
+{
+  "spec_version": "2026-10-03.rev2",
+  "spec_revision_note": "rev2 — publication_events reclassified REQUIRED_FULL_DATA (not losslessly reconstructible from picks/prediction_snapshots/pregame_snapshots/settlement_events: _id, immutable `at` per PUBLISHED/REPUBLISHED event, and `publication_source` are irrecoverable). Original Production export filenames are accepted as-is; no re-export, no slim-projection required. `_slim` suffix accepted but NOT mandatory.",
+  "goal": "Minimum Production transfer set — reconstructs record-level canonical reconciliation PLAN without moving the 645 MB Production archive.",
+  "input_dir": "/tmp/production_reconcile_input",
+  "ingest_tool": "backend/scripts/reconcile_input_ingest.py",
+  "live_db_access": false,
+  "accepted_filename_patterns": {
+    "preferred": [
+      "<collection>.json",
+      "<collection>_part1.json",
+      "<collection>_part2.json",
+      "<collection>_part<N>.json"
+    ],
+    "also_accepted": [
+      "<collection>.json.gz",
+      "<collection>_part<N>.json.gz",
+      "<collection>.ndjson",
+      "<collection>_part<N>.ndjson",
+      "<collection>.ndjson.gz",
+      "<collection>_part<N>.ndjson.gz",
+      "<collection>_slim.json",
+      "<collection>_slim_part<N>.json"
+    ],
+    "completion_sentinel": "<collection>.complete.json  (JSON: {\"total_parts\": N})  — ONLY required when production_count_known is null in this manifest",
+    "rules": [
+      "Original Production export files MUST NOT be modified.",
+      "Slim-projection is OPTIONAL. The reconciliation engine projects internally.",
+      "Multipart part numbers must start at 1 and be contiguous (no gaps).",
+      ".gz is optional; it is NOT required.",
+      "A single file ‘<collection>.json’ by itself counts as complete for that collection."
+    ]
+  },
+  "collection_ready_rules": [
+    "A collection is READY when either (a) exactly one standalone file ‘<collection>.json’ has been ingested, OR (b) all parts 1..N have been received contiguously AND, if ‘production_count_known’ is set in this manifest, sum(part.doc_count) == production_count_known, OR (c) a ‘<collection>.complete.json’ sentinel is received after multipart ingest.",
+    "A collection is BLOCKED if ‘duplicate_ids_across_parts’ > 0.",
+    "A collection is BLOCKED if any part has ‘status’ != INGESTED.",
+    "The full reconciliation dry-run runs ONLY after every REQUIRED_FULL_DATA collection is READY."
+  ],
+  "upload_phases": [
+    {
+      "phase": "A_pipeline_smoke",
+      "label": "Pipeline validation + ultra-small single files (<100 KB each)",
+      "ranks": [1, 2, 3, 4, 5, 6, 7]
+    },
+    {
+      "phase": "B_small_standalone",
+      "label": "Small single-file authority rows (<10 MB each)",
+      "ranks": [8, 9, 10, 11]
+    },
+    {
+      "phase": "C_medium_standalone",
+      "label": "Medium single-file authority rows (10–40 MB each)",
+      "ranks": [12, 13, 14, 15]
+    },
+    {
+      "phase": "D_medium_multipart",
+      "label": "Medium multipart groups (grouped: all parts of one collection before moving on)",
+      "ranks": [16, 17, 18]
+    },
+    {
+      "phase": "E_large_multipart",
+      "label": "Large multipart groups",
+      "ranks": [19, 20]
+    },
+    {
+      "phase": "F_largest_multipart",
+      "label": "Largest multipart groups (upload last)",
+      "ranks": [21, 22, 23]
+    }
+  ],
+  "collections": [
+    {
+      "collection": "nfl_ingest_meta",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "_id",
+      "preview_count": 1,
+      "production_count_known": 1,
+      "projection": "FULL",
+      "projected_fields": ["_id", "last_season", "season_type", "updated_at", "nfl_player_weekly_count"],
+      "estimated_bytes_upload": 1000,
+      "upload_filename_patterns_accepted": ["nfl_ingest_meta.json", "nfl_ingest_meta.json.gz"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 1,
+      "reason": "1-row watermark; later-watermark wins conflict rule needs the actual row. Smallest possible blast radius for pipeline smoke test."
+    },
+    {
+      "collection": "user_bets",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "user_bet_id",
+      "preview_count": 7,
+      "production_count_known": 7,
+      "projection": "FULL",
+      "projected_fields": ["user_bet_id", "user_id", "client_bet_id", "idempotency_key", "status", "placed_at", "settled_at", "migration_source", "migration_source_id"],
+      "estimated_bytes_upload": 10000,
+      "upload_filename_patterns_accepted": ["user_bets.json", "user_bets.json.gz"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 2,
+      "reason": "Production wins; identity collision must be detected. Tiny — second pipeline validator."
+    },
+    {
+      "collection": "historical_ingestion_state",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "_id",
+      "preview_count": 10,
+      "production_count_known": 16,
+      "projection": "FULL",
+      "projected_fields": ["_id", "sport", "season", "status", "last_ingested_at", "cursor", "errors", "upserts"],
+      "estimated_bytes_upload": 20000,
+      "upload_filename_patterns_accepted": ["historical_ingestion_state.json", "historical_ingestion_state.json.gz"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 3,
+      "reason": "cursor-forward only rule; needs the full state docs to compare cursors."
+    },
+    {
+      "collection": "rollover_slates",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "slate_date+scope",
+      "preview_count": 12,
+      "production_count_known": null,
+      "projection": "FULL",
+      "projected_fields": ["slate_date", "scope", "frozen", "generated_at", "entries"],
+      "estimated_bytes_upload": 50000,
+      "upload_filename_patterns_accepted": ["rollover_slates.json", "rollover_slates.json.gz"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 4,
+      "reason": "frozen=true authority rule requires the frozen flag + entries from both sides."
+    },
+    {
+      "collection": "rollover_slate_events",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "slate_date+event_id+at",
+      "preview_count": 12,
+      "production_count_known": null,
+      "projection": "FULL",
+      "projected_fields": ["slate_date", "event_id", "at", "payload"],
+      "estimated_bytes_upload": 50000,
+      "upload_filename_patterns_accepted": ["rollover_slate_events.json", "rollover_slate_events.json.gz"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 5,
+      "reason": "Append-only union — needs the raw rows."
+    },
+    {
+      "collection": "users",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "email",
+      "preview_count": 241,
+      "production_count_known": 7,
+      "projection": "SAFE_SLIM_RECOMMENDED",
+      "projected_fields": ["_id", "email", "role", "created_at", "last_login_at"],
+      "estimated_bytes_upload": 50000,
+      "upload_filename_patterns_accepted": ["users.json", "users.json.gz", "users_slim.json"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 6,
+      "reason": "Production authority. STRONGLY RECOMMENDED to redact password hashes, tokens, API keys, raw PII before upload — the slim fields above are sufficient for conflict detection. If you upload the full file, the ingest tool will still accept it, but any secret in it leaves the Preview container filesystem until manually scrubbed."
+    },
+    {
+      "collection": "team_identities",
+      "class": "D",
+      "action": "REVIEW_REQUIRED",
+      "logical_key": "unknown",
+      "preview_count": 0,
+      "production_count_known": null,
+      "projection": "FULL_OR_SAMPLE",
+      "projected_fields": [],
+      "estimated_bytes_upload": 50000,
+      "upload_filename_patterns_accepted": ["team_identities.json", "team_identities.json.gz", "team_identities_sample.json"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 7,
+      "reason": "Preview is empty; backend code never writes it. Upload the full file (or the first 20 rows for schema review) so the operator can classify it before merge."
+    },
+    {
+      "collection": "parlay_history",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "id",
+      "preview_count": 1012,
+      "production_count_known": null,
+      "projection": "FULL",
+      "projected_fields": ["id", "user_id", "status", "settled_at", "legs"],
+      "estimated_bytes_upload": 1000000,
+      "upload_filename_patterns_accepted": ["parlay_history.json", "parlay_history.json.gz", "parlay_history_part<N>.json"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 8,
+      "reason": "Full file preferred; slim is optional. Legs may be large but 1012 rows total is still well under 10 MB."
+    },
+    {
+      "collection": "pregame_snapshots",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "snapshot_hash",
+      "preview_count": 6514,
+      "production_count_known": 7087,
+      "projection": "FULL",
+      "projected_fields": ["snapshot_hash", "canonical_prediction_id", "pick_id", "supersedes", "generated_at", "payload_hash"],
+      "estimated_bytes_upload": 5000000,
+      "upload_filename_patterns_accepted": ["pregame_snapshots.json", "pregame_snapshots.json.gz", "pregame_snapshots_part<N>.json"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 9,
+      "reason": "Immutable hash-sealed authority — any divergence must be surfaced."
+    },
+    {
+      "collection": "publication_events",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "action_change_note": "rev2 — reclassified from MANIFEST_ONLY to REQUIRED_FULL_DATA. Lossless reconstruction from picks/prediction_snapshots/pregame_snapshots/settlement_events is NOT possible: `_id`, the per-event immutable `at` timestamp, and the `publication_source` tag are irrecoverable (publication_source is written only on this collection). Count-only is NOT sufficient for an append-only audit ledger.",
+      "logical_key": "prediction_id+publication_version+at",
+      "preview_count": 55500,
+      "production_count_known": 97659,
+      "projection": "FULL",
+      "projected_fields": ["_id", "event", "prediction_id", "publication_version", "board_version", "publication_source", "at", "payload_hash", "published_lock_score", "published_probability", "published_edge", "published_grade", "published_line", "published_odds", "model_version"],
+      "estimated_bytes_upload": 30000000,
+      "upload_filename_patterns_accepted": ["publication_events.json", "publication_events.json.gz", "publication_events_part<N>.json", "publication_events_part<N>.json.gz"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 10,
+      "reason": "Append-only publication audit ledger — irreplaceable. The reconciliation PLAN performs UNION_SAFE merge on the (prediction_id+publication_version+at) key; actual rows are required to compute the union."
+    },
+    {
+      "collection": "tennis_matches_history",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "tourney+winner+loser",
+      "preview_count": 38380,
+      "production_count_known": 38380,
+      "projection": "FULL",
+      "projected_fields": ["_id", "tourney_id", "winner_id", "loser_id", "tourney_date", "surface", "score"],
+      "estimated_bytes_upload": 15000000,
+      "upload_filename_patterns_accepted": ["tennis_matches_history.json", "tennis_matches_history.json.gz", "tennis_matches_history_part<N>.json"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 11,
+      "reason": "Counts identical; need record-level identity-key hash to confirm IDENTICAL vs CONFLICT."
+    },
+    {
+      "collection": "player_identities",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "canonical_player_id",
+      "preview_count": 62306,
+      "production_count_known": 30994,
+      "projection": "FULL",
+      "projected_fields": ["canonical_player_id", "canonical_player_name", "sport", "provider_ids", "name_norm"],
+      "estimated_bytes_upload": 20000000,
+      "upload_filename_patterns_accepted": ["player_identities.json", "player_identities.json.gz", "player_identities_part<N>.json"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 12,
+      "reason": "Preview superset; 261 Production rows legitimately lack provider_ids and must be preserved."
+    },
+    {
+      "collection": "team_game_actuals",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "sport+team+event",
+      "preview_count": 60206,
+      "production_count_known": 60204,
+      "projection": "FULL",
+      "projected_fields": ["sport", "canonical_team_id", "event_id", "team_score", "opponent_score", "result", "source", "event_time"],
+      "estimated_bytes_upload": 25000000,
+      "upload_filename_patterns_accepted": ["team_game_actuals.json", "team_game_actuals.json.gz", "team_game_actuals_part<N>.json"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 13,
+      "reason": "Provider actuals; FINAL vs FINAL score conflict detection; counts near-identical."
+    },
+    {
+      "collection": "games",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "sport+game_id",
+      "preview_count": 12476,
+      "production_count_known": 10050,
+      "projection": "FULL",
+      "projected_fields": ["sport", "game_id", "status", "result", "date", "home_team_id", "away_team_id"],
+      "estimated_bytes_upload": 30000000,
+      "upload_filename_patterns_accepted": ["games.json", "games.json.gz", "games_part<N>.json"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 14,
+      "reason": "FINAL/FINAL score conflict detection needs result + status + identity fields; preview superset by 2426 rows."
+    },
+    {
+      "collection": "prediction_snapshots",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "prediction_id+snapshot_version",
+      "preview_count": 155638,
+      "production_count_known": null,
+      "projection": "FULL",
+      "projected_fields": ["prediction_id", "snapshot_version", "idempotency_key", "snapshot_hash", "created_at", "is_active", "superseded_at", "superseded_by", "publication_version", "model_version", "board_version"],
+      "estimated_bytes_upload": 60000000,
+      "upload_filename_patterns_accepted": ["prediction_snapshots.json", "prediction_snapshots.json.gz", "prediction_snapshots_part<N>.json", "prediction_snapshots_part<N>.json.gz"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 15,
+      "reason": "Immutable canonical; snapshot_hash is the field that drives HIGH_AUTHORITY_CONFLICT detection."
+    },
+    {
+      "collection": "soccer_matches",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "league+season+home+away+date",
+      "preview_count": 25662,
+      "production_count_known": 18194,
+      "projection": "FULL",
+      "projected_fields": ["_id", "league", "season", "home_team", "away_team", "date", "status", "scores", "source"],
+      "estimated_bytes_upload": 40000000,
+      "upload_filename_patterns_accepted": ["soccer_matches.json", "soccer_matches.json.gz", "soccer_matches_part<N>.json"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 16,
+      "reason": "Preview is a 7.5k superset — need Production records to resolve union + status/scores precedence."
+    },
+    {
+      "collection": "nfl_player_weekly",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "player+season+week",
+      "preview_count": 133077,
+      "production_count_known": 133063,
+      "projection": "FULL",
+      "projected_fields": ["_id", "player_id", "season", "week", "season_type", "source_fetched_at"],
+      "estimated_bytes_upload": 60000000,
+      "upload_filename_patterns_accepted": ["nfl_player_weekly.json", "nfl_player_weekly.json.gz", "nfl_player_weekly_part<N>.json"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 17,
+      "reason": "nflverse re-pull idempotent; slim identity + fetch watermark flags the 14-row delta."
+    },
+    {
+      "collection": "soccer_player_game_logs",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "match+player",
+      "preview_count": 100025,
+      "production_count_known": 100025,
+      "projection": "FULL",
+      "projected_fields": ["_id", "match_id", "canonical_player_id", "player_name", "team", "date", "goals", "assists", "shots", "xg"],
+      "estimated_bytes_upload": 70000000,
+      "upload_filename_patterns_accepted": ["soccer_player_game_logs.json", "soccer_player_game_logs.json.gz", "soccer_player_game_logs_part<N>.json"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 18,
+      "reason": "Counts identical; need slim fields to verify identity hash + provider stat parity."
+    },
+    {
+      "collection": "player_game_actuals",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "sport+player+event+market",
+      "preview_count": 403784,
+      "production_count_known": 106481,
+      "projection": "FULL",
+      "projected_fields": ["sport", "canonical_event_id", "canonical_player_id", "player_name", "market", "actual", "source", "event_time"],
+      "estimated_bytes_upload": 90000000,
+      "upload_filename_patterns_accepted": ["player_game_actuals.json", "player_game_actuals.json.gz", "player_game_actuals_part<N>.json"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 19,
+      "reason": "Preview superset; need Production records to assert provider-authority conflicts."
+    },
+    {
+      "collection": "picks",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "id",
+      "preview_count": 275112,
+      "production_count_known": 287089,
+      "projection": "FULL",
+      "projected_fields": ["id", "prediction_id", "publication_state", "settlement_status", "result", "status", "settled_at", "settlement_authority", "publication_source"],
+      "estimated_bytes_upload": 120000000,
+      "upload_filename_patterns_accepted": ["picks.json", "picks.json.gz", "picks_part<N>.json", "picks_part<N>.json.gz"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 20,
+      "reason": "Production wins on publication_state / settlement — slim projection carries exactly those fields; full file also accepted."
+    },
+    {
+      "collection": "player_game_logs",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "sport+player+game+stat_block",
+      "preview_count": 374795,
+      "production_count_known": 203926,
+      "projection": "FULL",
+      "projected_fields": ["sport", "canonical_player_id", "player_id", "canonical_event_id", "game_id", "date", "stat_block", "role", "source"],
+      "estimated_bytes_upload": 150000000,
+      "upload_filename_patterns_accepted": ["player_game_logs.json", "player_game_logs.json.gz", "player_game_logs_part<N>.json", "player_game_logs_part<N>.json.gz"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 21,
+      "reason": "Preview superset; slim fields preserve legitimate multi-stat-block identities."
+    },
+    {
+      "collection": "settlement_events",
+      "class": "A",
+      "action": "REQUIRED_FULL_DATA",
+      "logical_key": "settlement_id",
+      "preview_count": 31243,
+      "production_count_known": 465804,
+      "projection": "FULL",
+      "projected_fields": ["settlement_id", "prediction_id", "pick_id", "settled_at", "result", "status", "is_active", "settlement_authority"],
+      "estimated_bytes_upload": 180000000,
+      "upload_filename_patterns_accepted": ["settlement_events.json", "settlement_events.json.gz", "settlement_events_part<N>.json", "settlement_events_part<N>.json.gz"],
+      "multipart_supported": true,
+      "ingest_supported": true,
+      "priority_rank": 22,
+      "reason": "Production authority; 257 prediction_ids have >1 active row — all must be visible to the dry-run."
+    },
+    {
+      "collection": "live_alt_lines",
+      "class": "B",
+      "action": "SKIP_REBUILDABLE",
+      "reason": "TTL cache (5400s); regenerated by Production ingestion after cutover."
+    },
+    {
+      "collection": "odds_api_cache",
+      "class": "B",
+      "action": "SKIP_REBUILDABLE",
+      "reason": "Provider cache with TTL."
+    },
+    {
+      "collection": "odds_request_flights",
+      "class": "B",
+      "action": "SKIP_REBUILDABLE",
+      "reason": "Request-flight dedupe cache; TTL."
+    },
+    {
+      "collection": "sports_catalog_snapshots",
+      "class": "B",
+      "action": "SKIP_REBUILDABLE",
+      "reason": "Catalog cache; rebuilt from provider."
+    },
+    {
+      "collection": "publication_mismatch_report",
+      "class": "B",
+      "action": "SKIP_REBUILDABLE",
+      "reason": "Diagnostic drift ledger with 30d TTL; rebuilt by Production workers."
+    },
+    {
+      "collection": "production_truth_observations",
+      "class": "B",
+      "action": "SKIP_REBUILDABLE",
+      "reason": "Append-only telemetry derivation; rebuilt."
+    },
+    {
+      "collection": "funnel_telemetry",
+      "class": "B",
+      "action": "SKIP_REBUILDABLE",
+      "reason": "Telemetry only — explicitly excluded by this pass."
+    },
+    {
+      "collection": "candidate_dispositions",
+      "class": "B",
+      "action": "SKIP_REBUILDABLE",
+      "reason": "Diagnostic — explicitly excluded by this pass."
+    },
+    {
+      "collection": "odds_api_request_log",
+      "class": "B",
+      "action": "SKIP_REBUILDABLE",
+      "reason": "Request log — explicitly excluded by this pass."
+    },
+    {
+      "collection": "job_execution_log",
+      "class": "B",
+      "action": "SKIP_REBUILDABLE",
+      "reason": "Job log; env-local."
+    },
+    {
+      "collection": "job_audit_log",
+      "class": "B",
+      "action": "SKIP_REBUILDABLE",
+      "reason": "Job log; env-local."
+    },
+    {
+      "collection": "canonical_worker_leases",
+      "class": "C",
+      "action": "DO_NOT_MERGE_ENVIRONMENT_STATE",
+      "reason": "Per-pod election token; shared Atlas starts with an empty lease collection."
+    },
+    {
+      "collection": "scheduled_jobs",
+      "class": "C",
+      "action": "DO_NOT_MERGE_ENVIRONMENT_STATE",
+      "reason": "Env-local scheduling state."
+    },
+    {
+      "collection": "provider_budget_state",
+      "class": "C",
+      "action": "DO_NOT_MERGE_ENVIRONMENT_STATE",
+      "reason": "Env-local API budget counters."
+    },
+    {
+      "collection": "provider_request_intents",
+      "class": "C",
+      "action": "DO_NOT_MERGE_ENVIRONMENT_STATE",
+      "reason": "Env-local flight-control."
+    },
+    {
+      "collection": "board_generations",
+      "class": "C",
+      "action": "DO_NOT_MERGE_ENVIRONMENT_STATE",
+      "reason": "In-flight board generation pointer; env-local."
+    }
+  ]
+}

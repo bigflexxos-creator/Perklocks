@@ -137,9 +137,18 @@ def _logical_key(coll: str, doc: dict) -> Optional[tuple]:
     if coll == "publication_events":
         pid  = doc.get("prediction_id")
         ver  = doc.get("publication_version")
-        ts   = doc.get("publication_timestamp") or doc.get("ts")
+        # NOTE: write-site stores the per-event timestamp in `at`
+        # (services/prediction_publication_service.py publish()).  We
+        # keep publication_timestamp / ts as fallbacks for older rows.
+        ts   = doc.get("at") or doc.get("publication_timestamp") or doc.get("ts")
         if pid and ver is not None and ts is not None:
-            return ("prediction_id+publication_version+ts", _s(pid), _s(ver), _s(ts))
+            return ("prediction_id+publication_version+at", _s(pid), _s(ver), _s(ts))
+        # If `at` is missing fall back to the Mongo _id so the event
+        # is still uniquely identified (append-only ledger — _id is
+        # the ObjectId written by Mongo).
+        oid = doc.get("_id")
+        if pid and ver is not None and oid is not None:
+            return ("prediction_id+publication_version+_id", _s(pid), _s(ver), _s(oid))
         return None
     if coll == "settlement_events":
         pid = doc.get("prediction_id") or doc.get("pick_id")

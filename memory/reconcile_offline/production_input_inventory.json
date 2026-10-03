@@ -1,0 +1,8 @@
+{
+  "input_dir": "/tmp/production_reconcile_input",
+  "files": {},
+  "collections": {},
+  "generated_at": null,
+  "ready": false,
+  "notes": "rev2 — publication_events reclassified REQUIRED_FULL_DATA. Original Production export filenames accepted (no re-export, no slim). Drop files into /tmp/production_reconcile_input/ and run `python /app/backend/scripts/reconcile_input_ingest.py`. Strictly offline."
+}
