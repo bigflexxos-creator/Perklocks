@@ -1,0 +1,33 @@
+{
+  "phase_tag": "phase6",
+  "timestamp": "20261003_192150Z",
+  "tar_path": "/app/reconcile_workspace/checkpoints/phase6_20261003_192150Z.tar.gz",
+  "tar_size_bytes": 1606247,
+  "tar_sha256": "327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22",
+  "source_dir": "/opt/reconcile_tmp/v2_phase6",
+  "note": "Slim checkpoint: contains Phase 6 incremental resolutions, evidence, fingerprint, quarantine, and the merged canonical fingerprint. The full merged canonical NDJSONs are not duplicated here \u2014 reconstruct via Phase 5 checkpoint + these overrides.",
+  "canonical_fingerprint": {
+    "games.ndjson": "44791364b61121312210901337f8d67add3f6ddb6f4c7012e93ad072a85fa6d2",
+    "historical_ingestion_state.ndjson": "12ab52611b7f03ee85d2394672dc2dc43f66b84fc9bb09790892ab4ad33b0d3c",
+    "nfl_ingest_meta.ndjson": "aab42f2aed2826e8a804c1212ada6650e756dc91d19514ca0ae2a28a200d9f32",
+    "nfl_player_weekly.ndjson": "1cd7c58998d5d64895ae543aa9bab8dbf968072253c274766250a3ce41b4b430",
+    "parlay_history.ndjson": "d7d0992863e8351df10c3f9a8c899bbba62b02887b40ded75c15f5bb2ba7fe40",
+    "picks.ndjson": "1d8687f639c06a9c26a3be888b3d7afd242f4b185ace88f0fdf5d7be44c2b507",
+    "player_game_actuals.ndjson": "57c00cab62b43656ff7d7d13e590eec4e18e822a590bcda3f438674b09a457df",
+    "player_game_logs.ndjson": "085b8cebcd1c7e17a36171dee16bf435c160593fa9c13c5be56884cd46b1a5c1",
+    "player_identities.ndjson": "59c7e056785960cbd247a02bf35e76dbda1e4e03d2ec1122034dc9f4392f67ff",
+    "prediction_snapshots.ndjson": "99e47083e2df64077e7925c8787fe5489049610a582702c7bd37fcd34c91a6cf",
+    "pregame_snapshots.ndjson": "d8f94b095fd02d31976ea173aa1b5528ec78da7dfb74db3851c4228a41ff0158",
+    "publication_events.ndjson": "fbff1916727c43c8262ef0441e1f7154b853fa6ed332380618b7d4398739ca26",
+    "rollover_slate_events.ndjson": "cf52ec8fde60f1b9b9c36b746ae8cf1062a714f4556bea82a9c4d152337cc844",
+    "rollover_slates.ndjson": "12a1047fbe8654dbccc320e832549329be35792a8a5ea01484e02a94eb5c1550",
+    "settlement_events.ndjson": "4df709b4265d7cbcb222dea8e215079984fda99e6509965d88a6eb3c9bea4edb",
+    "soccer_matches.ndjson": "b680d8a664a17d7374e9dcdf28a02fc0afa2ec0f9cab8968b798300c78c3e1d6",
+    "soccer_player_game_logs.ndjson": "12f42230e8273ce6d8e48c6b33a8925416b94dc27370875a0e1ae91916484f90",
+    "team_game_actuals.ndjson": "549531eaa9d98de7beb2f148e1b31ef8cd1eb4312ec791f56100fa61f4786a1f",
+    "tennis_matches_history.ndjson": "58abe5fa98187e8eab057d381002496f5e29ddb3e47fccf8e231b41f5b85c45e",
+    "user_bets.ndjson": "8fc4c6ed1a3726bfa3aafd632ddd801f836e04fcfbc6f25d85fd887f584e00cd",
+    "users.ndjson": "5b467207d0dd46e8c8e95bee0c375f9a8542f94253b998c27ac8c7908e58f76e"
+  },
+  "no_duplicate_keys": true
+}
