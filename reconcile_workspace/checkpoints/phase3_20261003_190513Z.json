@@ -1,0 +1,78 @@
+{
+  "phase_tag": "phase3",
+  "timestamp": "20261003_190513Z",
+  "tar_path": "/app/reconcile_workspace/checkpoints/phase3_20261003_190513Z.tar.gz",
+  "tar_size_bytes": 338098934,
+  "tar_sha256": "c45b9f7db7a2a6a4b5dab0952567b1ee01201278a608a9cd43d81d7257317099",
+  "source_dir": "/opt/reconcile_tmp/v2_phase3",
+  "meta": {
+    "ledger_summary": {
+      "R1_prediction_snapshots_applied": 49793,
+      "R2_player_game_actuals_applied": 7200,
+      "R3a_player_identities_applied": 30029,
+      "R3b_player_identities_applied": 281,
+      "R4_player_game_logs_applied": 26568,
+      "R5_soccer_matches_applied": 2,
+      "R6_games_date_only_applied": 1,
+      "R7_games_null_populated_applied": 1,
+      "total_rows_resolved_by_rules": 113875,
+      "unresolved_per_collection": {
+        "prediction_snapshots": 2,
+        "player_game_actuals": 153,
+        "player_identities": 14,
+        "player_game_logs": 31,
+        "soccer_matches": 3,
+        "games": 0,
+        "tennis_matches_history": 1
+      },
+      "unresolved_total": 204
+    },
+    "integrity": {
+      "production_and_preview_sources_unchanged": [
+        true,
+        []
+      ],
+      "phase2_canonical_unchanged": true,
+      "ledger_entries": 113875,
+      "ledger_matches_applied_total": true,
+      "phase3_canonical_duplicates": {
+        "games.ndjson": 0,
+        "historical_ingestion_state.ndjson": 0,
+        "nfl_ingest_meta.ndjson": 0,
+        "nfl_player_weekly.ndjson": 0,
+        "parlay_history.ndjson": 0,
+        "picks.ndjson": 0,
+        "player_game_actuals.ndjson": 0,
+        "player_game_logs.ndjson": 0,
+        "player_identities.ndjson": 0,
+        "prediction_snapshots.ndjson": 0,
+        "pregame_snapshots.ndjson": 0,
+        "publication_events.ndjson": 0,
+        "rollover_slate_events.ndjson": 0,
+        "rollover_slates.ndjson": 0,
+        "settlement_events.ndjson": 0,
+        "soccer_matches.ndjson": 0,
+        "soccer_player_game_logs.ndjson": 0,
+        "team_game_actuals.ndjson": 0,
+        "tennis_matches_history.ndjson": 0,
+        "user_bets.ndjson": 0,
+        "users.ndjson": 0
+      },
+      "phase3_no_canonical_duplicates": true,
+      "note_old_204_assertion": "V2: fixed-204 unresolved assertion is informational only; V2 unresolved_total=204",
+      "actual_unresolved_per_collection": {
+        "prediction_snapshots": 2,
+        "player_game_actuals": 153,
+        "player_identities": 14,
+        "player_game_logs": 31,
+        "soccer_matches": 3,
+        "games": 0,
+        "tennis_matches_history": 1
+      },
+      "actual_unresolved_total": 204,
+      "phase3_fingerprint_recorded": true,
+      "all_pass": true
+    },
+    "duration_sec": 126.16279149055481
+  }
+}

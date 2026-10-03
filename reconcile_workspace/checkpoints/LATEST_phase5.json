@@ -1,0 +1,13 @@
+{
+  "phase_tag": "phase5",
+  "timestamp": "20261003_190628Z",
+  "tar_path": "/app/reconcile_workspace/checkpoints/phase5_20261003_190628Z.tar.gz",
+  "tar_size_bytes": 337143523,
+  "tar_sha256": "4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7",
+  "source_dir": "/opt/reconcile_tmp/v2_phase5",
+  "meta": {
+    "ledger_count": null,
+    "unresolved": null,
+    "duration_sec": 38.48793601989746
+  }
+}
