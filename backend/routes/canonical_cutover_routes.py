@@ -134,6 +134,17 @@ async def canonical_import(
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        # Surface detail to admin caller — the reliability middleware would
+        # otherwise swallow this behind a generic 500.  Not a secret: the
+        # exception class name + message are only visible to authenticated
+        # admins who already have the import token.
+        import traceback as _tb
+        logger.error("canonical_import failed: %s\n%s", e, _tb.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail={"error_class": type(e).__name__, "error": str(e)[:800]},
+        )
     return result
 
 
