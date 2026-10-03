@@ -223,11 +223,25 @@ def main() -> int:
 
         # Build the final set: Phase 5 rows minus those overridden by Phase 6
         # Phase 6 overlay files contain the FINAL state for their collections.
-        # If a Phase 6 file exists for a collection, use ONLY the Phase 6 rows
-        # (Phase 6 canonical reflects the post-override merge). Phase 5
-        # supplies rows for collections not in Phase 6.
-        src = p6_file if p6_file.exists() else p5_file
-        print(f"  → {coll}: source={src.name}")
+        # If a Phase 6 file exists AND IS NON-EMPTY, use ONLY the Phase 6
+        # rows (Phase 6 canonical reflects the post-override merge).
+        # Phase 5-R2 fix (2026-10-03): an EMPTY P6 overlay must NEVER erase
+        # the certified Phase-5 canonical dataset — treat empty-or-missing
+        # as "no overlay, use P5 canonical as-is".  Validated by
+        # test_canonical_push_overlay_guard.
+        def _has_overlay(path: pathlib.Path) -> bool:
+            try:
+                return path.exists() and path.stat().st_size > 0
+            except Exception:
+                return False
+        if _has_overlay(p6_file):
+            src = p6_file
+        elif p5_file.exists():
+            src = p5_file
+        else:
+            print(f"  — {coll}: no non-empty source available")
+            continue
+        print(f"  → {coll}: source={src.name} (size={src.stat().st_size})")
 
         batch = []
         batch_no = 0
