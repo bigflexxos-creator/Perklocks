@@ -168,14 +168,14 @@ def _logical_key(coll: str, doc: dict) -> Optional[tuple]:
         em = doc.get("email")
         return ("email", _s(em).lower()) if em else None
     if coll == "user_bets":
-        v = doc.get("user_bet_id") or doc.get("_id")
-        return ("user_bet_id", _s(v)) if v else None
+        v = doc.get("id") or doc.get("user_bet_id") or doc.get("_id")
+        return ("id", _s(v)) if v else None
     if coll == "rollover_slates":
         return ("slate_date+scope", _s(doc.get("slate_date")), _s(doc.get("scope")))
     if coll == "rollover_slate_events":
         return ("slate_date+event+at",
                 _s(doc.get("slate_date")),
-                _s(doc.get("event_id")),
+                _s(doc.get("event") or doc.get("event_id")),
                 _s(doc.get("at")))
     if coll == "parlay_history":
         v = doc.get("id") or doc.get("_id")
