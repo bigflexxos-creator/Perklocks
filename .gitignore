@@ -92,3 +92,4 @@ android-sdk/
 credentials.json
 *.key
 .credentials
+memory/reconcile_offline/production_input_inventory.json
