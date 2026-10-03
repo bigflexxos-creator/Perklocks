@@ -49,8 +49,10 @@ R3_ENRICHMENT_FIELDS = {
     "national_team_source", "national_team_status",
     "current_team", "current_national_team",
     "nationality", "aliases", "provider_ids",
-    "position", "source", "name_norm",
+    "position", "name_norm",
 }
+# R3b handles the case where the only out-of-R3a diff is `source`.
+R3B_PROVENANCE_FIELD = "source"
 R3_LIST_LIKE = {"historical_teams", "historical_national_teams",
                 "aliases", "provider_ids"}
 R3_TIMESTAMPS = {"observed_at", "national_team_observed_at"}
@@ -207,30 +209,51 @@ def apply_r3():
                        types={"HISTORICAL_LOG_CONTENT_DIFF"})
     out_canon = open(OUT / "canonical" / "player_identities.ndjson", "a")
     out_review = open(OUT / "operator_review" / "player_identities.ndjson", "w")
-    applied = 0; unresolved = 0; unresolved_rows = []
+    applied_r3a = 0; applied_r3b = 0
+    unresolved = 0; unresolved_rows = []
     for k, sides in pairs:
         p = sides.get("production") or {}
         v = sides.get("preview") or {}
         diffs = _diffs(p, v)
+
         if diffs.issubset(R3_ENRICHMENT_FIELDS):
+            # R3a — pure additive enrichment, source NOT in diffs
             merged = _r3_merge(p, v, diffs)
-            applied += 1
-            out_canon.write(json.dumps({"canonical_from": "R3_union_enrichment",
+            applied_r3a += 1
+            out_canon.write(json.dumps({"canonical_from": "R3a_union_enrichment",
                                         "logical_key": list(k),
                                         "doc": merged}, default=str) + "\n")
-            write_ledger_entry({"rule": "R3", "collection": "player_identities",
+            write_ledger_entry({"rule": "R3a", "collection": "player_identities",
                                 "logical_key": list(k),
                                 "selected_authority": "merged",
                                 "differing_fields": sorted(diffs),
-                                "reason": "enrichment-only diffs; deterministic union/populated-preference merge"})
+                                "reason": "additive enrichment only; deterministic union/populated-preference merge"})
+        elif (R3B_PROVENANCE_FIELD in diffs
+              and (diffs - {R3B_PROVENANCE_FIELD}).issubset(R3_ENRICHMENT_FIELDS)):
+            # R3b — enrichment union + Production source provenance
+            enrichment_diffs = diffs - {R3B_PROVENANCE_FIELD}
+            merged = _r3_merge(p, v, enrichment_diffs)
+            merged[R3B_PROVENANCE_FIELD] = p.get(R3B_PROVENANCE_FIELD)
+            applied_r3b += 1
+            out_canon.write(json.dumps({"canonical_from": "R3b_PRODUCTION_PROVENANCE",
+                                        "logical_key": list(k),
+                                        "doc": merged}, default=str) + "\n")
+            write_ledger_entry({"rule": "R3b", "collection": "player_identities",
+                                "logical_key": list(k),
+                                "selected_authority": "merged_enrichment+production_source_provenance",
+                                "differing_fields": sorted(diffs),
+                                "enrichment_fields_unioned": sorted(enrichment_diffs),
+                                "provenance_field_from_production": R3B_PROVENANCE_FIELD,
+                                "reason": "R3a-style enrichment union + source resolved as Production provenance"})
         else:
             unresolved += 1
             out_review.write(json.dumps({"side":"production","doc":p,"logical_key":list(k)}, default=str) + "\n")
             out_review.write(json.dumps({"side":"preview","doc":v,"logical_key":list(k)}, default=str) + "\n")
             unresolved_rows.append((k, p, v, diffs))
     out_canon.close(); out_review.close()
-    R_COUNTS["R3"] = applied
-    return applied, unresolved, unresolved_rows
+    R_COUNTS["R3a"] = applied_r3a
+    R_COUNTS["R3b"] = applied_r3b
+    return applied_r3a, applied_r3b, unresolved, unresolved_rows
 
 
 # ─── R4 player_game_logs ─────────────────────────────────────────────
@@ -392,7 +415,7 @@ def main() -> int:
     # 2. Apply rules
     r1_applied, r1_un, r1_rows = apply_r1()
     r2_applied, r2_un, r2_rows = apply_r2()
-    r3_applied, r3_un, r3_rows = apply_r3()
+    r3a_applied, r3b_applied, r3_un, r3_rows = apply_r3()
     r4_applied, r4_un, r4_rows = apply_r4()
     r5_applied, r5_un, r5_rows = apply_r5()
     r6_applied, r7_applied, g_un, g_rows = apply_r6_r7()
@@ -405,14 +428,15 @@ def main() -> int:
     summary = {
         "R1_prediction_snapshots_applied": r1_applied,
         "R2_player_game_actuals_applied":  r2_applied,
-        "R3_player_identities_applied":    r3_applied,
+        "R3a_player_identities_applied":   r3a_applied,
+        "R3b_player_identities_applied":   r3b_applied,
         "R4_player_game_logs_applied":     r4_applied,
         "R5_soccer_matches_applied":       r5_applied,
         "R6_games_date_only_applied":      r6_applied,
         "R7_games_null_populated_applied": r7_applied,
-        "total_rows_resolved_by_rules":    r1_applied + r2_applied + r3_applied
-                                            + r4_applied + r5_applied
-                                            + r6_applied + r7_applied,
+        "total_rows_resolved_by_rules":    r1_applied + r2_applied + r3a_applied
+                                            + r3b_applied + r4_applied
+                                            + r5_applied + r6_applied + r7_applied,
         "unresolved_per_collection": {
             "prediction_snapshots":    r1_un,
             "player_game_actuals":     r2_un,
@@ -597,13 +621,13 @@ def _integrity(summary: dict, phase2_copy_counts: dict) -> dict:
     # 5 — exactly 502 unresolved
     expected_unresolved = {
         "prediction_snapshots": 2, "player_game_actuals": 153,
-        "player_identities": 312, "player_game_logs": 31,
+        "player_identities": 14, "player_game_logs": 31,
         "soccer_matches": 3, "games": 0, "tennis_matches_history": 1,
     }
     report["expected_unresolved_per_collection"] = expected_unresolved
     report["actual_unresolved_per_collection"] = summary["unresolved_per_collection"]
-    report["unresolved_total_matches_expected_502"] = (
-        summary["unresolved_total"] == 502 and
+    report["unresolved_total_matches_expected_204"] = (
+        summary["unresolved_total"] == 204 and
         summary["unresolved_per_collection"] == expected_unresolved)
 
     # 6 — deterministic fingerprint of Phase 3 canonical
@@ -624,7 +648,7 @@ def _integrity(summary: dict, phase2_copy_counts: dict) -> dict:
         report["phase2_canonical_unchanged"] and
         report["ledger_matches_applied_total"] and
         report["phase3_no_canonical_duplicates"] and
-        report["unresolved_total_matches_expected_502"]
+        report["unresolved_total_matches_expected_204"]
     )
     return report
 
