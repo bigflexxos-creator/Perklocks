@@ -1,0 +1,1199 @@
+{
+  "archive_path": "/tmp/perklocks_preview_FULL_backup_20261003.zip",
+  "archive_sha256": "55788ead6f3f509dfca727a9a0e5c7c97a7eff7edc12018fb66e9660e33589c1",
+  "archive_size_bytes": 508418554,
+  "authority_posture": {
+    "BACKGROUND_WORKERS_ENABLED": "false",
+    "CANONICAL_WRITE_ENABLED": "false",
+    "DATA_AUTHORITY": "preview"
+  },
+  "db_fingerprint": "ac7ea1130f39",
+  "db_name": "lockscore_db",
+  "empty_collections": [
+    "canonical_worker_leases",
+    "injuries",
+    "pick_line_history",
+    "player_history",
+    "propline_alt_lines"
+  ],
+  "environment": "preview",
+  "export_completion_timestamp": "2026-10-03T14:42:37.793489+00:00",
+  "export_start_timestamp": "2026-10-03T14:41:17.816513+00:00",
+  "failed_collections": [],
+  "files_count": 259,
+  "mongodump_version": "`/tmp/perklocks_preview_backup_20261003_144117Z/dump/lockscore_db/odds_bad_market_registry.bson.gz`",
+  "source_inventory": {
+    "collections": {
+      "auto_elite_players": {
+        "count": 9
+      },
+      "bandit_arms": {
+        "count": 10
+      },
+      "board_generations": {
+        "count": 6531
+      },
+      "calibrated_probabilities": {
+        "count": 50607
+      },
+      "calibration_shadow_evaluation": {
+        "count": 1
+      },
+      "calibrator_registry": {
+        "count": 1928
+      },
+      "candidate_dispositions": {
+        "count": 975347
+      },
+      "canonical_worker_leases": {
+        "count": 0
+      },
+      "cfb_advanced_stats": {
+        "count": 138
+      },
+      "cfb_portal": {
+        "count": 7368
+      },
+      "cfb_returning_production": {
+        "count": 270
+      },
+      "cfb_sp_ratings": {
+        "count": 276
+      },
+      "cfb_teams": {
+        "count": 138
+      },
+      "circuit_breaker_state": {
+        "count": 1
+      },
+      "client_errors": {
+        "count": 73
+      },
+      "csl_espn_state": {
+        "count": 2
+      },
+      "espn_form_cache": {
+        "count": 374
+      },
+      "espn_injury_notes": {
+        "count": 161
+      },
+      "espn_mls_stats": {
+        "count": 140
+      },
+      "espn_team_meta": {
+        "count": 669
+      },
+      "foundation_probe": {
+        "count": 1
+      },
+      "funnel_telemetry": {
+        "count": 2949597
+      },
+      "fusion_predictions": {
+        "count": 162233
+      },
+      "games": {
+        "count": 12476
+      },
+      "gs_v2_predictions": {
+        "count": 1064
+      },
+      "historical_freshness": {
+        "count": 7
+      },
+      "historical_ingestion_state": {
+        "count": 10
+      },
+      "historical_meta": {
+        "count": 7
+      },
+      "injuries": {
+        "count": 0
+      },
+      "job_audit_log": {
+        "count": 24612
+      },
+      "job_execution_log": {
+        "count": 12160
+      },
+      "lab_signal_registry": {
+        "count": 2
+      },
+      "learned_weights": {
+        "count": 1
+      },
+      "learning_bucket_snapshots": {
+        "count": 5
+      },
+      "learning_buckets": {
+        "count": 18
+      },
+      "learning_log": {
+        "count": 173791
+      },
+      "learning_snapshots": {
+        "count": 59
+      },
+      "learning_state": {
+        "count": 1
+      },
+      "live_alt_lines": {
+        "count": 51850
+      },
+      "lock_calibration_curve": {
+        "count": 1
+      },
+      "mlb_hitter_intel_cache": {
+        "count": 8231
+      },
+      "mlb_hr_slate": {
+        "count": 26
+      },
+      "mlb_matchup_resolver_cache": {
+        "count": 7952
+      },
+      "mlb_player_game_logs": {
+        "count": 20
+      },
+      "mlb_statcast_players": {
+        "count": 1106
+      },
+      "mlb_stuff_plus_players": {
+        "count": 618
+      },
+      "mlb_team_k_splits": {
+        "count": 30
+      },
+      "mls_player_matchup_history": {
+        "count": 100
+      },
+      "model_research_evidence": {
+        "count": 2868
+      },
+      "nfl_atd_universe_rows": {
+        "count": 194
+      },
+      "nfl_ingest_meta": {
+        "count": 1
+      },
+      "nfl_player_usage": {
+        "count": 1911
+      },
+      "nfl_player_weekly": {
+        "count": 133077
+      },
+      "odds_api_cache": {
+        "count": 16722
+      },
+      "odds_api_quota_state": {
+        "count": 1
+      },
+      "odds_api_request_log": {
+        "count": 1465521
+      },
+      "odds_bad_market_registry": {
+        "count": 11
+      },
+      "odds_request_flights": {
+        "count": 194
+      },
+      "odds_tournament_registry": {
+        "count": 370
+      },
+      "parlay_history": {
+        "count": 1012
+      },
+      "parlay_learning_events": {
+        "count": 493
+      },
+      "parlay_leg_reliability": {
+        "count": 16
+      },
+      "parlay_synergy": {
+        "count": 19
+      },
+      "pick_enrichment": {
+        "count": 2449
+      },
+      "pick_line_history": {
+        "count": 0
+      },
+      "picks": {
+        "count": 275112
+      },
+      "player_form": {
+        "count": 132
+      },
+      "player_game_actuals": {
+        "count": 403784
+      },
+      "player_game_logs": {
+        "count": 374795
+      },
+      "player_history": {
+        "count": 0
+      },
+      "player_identities": {
+        "count": 62306
+      },
+      "player_identity_redirects": {
+        "count": 389
+      },
+      "player_media": {
+        "count": 537
+      },
+      "player_profiles": {
+        "count": 39
+      },
+      "player_profiles_v2": {
+        "count": 837
+      },
+      "player_stats": {
+        "count": 7435
+      },
+      "players": {
+        "count": 44220
+      },
+      "prediction_snapshots": {
+        "count": 155638
+      },
+      "pregame_snapshots": {
+        "count": 6514
+      },
+      "producer_health": {
+        "count": 18
+      },
+      "production_truth_observations": {
+        "count": 9970
+      },
+      "propline_alt_lines": {
+        "count": 0
+      },
+      "props_history": {
+        "count": 32715
+      },
+      "provider_budget_state": {
+        "count": 7
+      },
+      "provider_fixture_map": {
+        "count": 19
+      },
+      "provider_request_intents": {
+        "count": 35512
+      },
+      "provider_stat_cache": {
+        "count": 30
+      },
+      "publication_events": {
+        "count": 55500
+      },
+      "publication_mismatch_report": {
+        "count": 1054499
+      },
+      "reconciliation_downstream": {
+        "count": 232
+      },
+      "refresh_health": {
+        "count": 80
+      },
+      "rollover_slate_events": {
+        "count": 12
+      },
+      "rollover_slates": {
+        "count": 12
+      },
+      "scheduled_jobs": {
+        "count": 21
+      },
+      "scheduler_leases": {
+        "count": 3
+      },
+      "season_totals": {
+        "count": 898
+      },
+      "services_active_registry": {
+        "count": 22778
+      },
+      "settlement_events": {
+        "count": 31243
+      },
+      "settlement_telemetry": {
+        "count": 11933
+      },
+      "simulator_outputs": {
+        "count": 14991
+      },
+      "soccer_accuracy": {
+        "count": 1
+      },
+      "soccer_fixtures": {
+        "count": 1332
+      },
+      "soccer_ingest_log": {
+        "count": 4696
+      },
+      "soccer_matches": {
+        "count": 25662
+      },
+      "soccer_player_form": {
+        "count": 5647
+      },
+      "soccer_player_game_logs": {
+        "count": 100025
+      },
+      "soccer_predictions": {
+        "count": 643
+      },
+      "soccer_standings": {
+        "count": 286
+      },
+      "soccer_teams": {
+        "count": 710
+      },
+      "soccer_transfer_registry": {
+        "count": 1
+      },
+      "sport_refresh_state": {
+        "count": 7
+      },
+      "sportdb_cache": {
+        "count": 25
+      },
+      "sportdb_scorer_cache": {
+        "count": 116
+      },
+      "sports_catalog_snapshots": {
+        "count": 54
+      },
+      "survival_coverage": {
+        "count": 797
+      },
+      "system_state": {
+        "count": 1
+      },
+      "team_form": {
+        "count": 366
+      },
+      "team_game_actuals": {
+        "count": 60206
+      },
+      "tennis_league_averages": {
+        "count": 1
+      },
+      "tennis_matches": {
+        "count": 24459
+      },
+      "tennis_matches_history": {
+        "count": 38380
+      },
+      "tennis_player_stats": {
+        "count": 2381
+      },
+      "tennis_players": {
+        "count": 10330
+      },
+      "thesportsdb_cache": {
+        "count": 4306
+      },
+      "user_activity": {
+        "count": 10
+      },
+      "user_bets": {
+        "count": 7
+      },
+      "users": {
+        "count": 241
+      },
+      "wiki_team_records": {
+        "count": 1108
+      },
+      "wiki_top_scorers": {
+        "count": 46
+      }
+    },
+    "total_collections": 129,
+    "total_documents": 8958935
+  },
+  "total_backup_size_bytes": 508296753,
+  "verification": {
+    "method": "bson.decode_file_iter",
+    "notes": [],
+    "per_collection": {
+      "auto_elite_players": {
+        "exported": 9,
+        "final_count": 9,
+        "initial_count": 9,
+        "status": "PASS"
+      },
+      "bandit_arms": {
+        "exported": 10,
+        "final_count": 10,
+        "initial_count": 10,
+        "status": "PASS"
+      },
+      "board_generations": {
+        "exported": 6532,
+        "final_count": 6532,
+        "initial_count": 6531,
+        "status": "PASS"
+      },
+      "calibrated_probabilities": {
+        "exported": 50607,
+        "final_count": 50607,
+        "initial_count": 50607,
+        "status": "PASS"
+      },
+      "calibration_shadow_evaluation": {
+        "exported": 1,
+        "final_count": 1,
+        "initial_count": 1,
+        "status": "PASS"
+      },
+      "calibrator_registry": {
+        "exported": 1928,
+        "final_count": 1928,
+        "initial_count": 1928,
+        "status": "PASS"
+      },
+      "candidate_dispositions": {
+        "exported": 975347,
+        "final_count": 975347,
+        "initial_count": 975347,
+        "status": "PASS"
+      },
+      "canonical_worker_leases": {
+        "exported": 0,
+        "final_count": 0,
+        "initial_count": 0,
+        "status": "PASS"
+      },
+      "cfb_advanced_stats": {
+        "exported": 138,
+        "final_count": 138,
+        "initial_count": 138,
+        "status": "PASS"
+      },
+      "cfb_portal": {
+        "exported": 7368,
+        "final_count": 7368,
+        "initial_count": 7368,
+        "status": "PASS"
+      },
+      "cfb_returning_production": {
+        "exported": 270,
+        "final_count": 270,
+        "initial_count": 270,
+        "status": "PASS"
+      },
+      "cfb_sp_ratings": {
+        "exported": 276,
+        "final_count": 276,
+        "initial_count": 276,
+        "status": "PASS"
+      },
+      "cfb_teams": {
+        "exported": 138,
+        "final_count": 138,
+        "initial_count": 138,
+        "status": "PASS"
+      },
+      "circuit_breaker_state": {
+        "exported": 1,
+        "final_count": 1,
+        "initial_count": 1,
+        "status": "PASS"
+      },
+      "client_errors": {
+        "exported": 73,
+        "final_count": 73,
+        "initial_count": 73,
+        "status": "PASS"
+      },
+      "csl_espn_state": {
+        "exported": 2,
+        "final_count": 2,
+        "initial_count": 2,
+        "status": "PASS"
+      },
+      "espn_form_cache": {
+        "exported": 374,
+        "final_count": 374,
+        "initial_count": 374,
+        "status": "PASS"
+      },
+      "espn_injury_notes": {
+        "exported": 161,
+        "final_count": 161,
+        "initial_count": 161,
+        "status": "PASS"
+      },
+      "espn_mls_stats": {
+        "exported": 140,
+        "final_count": 140,
+        "initial_count": 140,
+        "status": "PASS"
+      },
+      "espn_team_meta": {
+        "exported": 669,
+        "final_count": 669,
+        "initial_count": 669,
+        "status": "PASS"
+      },
+      "foundation_probe": {
+        "exported": 1,
+        "final_count": 1,
+        "initial_count": 1,
+        "status": "PASS"
+      },
+      "funnel_telemetry": {
+        "exported": 2949597,
+        "final_count": 2949597,
+        "initial_count": 2949597,
+        "status": "PASS"
+      },
+      "fusion_predictions": {
+        "exported": 162233,
+        "final_count": 162233,
+        "initial_count": 162233,
+        "status": "PASS"
+      },
+      "games": {
+        "exported": 12476,
+        "final_count": 12476,
+        "initial_count": 12476,
+        "status": "PASS"
+      },
+      "gs_v2_predictions": {
+        "exported": 1064,
+        "final_count": 1064,
+        "initial_count": 1064,
+        "status": "PASS"
+      },
+      "historical_freshness": {
+        "exported": 7,
+        "final_count": 7,
+        "initial_count": 7,
+        "status": "PASS"
+      },
+      "historical_ingestion_state": {
+        "exported": 10,
+        "final_count": 10,
+        "initial_count": 10,
+        "status": "PASS"
+      },
+      "historical_meta": {
+        "exported": 7,
+        "final_count": 7,
+        "initial_count": 7,
+        "status": "PASS"
+      },
+      "injuries": {
+        "exported": 0,
+        "final_count": 0,
+        "initial_count": 0,
+        "status": "PASS"
+      },
+      "job_audit_log": {
+        "exported": 24612,
+        "final_count": 24612,
+        "initial_count": 24612,
+        "status": "PASS"
+      },
+      "job_execution_log": {
+        "exported": 12160,
+        "final_count": 12160,
+        "initial_count": 12160,
+        "status": "PASS"
+      },
+      "lab_signal_registry": {
+        "exported": 2,
+        "final_count": 2,
+        "initial_count": 2,
+        "status": "PASS"
+      },
+      "learned_weights": {
+        "exported": 1,
+        "final_count": 1,
+        "initial_count": 1,
+        "status": "PASS"
+      },
+      "learning_bucket_snapshots": {
+        "exported": 5,
+        "final_count": 5,
+        "initial_count": 5,
+        "status": "PASS"
+      },
+      "learning_buckets": {
+        "exported": 18,
+        "final_count": 18,
+        "initial_count": 18,
+        "status": "PASS"
+      },
+      "learning_log": {
+        "exported": 173791,
+        "final_count": 173791,
+        "initial_count": 173791,
+        "status": "PASS"
+      },
+      "learning_snapshots": {
+        "exported": 59,
+        "final_count": 59,
+        "initial_count": 59,
+        "status": "PASS"
+      },
+      "learning_state": {
+        "exported": 1,
+        "final_count": 1,
+        "initial_count": 1,
+        "status": "PASS"
+      },
+      "live_alt_lines": {
+        "exported": 51850,
+        "final_count": 51850,
+        "initial_count": 51850,
+        "status": "PASS"
+      },
+      "lock_calibration_curve": {
+        "exported": 1,
+        "final_count": 1,
+        "initial_count": 1,
+        "status": "PASS"
+      },
+      "mlb_hitter_intel_cache": {
+        "exported": 8231,
+        "final_count": 8231,
+        "initial_count": 8231,
+        "status": "PASS"
+      },
+      "mlb_hr_slate": {
+        "exported": 26,
+        "final_count": 26,
+        "initial_count": 26,
+        "status": "PASS"
+      },
+      "mlb_matchup_resolver_cache": {
+        "exported": 7952,
+        "final_count": 7952,
+        "initial_count": 7952,
+        "status": "PASS"
+      },
+      "mlb_player_game_logs": {
+        "exported": 20,
+        "final_count": 20,
+        "initial_count": 20,
+        "status": "PASS"
+      },
+      "mlb_statcast_players": {
+        "exported": 1106,
+        "final_count": 1106,
+        "initial_count": 1106,
+        "status": "PASS"
+      },
+      "mlb_stuff_plus_players": {
+        "exported": 618,
+        "final_count": 618,
+        "initial_count": 618,
+        "status": "PASS"
+      },
+      "mlb_team_k_splits": {
+        "exported": 30,
+        "final_count": 30,
+        "initial_count": 30,
+        "status": "PASS"
+      },
+      "mls_player_matchup_history": {
+        "exported": 100,
+        "final_count": 100,
+        "initial_count": 100,
+        "status": "PASS"
+      },
+      "model_research_evidence": {
+        "exported": 2868,
+        "final_count": 2868,
+        "initial_count": 2868,
+        "status": "PASS"
+      },
+      "nfl_atd_universe_rows": {
+        "exported": 194,
+        "final_count": 194,
+        "initial_count": 194,
+        "status": "PASS"
+      },
+      "nfl_ingest_meta": {
+        "exported": 1,
+        "final_count": 1,
+        "initial_count": 1,
+        "status": "PASS"
+      },
+      "nfl_player_usage": {
+        "exported": 1911,
+        "final_count": 1911,
+        "initial_count": 1911,
+        "status": "PASS"
+      },
+      "nfl_player_weekly": {
+        "exported": 133077,
+        "final_count": 133077,
+        "initial_count": 133077,
+        "status": "PASS"
+      },
+      "odds_api_cache": {
+        "exported": 16722,
+        "final_count": 16722,
+        "initial_count": 16722,
+        "status": "PASS"
+      },
+      "odds_api_quota_state": {
+        "exported": 1,
+        "final_count": 1,
+        "initial_count": 1,
+        "status": "PASS"
+      },
+      "odds_api_request_log": {
+        "exported": 1465521,
+        "final_count": 1465521,
+        "initial_count": 1465521,
+        "status": "PASS"
+      },
+      "odds_bad_market_registry": {
+        "exported": 11,
+        "final_count": 11,
+        "initial_count": 11,
+        "status": "PASS"
+      },
+      "odds_request_flights": {
+        "exported": 194,
+        "final_count": 194,
+        "initial_count": 194,
+        "status": "PASS"
+      },
+      "odds_tournament_registry": {
+        "exported": 370,
+        "final_count": 370,
+        "initial_count": 370,
+        "status": "PASS"
+      },
+      "parlay_history": {
+        "exported": 1012,
+        "final_count": 1012,
+        "initial_count": 1012,
+        "status": "PASS"
+      },
+      "parlay_learning_events": {
+        "exported": 493,
+        "final_count": 493,
+        "initial_count": 493,
+        "status": "PASS"
+      },
+      "parlay_leg_reliability": {
+        "exported": 16,
+        "final_count": 16,
+        "initial_count": 16,
+        "status": "PASS"
+      },
+      "parlay_synergy": {
+        "exported": 19,
+        "final_count": 19,
+        "initial_count": 19,
+        "status": "PASS"
+      },
+      "pick_enrichment": {
+        "exported": 2449,
+        "final_count": 2449,
+        "initial_count": 2449,
+        "status": "PASS"
+      },
+      "pick_line_history": {
+        "exported": 0,
+        "final_count": 0,
+        "initial_count": 0,
+        "status": "PASS"
+      },
+      "picks": {
+        "exported": 275112,
+        "final_count": 275112,
+        "initial_count": 275112,
+        "status": "PASS"
+      },
+      "player_form": {
+        "exported": 132,
+        "final_count": 132,
+        "initial_count": 132,
+        "status": "PASS"
+      },
+      "player_game_actuals": {
+        "exported": 403784,
+        "final_count": 403784,
+        "initial_count": 403784,
+        "status": "PASS"
+      },
+      "player_game_logs": {
+        "exported": 374795,
+        "final_count": 374795,
+        "initial_count": 374795,
+        "status": "PASS"
+      },
+      "player_history": {
+        "exported": 0,
+        "final_count": 0,
+        "initial_count": 0,
+        "status": "PASS"
+      },
+      "player_identities": {
+        "exported": 62306,
+        "final_count": 62306,
+        "initial_count": 62306,
+        "status": "PASS"
+      },
+      "player_identity_redirects": {
+        "exported": 389,
+        "final_count": 389,
+        "initial_count": 389,
+        "status": "PASS"
+      },
+      "player_media": {
+        "exported": 537,
+        "final_count": 537,
+        "initial_count": 537,
+        "status": "PASS"
+      },
+      "player_profiles": {
+        "exported": 39,
+        "final_count": 39,
+        "initial_count": 39,
+        "status": "PASS"
+      },
+      "player_profiles_v2": {
+        "exported": 837,
+        "final_count": 837,
+        "initial_count": 837,
+        "status": "PASS"
+      },
+      "player_stats": {
+        "exported": 7435,
+        "final_count": 7435,
+        "initial_count": 7435,
+        "status": "PASS"
+      },
+      "players": {
+        "exported": 44220,
+        "final_count": 44220,
+        "initial_count": 44220,
+        "status": "PASS"
+      },
+      "prediction_snapshots": {
+        "exported": 155638,
+        "final_count": 155638,
+        "initial_count": 155638,
+        "status": "PASS"
+      },
+      "pregame_snapshots": {
+        "exported": 6514,
+        "final_count": 6514,
+        "initial_count": 6514,
+        "status": "PASS"
+      },
+      "producer_health": {
+        "exported": 18,
+        "final_count": 18,
+        "initial_count": 18,
+        "status": "PASS"
+      },
+      "production_truth_observations": {
+        "exported": 9970,
+        "final_count": 9970,
+        "initial_count": 9970,
+        "status": "PASS"
+      },
+      "propline_alt_lines": {
+        "exported": 0,
+        "final_count": 0,
+        "initial_count": 0,
+        "status": "PASS"
+      },
+      "props_history": {
+        "exported": 32715,
+        "final_count": 32715,
+        "initial_count": 32715,
+        "status": "PASS"
+      },
+      "provider_budget_state": {
+        "exported": 7,
+        "final_count": 7,
+        "initial_count": 7,
+        "status": "PASS"
+      },
+      "provider_fixture_map": {
+        "exported": 19,
+        "final_count": 19,
+        "initial_count": 19,
+        "status": "PASS"
+      },
+      "provider_request_intents": {
+        "exported": 35512,
+        "final_count": 35512,
+        "initial_count": 35512,
+        "status": "PASS"
+      },
+      "provider_stat_cache": {
+        "exported": 30,
+        "final_count": 30,
+        "initial_count": 30,
+        "status": "PASS"
+      },
+      "publication_events": {
+        "exported": 55500,
+        "final_count": 55500,
+        "initial_count": 55500,
+        "status": "PASS"
+      },
+      "publication_mismatch_report": {
+        "exported": 1054499,
+        "final_count": 1054499,
+        "initial_count": 1054499,
+        "status": "PASS"
+      },
+      "reconciliation_downstream": {
+        "exported": 232,
+        "final_count": 232,
+        "initial_count": 232,
+        "status": "PASS"
+      },
+      "refresh_health": {
+        "exported": 80,
+        "final_count": 80,
+        "initial_count": 80,
+        "status": "PASS"
+      },
+      "rollover_slate_events": {
+        "exported": 12,
+        "final_count": 12,
+        "initial_count": 12,
+        "status": "PASS"
+      },
+      "rollover_slates": {
+        "exported": 12,
+        "final_count": 12,
+        "initial_count": 12,
+        "status": "PASS"
+      },
+      "scheduled_jobs": {
+        "exported": 21,
+        "final_count": 21,
+        "initial_count": 21,
+        "status": "PASS"
+      },
+      "scheduler_leases": {
+        "exported": 3,
+        "final_count": 3,
+        "initial_count": 3,
+        "status": "PASS"
+      },
+      "season_totals": {
+        "exported": 898,
+        "final_count": 898,
+        "initial_count": 898,
+        "status": "PASS"
+      },
+      "services_active_registry": {
+        "exported": 22778,
+        "final_count": 22778,
+        "initial_count": 22778,
+        "status": "PASS"
+      },
+      "settlement_events": {
+        "exported": 31243,
+        "final_count": 31243,
+        "initial_count": 31243,
+        "status": "PASS"
+      },
+      "settlement_telemetry": {
+        "exported": 11933,
+        "final_count": 11933,
+        "initial_count": 11933,
+        "status": "PASS"
+      },
+      "simulator_outputs": {
+        "exported": 14991,
+        "final_count": 14991,
+        "initial_count": 14991,
+        "status": "PASS"
+      },
+      "soccer_accuracy": {
+        "exported": 1,
+        "final_count": 1,
+        "initial_count": 1,
+        "status": "PASS"
+      },
+      "soccer_fixtures": {
+        "exported": 1332,
+        "final_count": 1332,
+        "initial_count": 1332,
+        "status": "PASS"
+      },
+      "soccer_ingest_log": {
+        "exported": 4696,
+        "final_count": 4696,
+        "initial_count": 4696,
+        "status": "PASS"
+      },
+      "soccer_matches": {
+        "exported": 25662,
+        "final_count": 25662,
+        "initial_count": 25662,
+        "status": "PASS"
+      },
+      "soccer_player_form": {
+        "exported": 5647,
+        "final_count": 5647,
+        "initial_count": 5647,
+        "status": "PASS"
+      },
+      "soccer_player_game_logs": {
+        "exported": 100025,
+        "final_count": 100025,
+        "initial_count": 100025,
+        "status": "PASS"
+      },
+      "soccer_predictions": {
+        "exported": 643,
+        "final_count": 643,
+        "initial_count": 643,
+        "status": "PASS"
+      },
+      "soccer_standings": {
+        "exported": 286,
+        "final_count": 286,
+        "initial_count": 286,
+        "status": "PASS"
+      },
+      "soccer_teams": {
+        "exported": 710,
+        "final_count": 710,
+        "initial_count": 710,
+        "status": "PASS"
+      },
+      "soccer_transfer_registry": {
+        "exported": 1,
+        "final_count": 1,
+        "initial_count": 1,
+        "status": "PASS"
+      },
+      "sport_refresh_state": {
+        "exported": 7,
+        "final_count": 7,
+        "initial_count": 7,
+        "status": "PASS"
+      },
+      "sportdb_cache": {
+        "exported": 25,
+        "final_count": 25,
+        "initial_count": 25,
+        "status": "PASS"
+      },
+      "sportdb_scorer_cache": {
+        "exported": 116,
+        "final_count": 116,
+        "initial_count": 116,
+        "status": "PASS"
+      },
+      "sports_catalog_snapshots": {
+        "exported": 54,
+        "final_count": 54,
+        "initial_count": 54,
+        "status": "PASS"
+      },
+      "survival_coverage": {
+        "exported": 797,
+        "final_count": 797,
+        "initial_count": 797,
+        "status": "PASS"
+      },
+      "system_state": {
+        "exported": 1,
+        "final_count": 1,
+        "initial_count": 1,
+        "status": "PASS"
+      },
+      "team_form": {
+        "exported": 366,
+        "final_count": 366,
+        "initial_count": 366,
+        "status": "PASS"
+      },
+      "team_game_actuals": {
+        "exported": 60206,
+        "final_count": 60206,
+        "initial_count": 60206,
+        "status": "PASS"
+      },
+      "tennis_league_averages": {
+        "exported": 1,
+        "final_count": 1,
+        "initial_count": 1,
+        "status": "PASS"
+      },
+      "tennis_matches": {
+        "exported": 24459,
+        "final_count": 24459,
+        "initial_count": 24459,
+        "status": "PASS"
+      },
+      "tennis_matches_history": {
+        "exported": 38380,
+        "final_count": 38380,
+        "initial_count": 38380,
+        "status": "PASS"
+      },
+      "tennis_player_stats": {
+        "exported": 2381,
+        "final_count": 2381,
+        "initial_count": 2381,
+        "status": "PASS"
+      },
+      "tennis_players": {
+        "exported": 10330,
+        "final_count": 10330,
+        "initial_count": 10330,
+        "status": "PASS"
+      },
+      "thesportsdb_cache": {
+        "exported": 4306,
+        "final_count": 4306,
+        "initial_count": 4306,
+        "status": "PASS"
+      },
+      "user_activity": {
+        "exported": 10,
+        "final_count": 10,
+        "initial_count": 10,
+        "status": "PASS"
+      },
+      "user_bets": {
+        "exported": 7,
+        "final_count": 7,
+        "initial_count": 7,
+        "status": "PASS"
+      },
+      "users": {
+        "exported": 241,
+        "final_count": 241,
+        "initial_count": 241,
+        "status": "PASS"
+      },
+      "wiki_team_records": {
+        "exported": 1108,
+        "final_count": 1108,
+        "initial_count": 1108,
+        "status": "PASS"
+      },
+      "wiki_top_scorers": {
+        "exported": 46,
+        "final_count": 46,
+        "initial_count": 46,
+        "status": "PASS"
+      }
+    }
+  }
+}
