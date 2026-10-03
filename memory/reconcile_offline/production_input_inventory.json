@@ -1,5 +1,61 @@
 {
   "collections": {
+    "historical_ingestion_state": {
+      "docs_without_logical_key": 0,
+      "duplicate_ids_across_parts": [],
+      "duplicate_logical_keys_across_parts": [],
+      "ids_seen": [
+        "ingest.cfb.2024",
+        "ingest.cfb.2025",
+        "ingest.cfb.2026",
+        "ingest.mlb.2026",
+        "ingest.nba.2024",
+        "ingest.nba.2025",
+        "ingest.nba.2026",
+        "ingest.nfl.2023",
+        "ingest.nfl.2024",
+        "ingest.nfl.2025",
+        "ingest.soccer.2024",
+        "ingest.soccer.2025",
+        "ingest.soccer.2026",
+        "ingest.tennis.2024",
+        "ingest.tennis.2025",
+        "ingest.tennis.2026"
+      ],
+      "logical_keys_seen": [
+        "[\"_id\", \"ingest.cfb.2024\"]",
+        "[\"_id\", \"ingest.cfb.2025\"]",
+        "[\"_id\", \"ingest.cfb.2026\"]",
+        "[\"_id\", \"ingest.mlb.2026\"]",
+        "[\"_id\", \"ingest.nba.2024\"]",
+        "[\"_id\", \"ingest.nba.2025\"]",
+        "[\"_id\", \"ingest.nba.2026\"]",
+        "[\"_id\", \"ingest.nfl.2023\"]",
+        "[\"_id\", \"ingest.nfl.2024\"]",
+        "[\"_id\", \"ingest.nfl.2025\"]",
+        "[\"_id\", \"ingest.soccer.2024\"]",
+        "[\"_id\", \"ingest.soccer.2025\"]",
+        "[\"_id\", \"ingest.soccer.2026\"]",
+        "[\"_id\", \"ingest.tennis.2024\"]",
+        "[\"_id\", \"ingest.tennis.2025\"]",
+        "[\"_id\", \"ingest.tennis.2026\"]"
+      ],
+      "parts": [
+        {
+          "doc_count": 16,
+          "docs_without_logical_key_in_file": 0,
+          "duplicate_ids_within_file": 0,
+          "duplicate_logical_keys_within_file": 0,
+          "file": "historical_ingestion_state.json",
+          "part": null,
+          "sha256": "517737eb9e084a94955edfd605cdd6cfc65d5eb09b99e2052418c65132e5b5ce"
+        }
+      ],
+      "total_docs": 16,
+      "total_parts_declared": null,
+      "unique_logical_keys": 16,
+      "unique_mongo_ids": 16
+    },
     "nfl_ingest_meta": {
       "docs_without_logical_key": 0,
       "duplicate_ids_across_parts": [],
@@ -25,9 +81,212 @@
       "total_parts_declared": null,
       "unique_logical_keys": 1,
       "unique_mongo_ids": 1
+    },
+    "rollover_slate_events": {
+      "docs_without_logical_key": 0,
+      "duplicate_ids_across_parts": [],
+      "duplicate_logical_keys_across_parts": [],
+      "ids_seen": [
+        "6aad575503c46d76dd877f2d",
+        "6aae97b54a0768308117dd12",
+        "6aaf56840c639160c0273c85",
+        "6aaf6b2d0c639160c0279e3a",
+        "6aaf96e50c639160c0287fb5",
+        "6aafa1440c639160c0289f0d",
+        "6ab0ea5cdc07028ff0def06a",
+        "6ab0f744dc07028ff0df17cf",
+        "6ab0f744dc07028ff0df17d0",
+        "6ab0f744dc07028ff0df17d1",
+        "6ab2404bf910de8681ff4331",
+        "6ab243aef910de8681ff5807",
+        "6ab243aef910de8681ff5808",
+        "6ab3dc4cd8d97dffc0b2f51f",
+        "6ab51ec5d8d97dffc0bb509b",
+        "6ab67a4a833686fab136bd42",
+        "6ab7e631dfe19072808a5ae4",
+        "6ab9400fdfe19072809581e1",
+        "6abaa1cddfe19072809e6891",
+        "6abb7a0edfe1907280a45c66"
+      ],
+      "logical_keys_seen": [
+        "[\"slate_date+event+at\", \"2026-09-18\", \"\", \"2026-09-18T15:23:01.896702+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-19\", \"\", \"2026-09-19T14:09:56.078471+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-19\", \"\", \"2026-09-20T03:44:04.740200+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-19\", \"\", \"2026-09-20T05:12:13.517823+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-20\", \"\", \"2026-09-20T08:18:45.276277+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-20\", \"\", \"2026-09-20T09:03:00.033214+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-21\", \"\", \"2026-09-21T08:27:08.445900+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-21\", \"\", \"2026-09-21T09:22:12.394671+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-21\", \"\", \"2026-09-21T09:22:12.407761+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-21\", \"\", \"2026-09-21T09:22:12.419866+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-22\", \"\", \"2026-09-22T08:46:03.432862+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-22\", \"\", \"2026-09-22T09:00:30.512094+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-22\", \"\", \"2026-09-22T09:00:30.520742+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-23\", \"\", \"2026-09-23T14:03:56.667638+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-24\", \"\", \"2026-09-24T12:59:49.911265+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-25\", \"\", \"2026-09-25T13:42:34.700368+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-26\", \"\", \"2026-09-26T15:35:13.830568+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-27\", \"\", \"2026-09-27T16:10:55.462977+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-28\", \"\", \"2026-09-28T17:20:13.172183+00:00\"]",
+        "[\"slate_date+event+at\", \"2026-09-29\", \"\", \"2026-09-29T08:42:54.907029+00:00\"]"
+      ],
+      "parts": [
+        {
+          "doc_count": 20,
+          "docs_without_logical_key_in_file": 0,
+          "duplicate_ids_within_file": 0,
+          "duplicate_logical_keys_within_file": 0,
+          "file": "rollover_slate_events.json",
+          "part": null,
+          "sha256": "74d0ae50136707a6d05b48c0f6182a93f035a122d0c6ddc0f03eaae668648255"
+        }
+      ],
+      "total_docs": 20,
+      "total_parts_declared": null,
+      "unique_logical_keys": 20,
+      "unique_mongo_ids": 20
+    },
+    "rollover_slates": {
+      "docs_without_logical_key": 0,
+      "duplicate_ids_across_parts": [],
+      "duplicate_logical_keys_across_parts": [],
+      "ids_seen": [
+        "6aad575503c46d76dd877f2c",
+        "6aae97b44a0768308117dd11",
+        "6aaf96e50c639160c0287fb4",
+        "6ab0ea5cdc07028ff0def069",
+        "6ab2404bf910de8681ff4330",
+        "6ab3dc4cd8d97dffc0b2f51e",
+        "6ab51ec5d8d97dffc0bb509a",
+        "6ab67a4a833686fab136bd41",
+        "6ab7e631dfe19072808a5ae3",
+        "6ab9400fdfe19072809581e0",
+        "6abaa1cddfe19072809e6890",
+        "6abb7a0edfe1907280a45c65"
+      ],
+      "logical_keys_seen": [
+        "[\"slate_date+scope\", \"2026-09-18\", \"official\"]",
+        "[\"slate_date+scope\", \"2026-09-19\", \"official\"]",
+        "[\"slate_date+scope\", \"2026-09-20\", \"official\"]",
+        "[\"slate_date+scope\", \"2026-09-21\", \"official\"]",
+        "[\"slate_date+scope\", \"2026-09-22\", \"official\"]",
+        "[\"slate_date+scope\", \"2026-09-23\", \"official\"]",
+        "[\"slate_date+scope\", \"2026-09-24\", \"official\"]",
+        "[\"slate_date+scope\", \"2026-09-25\", \"official\"]",
+        "[\"slate_date+scope\", \"2026-09-26\", \"official\"]",
+        "[\"slate_date+scope\", \"2026-09-27\", \"official\"]",
+        "[\"slate_date+scope\", \"2026-09-28\", \"official\"]",
+        "[\"slate_date+scope\", \"2026-09-29\", \"official\"]"
+      ],
+      "parts": [
+        {
+          "doc_count": 12,
+          "docs_without_logical_key_in_file": 0,
+          "duplicate_ids_within_file": 0,
+          "duplicate_logical_keys_within_file": 0,
+          "file": "rollover_slates.json",
+          "part": null,
+          "sha256": "9f1efe6fdbfe15539959fa3b9d794bf4b6b1c717074257d34522632d2d68d5e7"
+        }
+      ],
+      "total_docs": 12,
+      "total_parts_declared": null,
+      "unique_logical_keys": 12,
+      "unique_mongo_ids": 12
+    },
+    "user_bets": {
+      "docs_without_logical_key": 0,
+      "duplicate_ids_across_parts": [],
+      "duplicate_logical_keys_across_parts": [],
+      "ids_seen": [
+        "6a5ff0393e8b18cbfe121658",
+        "6a83d2b97416af9489c31850",
+        "6a90365ecaa9c59362408dfc",
+        "6ab37408d8d97dffc0b09aee",
+        "6ab3740bd8d97dffc0b09aef",
+        "6ab37412d8d97dffc0b09af0",
+        "6ab5fa6b93f318b2d66c2c04"
+      ],
+      "logical_keys_seen": [
+        "[\"user_bet_id\", \"04db0ce1-0aef-4eb6-b7f1-0cc070f66755\"]",
+        "[\"user_bet_id\", \"417fbac9-8ab2-4a62-beaa-25eb02da9a62\"]",
+        "[\"user_bet_id\", \"6a5ff0393e8b18cbfe121658\"]",
+        "[\"user_bet_id\", \"aec1cf5f-e209-488e-8da9-6dbe37818117\"]",
+        "[\"user_bet_id\", \"cb9db263-b82f-4bb9-ad06-71c5ccf01e37\"]",
+        "[\"user_bet_id\", \"e6560b1a-3799-42a7-9bf3-6d8430a42e31\"]",
+        "[\"user_bet_id\", \"fcf33a07-c05c-48a7-b95a-47a8e4d39135\"]"
+      ],
+      "parts": [
+        {
+          "doc_count": 7,
+          "docs_without_logical_key_in_file": 0,
+          "duplicate_ids_within_file": 0,
+          "duplicate_logical_keys_within_file": 0,
+          "file": "user_bets.json",
+          "part": null,
+          "sha256": "1ee4bac3ac1409670cfb96f60f6acb80274c33734fb5b78f1fcecbe8813261c8"
+        }
+      ],
+      "total_docs": 7,
+      "total_parts_declared": null,
+      "unique_logical_keys": 7,
+      "unique_mongo_ids": 7
+    },
+    "users": {
+      "docs_without_logical_key": 0,
+      "duplicate_ids_across_parts": [],
+      "duplicate_logical_keys_across_parts": [],
+      "ids_seen": [
+        "6a2a05be7f929e3bc321bd4c",
+        "6a2a06b65d3b508f605f7d8d",
+        "6a2a06b65d3b508f605f7d8e",
+        "6a2a0817faf7bc3b62a8d34e",
+        "6a2a0fc2b1e00b3d4d993f79",
+        "6a3ddbf2029df69e881a7140",
+        "6a7ed04c60b39a0539f561ca"
+      ],
+      "logical_keys_seen": [
+        "[\"email\", \"bossmanperkins@yahoo.com\"]",
+        "[\"email\", \"demo@lockscore.ai\"]",
+        "[\"email\", \"perkinsd15@yahoo.com\"]",
+        "[\"email\", \"speedtest@test.com\"]",
+        "[\"email\", \"test1@gmail.com\"]",
+        "[\"email\", \"test_948cf556a3@example.com\"]",
+        "[\"email\", \"test_dup_965bdc9e@example.com\"]"
+      ],
+      "parts": [
+        {
+          "doc_count": 7,
+          "docs_without_logical_key_in_file": 0,
+          "duplicate_ids_within_file": 0,
+          "duplicate_logical_keys_within_file": 0,
+          "file": "users.json",
+          "part": null,
+          "sha256": "be8dfa603f37cdfb5ac38e0083b3d3dd7eded728165c476d4cf452674e8e2075"
+        }
+      ],
+      "total_docs": 7,
+      "total_parts_declared": null,
+      "unique_logical_keys": 7,
+      "unique_mongo_ids": 7
     }
   },
   "files": {
+    "historical_ingestion_state.json": {
+      "collection": "historical_ingestion_state",
+      "doc_count": 16,
+      "docs_without_logical_key_in_file": 0,
+      "duplicate_ids_across_parts_contrib": 0,
+      "duplicate_ids_within_file": 0,
+      "duplicate_logical_keys_across_parts_contrib": 0,
+      "duplicate_logical_keys_within_file": 0,
+      "file": "historical_ingestion_state.json",
+      "ingested_at": "2026-10-03T15:35:31.963273+00:00",
+      "part": null,
+      "sha256": "517737eb9e084a94955edfd605cdd6cfc65d5eb09b99e2052418c65132e5b5ce",
+      "size_bytes": 6763,
+      "status": "INGESTED"
+    },
     "nfl_ingest_meta.json": {
       "collection": "nfl_ingest_meta",
       "doc_count": 1,
@@ -42,9 +301,69 @@
       "sha256": "8c987ccf39bc96aa317a80701bfa3c027f7795c1a68243ac202eb1f91452e1ff",
       "size_bytes": 161,
       "status": "INGESTED"
+    },
+    "rollover_slate_events.json": {
+      "collection": "rollover_slate_events",
+      "doc_count": 20,
+      "docs_without_logical_key_in_file": 0,
+      "duplicate_ids_across_parts_contrib": 0,
+      "duplicate_ids_within_file": 0,
+      "duplicate_logical_keys_across_parts_contrib": 0,
+      "duplicate_logical_keys_within_file": 0,
+      "file": "rollover_slate_events.json",
+      "ingested_at": "2026-10-03T15:35:31.963692+00:00",
+      "part": null,
+      "sha256": "74d0ae50136707a6d05b48c0f6182a93f035a122d0c6ddc0f03eaae668648255",
+      "size_bytes": 30046,
+      "status": "INGESTED"
+    },
+    "rollover_slates.json": {
+      "collection": "rollover_slates",
+      "doc_count": 12,
+      "docs_without_logical_key_in_file": 0,
+      "duplicate_ids_across_parts_contrib": 0,
+      "duplicate_ids_within_file": 0,
+      "duplicate_logical_keys_across_parts_contrib": 0,
+      "duplicate_logical_keys_within_file": 0,
+      "file": "rollover_slates.json",
+      "ingested_at": "2026-10-03T15:35:31.963943+00:00",
+      "part": null,
+      "sha256": "9f1efe6fdbfe15539959fa3b9d794bf4b6b1c717074257d34522632d2d68d5e7",
+      "size_bytes": 20617,
+      "status": "INGESTED"
+    },
+    "user_bets.json": {
+      "collection": "user_bets",
+      "doc_count": 7,
+      "docs_without_logical_key_in_file": 0,
+      "duplicate_ids_across_parts_contrib": 0,
+      "duplicate_ids_within_file": 0,
+      "duplicate_logical_keys_across_parts_contrib": 0,
+      "duplicate_logical_keys_within_file": 0,
+      "file": "user_bets.json",
+      "ingested_at": "2026-10-03T15:35:31.964168+00:00",
+      "part": null,
+      "sha256": "1ee4bac3ac1409670cfb96f60f6acb80274c33734fb5b78f1fcecbe8813261c8",
+      "size_bytes": 20902,
+      "status": "INGESTED"
+    },
+    "users.json": {
+      "collection": "users",
+      "doc_count": 7,
+      "docs_without_logical_key_in_file": 0,
+      "duplicate_ids_across_parts_contrib": 0,
+      "duplicate_ids_within_file": 0,
+      "duplicate_logical_keys_across_parts_contrib": 0,
+      "duplicate_logical_keys_within_file": 0,
+      "file": "users.json",
+      "ingested_at": "2026-10-03T15:35:31.964268+00:00",
+      "part": null,
+      "sha256": "be8dfa603f37cdfb5ac38e0083b3d3dd7eded728165c476d4cf452674e8e2075",
+      "size_bytes": 2223,
+      "status": "INGESTED"
     }
   },
-  "generated_at": "2026-10-03T15:16:46.923586+00:00",
+  "generated_at": "2026-10-03T15:36:29.666924+00:00",
   "input_dir": "/tmp/production_reconcile_input",
   "notes": "rev2 \u2014 publication_events reclassified REQUIRED_FULL_DATA. Original Production export filenames accepted (no re-export, no slim). Drop files into /tmp/production_reconcile_input/ and run `python /app/backend/scripts/reconcile_input_ingest.py`. Strictly offline.",
   "ready": false
