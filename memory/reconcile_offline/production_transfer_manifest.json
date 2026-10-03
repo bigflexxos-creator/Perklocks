@@ -1,6 +1,6 @@
 {
-  "spec_version": "2026-10-03.rev2.3",
-  "spec_revision_note": "rev2 \u2014 publication_events reclassified REQUIRED_FULL_DATA (not losslessly reconstructible from picks/prediction_snapshots/pregame_snapshots/settlement_events: _id, immutable `at` per PUBLISHED/REPUBLISHED event, and `publication_source` are irrecoverable). Original Production export filenames are accepted as-is; no re-export, no slim-projection required. `_slim` suffix accepted but NOT mandatory. | rev2.1 \u2014 projection + logical-key labels corrected from observed Production exports (nfl_ingest_meta, user_bets, users, rollover_slates, rollover_slate_events, historical_ingestion_state). | rev2.2 \u2014 publication_events.production_count_known updated 97659\u2192101833 after validated complete export (11 contiguous parts, 0 dups). | rev2.3 \u2014 prediction_snapshots.production_count_known set to 122077 from authoritative Production backup inventory.",
+  "spec_version": "2026-10-03.rev2.4",
+  "spec_revision_note": "rev2 \u2014 publication_events reclassified REQUIRED_FULL_DATA (not losslessly reconstructible from picks/prediction_snapshots/pregame_snapshots/settlement_events: _id, immutable `at` per PUBLISHED/REPUBLISHED event, and `publication_source` are irrecoverable). Original Production export filenames are accepted as-is; no re-export, no slim-projection required. `_slim` suffix accepted but NOT mandatory. | rev2.1 \u2014 projection + logical-key labels corrected from observed Production exports (nfl_ingest_meta, user_bets, users, rollover_slates, rollover_slate_events, historical_ingestion_state). | rev2.2 \u2014 publication_events.production_count_known updated 97659\u2192101833 after validated complete export (11 contiguous parts, 0 dups). | rev2.3 \u2014 prediction_snapshots.production_count_known set to 122077 from authoritative Production backup inventory. | rev2.4 \u2014 prediction_snapshots.production_count_known 122077\u2192126251 after validated complete export (13 contiguous parts, 0 dup immutable identities).",
   "goal": "Minimum Production transfer set \u2014 reconstructs record-level canonical reconciliation PLAN without moving the 645 MB Production archive.",
   "input_dir": "/tmp/production_reconcile_input",
   "ingest_tool": "backend/scripts/reconcile_input_ingest.py",
@@ -518,7 +518,7 @@
       "action": "REQUIRED_FULL_DATA",
       "logical_key": "prediction_id+snapshot_version",
       "preview_count": 155638,
-      "production_count_known": 122077,
+      "production_count_known": 126251,
       "projection": "FULL",
       "projected_fields": [
         "prediction_id",
@@ -545,10 +545,18 @@
       "priority_rank": 15,
       "reason": "Immutable canonical; snapshot_hash is the field that drives HIGH_AUTHORITY_CONFLICT detection.",
       "production_count_known_history": {
-        "previous": null,
-        "adjusted_to": 122077,
-        "reason": "authoritative Production backup inventory",
-        "source": "Production backup"
+        "previous": 122077,
+        "adjusted_to": 126251,
+        "reason": "complete Production backup export \u2014 13 contiguous parts; later export state than earlier inventory",
+        "integrity": {
+          "parts": "1..13 contiguous",
+          "dup_ids": 0,
+          "dup_logical_keys": 0,
+          "docs_without_logical_key": 0,
+          "unique_filenames": true,
+          "unique_shas": true
+        },
+        "note": "+4174 delta matches the already-resolved publication_events export drift"
       }
     },
     {
