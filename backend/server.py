@@ -168,6 +168,14 @@ try:
 except Exception as _npv2_err:
     logger.warning("NFL Player Props 2.0 routes failed to mount: %s", _npv2_err)
 
+# Perklocks canonical-cutover admin surface (DB routing, import, status).
+try:
+    from routes.canonical_cutover_routes import router as _canonical_cutover_router
+    app.include_router(_canonical_cutover_router)
+    logger.info("Canonical cutover admin routes mounted at /api/admin/canonical-* and /api/admin/data-authority/*")
+except Exception as _ccut_err:
+    logger.warning("Canonical cutover routes failed to mount: %s", _ccut_err)
+
 
 
 # ────────────────────── Data version (cache-bust signal) ──────────────────────
