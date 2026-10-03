@@ -1,0 +1,1274 @@
+{
+  "spec_version": "phase2.v1",
+  "rules_version": "phase2.rev1-2026-10-03",
+  "generated_at": "2026-10-03T17:05:08.887933+00:00",
+  "source_fingerprints": {
+    "preview_backup": {
+      "path": "/tmp/perklocks_preview_FULL_backup_20261003.zip",
+      "sha256": "55788ead6f3f509dfca727a9a0e5c7c97a7eff7edc12018fb66e9660e33589c1",
+      "size": 508418554
+    },
+    "production_files": {
+      "games_part1.json": {
+        "sha256": "7c61e5e1ed43fc0b6af8c07b8252e870218b910ab7a9b2f6bb94b135b786bede",
+        "size": 3138200,
+        "doc_count": 10000,
+        "collection": "games",
+        "part": 1
+      },
+      "games_part2.json": {
+        "sha256": "3aa0bea61ddcc41980e1814253d2b79640c70b3bd5beb4bf093b8068140f704e",
+        "size": 11877,
+        "doc_count": 50,
+        "collection": "games",
+        "part": 2
+      },
+      "historical_ingestion_state.json": {
+        "sha256": "517737eb9e084a94955edfd605cdd6cfc65d5eb09b99e2052418c65132e5b5ce",
+        "size": 6763,
+        "doc_count": 16,
+        "collection": "historical_ingestion_state",
+        "part": null
+      },
+      "nfl_ingest_meta.json": {
+        "sha256": "8c987ccf39bc96aa317a80701bfa3c027f7795c1a68243ac202eb1f91452e1ff",
+        "size": 161,
+        "doc_count": 1,
+        "collection": "nfl_ingest_meta",
+        "part": null
+      },
+      "nfl_player_weekly_part1.json": {
+        "sha256": "708119b59ccfe7cc9983d9a20b5c5f0357eb7067d9eb77074c112840b3e638f7",
+        "size": 8829122,
+        "doc_count": 10000,
+        "collection": "nfl_player_weekly",
+        "part": 1
+      },
+      "nfl_player_weekly_part10.json": {
+        "sha256": "3b811e353a807878e6e0d4423719df40019ff5a4dd1ac29f6debd25e2023b5bc",
+        "size": 8827928,
+        "doc_count": 10000,
+        "collection": "nfl_player_weekly",
+        "part": 10
+      },
+      "nfl_player_weekly_part11.json": {
+        "sha256": "6b458336070e7b266cbed5ce9243f8c96b915213a261369ce322b47ccf6a8b59",
+        "size": 8843901,
+        "doc_count": 10000,
+        "collection": "nfl_player_weekly",
+        "part": 11
+      },
+      "nfl_player_weekly_part12.json": {
+        "sha256": "0c7b3e68253d310028916d34b68a99dcd6288ca89a9b793381a9e17f45ab6e00",
+        "size": 8817879,
+        "doc_count": 10000,
+        "collection": "nfl_player_weekly",
+        "part": 12
+      },
+      "nfl_player_weekly_part13.json": {
+        "sha256": "5056cb88fe2f944d49335e8b0f3d60ae124f66df7c0509772c361c8f865bb35b",
+        "size": 8841481,
+        "doc_count": 10000,
+        "collection": "nfl_player_weekly",
+        "part": 13
+      },
+      "nfl_player_weekly_part14.json": {
+        "sha256": "3081ddce22a0645b9ac89b94e63ec02d524e244f75cff002de4bcac832f095d2",
+        "size": 2701250,
+        "doc_count": 3063,
+        "collection": "nfl_player_weekly",
+        "part": 14
+      },
+      "nfl_player_weekly_part2.json": {
+        "sha256": "672148d675f768ee436b31bd2325cea3dd23ed72e9105ebb815c2fc11e02e942",
+        "size": 8847243,
+        "doc_count": 10000,
+        "collection": "nfl_player_weekly",
+        "part": 2
+      },
+      "nfl_player_weekly_part3.json": {
+        "sha256": "4d90b999bb8cfc5c65db3773bac61b1e0ed3a2fd471bf7c1f121a174d6cdd5d5",
+        "size": 8842059,
+        "doc_count": 10000,
+        "collection": "nfl_player_weekly",
+        "part": 3
+      },
+      "nfl_player_weekly_part4.json": {
+        "sha256": "379cb3eed06b0ce098af36602328fbb065cc9f822d3feef99c80f6fe32cf1086",
+        "size": 8841552,
+        "doc_count": 10000,
+        "collection": "nfl_player_weekly",
+        "part": 4
+      },
+      "nfl_player_weekly_part5.json": {
+        "sha256": "25ef45d86e14eb3864c4df1dbd1450b865d37dbcb1cca8f6724f475d848ed768",
+        "size": 8840782,
+        "doc_count": 10000,
+        "collection": "nfl_player_weekly",
+        "part": 5
+      },
+      "nfl_player_weekly_part6.json": {
+        "sha256": "03a49149deab9769af7995af671d5ac16ae333d0f36116c62ecba6d8d2a9d11c",
+        "size": 8834962,
+        "doc_count": 10000,
+        "collection": "nfl_player_weekly",
+        "part": 6
+      },
+      "nfl_player_weekly_part7.json": {
+        "sha256": "e13a907da0487fa3034fd066666756fa3bf269855b42cb266c68a1b4192ffa7d",
+        "size": 8836864,
+        "doc_count": 10000,
+        "collection": "nfl_player_weekly",
+        "part": 7
+      },
+      "nfl_player_weekly_part8.json": {
+        "sha256": "346694184d741b8405f5b078fcecea7827d77cb309733ecc77b7847cca0ebc07",
+        "size": 8836707,
+        "doc_count": 10000,
+        "collection": "nfl_player_weekly",
+        "part": 8
+      },
+      "nfl_player_weekly_part9.json": {
+        "sha256": "165677ab3347cc62d7b89878e0c052018350349f371c96714e7f829373bb2f06",
+        "size": 8844645,
+        "doc_count": 10000,
+        "collection": "nfl_player_weekly",
+        "part": 9
+      },
+      "parlay_history.json": {
+        "sha256": "afe64b3d464a22e9421046d649f033b5705c22c6f3c4852c87d50979deddf998",
+        "size": 6471943,
+        "doc_count": 1281,
+        "collection": "parlay_history",
+        "part": null
+      },
+      "picks_part1.json": {
+        "sha256": "55062e565284bfef3f52030e789c3338de853f3e641a944dab4ef8a44ceeabaf",
+        "size": 90652818,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 1
+      },
+      "picks_part10.json": {
+        "sha256": "40736cf0a58d071dfd3fe1715f11725bed8e724f567f7f471dec449181eb07ba",
+        "size": 23680872,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 10
+      },
+      "picks_part11.json": {
+        "sha256": "8bef1e888cf9aed3ee82194c5ecfa5e213361520d7fbbb549c40fbe33369df7e",
+        "size": 18774805,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 11
+      },
+      "picks_part12.json": {
+        "sha256": "158e7cf7c4d8d08f1c80e58921988500ed8fa1c903623cbd73c734bbe9743d3f",
+        "size": 19766580,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 12
+      },
+      "picks_part13.json": {
+        "sha256": "39cf8ee64f50bb7930edc9c6984dff6fb516621aa7899e4d8eeb38f2ceba71bd",
+        "size": 22817905,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 13
+      },
+      "picks_part14.json": {
+        "sha256": "71bf38889c096071047973120ec500349ac2efc4c8dcfebf67718eee50ba31a3",
+        "size": 23182866,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 14
+      },
+      "picks_part15.json": {
+        "sha256": "a875d58568e27e7e68757a820fd5bc716ab8a4282655b4bc08d68066c47d82c1",
+        "size": 24614396,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 15
+      },
+      "picks_part16.json": {
+        "sha256": "900c84910fad5bf6fe622aa660a4c6947c5bd9aeffa4e7a641f7162622c1dd47",
+        "size": 25289203,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 16
+      },
+      "picks_part17.json": {
+        "sha256": "0270dfb14da626f6c578a160f0f9f38532b9354ace2e0b6ba4381d4a084d8415",
+        "size": 26669897,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 17
+      },
+      "picks_part18.json": {
+        "sha256": "99cd1fa62317ea10b2500b3b62752bdc42918dea38e675562ea455dbefb5075a",
+        "size": 30997943,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 18
+      },
+      "picks_part19.json": {
+        "sha256": "179024a2e3cb9c454067151196c5dde600beacfb28cad9b83c715ebdb635d784",
+        "size": 30071493,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 19
+      },
+      "picks_part2.json": {
+        "sha256": "8cb5f7ec0f01374d95344ca821f8579ed5b12ca5c96605215c7241c362220012",
+        "size": 93743112,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 2
+      },
+      "picks_part20.json": {
+        "sha256": "fea3773f5635fcc8f69b8bddd94067f50a48b38634161ffa3c8a2e4df433b42f",
+        "size": 63814353,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 20
+      },
+      "picks_part21.json": {
+        "sha256": "1819fb5cda6f98407a6554cc43b358565d2e8c6363051196392f32a9752a877f",
+        "size": 33945439,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 21
+      },
+      "picks_part22.json": {
+        "sha256": "d03d39609af06e3712f567ceb9f47cbe2c3764e0177fe88a377e9666c6b9fcc3",
+        "size": 36967200,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 22
+      },
+      "picks_part23.json": {
+        "sha256": "05c820b36bd90a645b743dfac786aa6d54ef295014a9572d8714e90f16a1b05e",
+        "size": 37766357,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 23
+      },
+      "picks_part24.json": {
+        "sha256": "c4b5f2cb744703392525d90530f6fad6cb78f0f62706afd69d0c9d3849799117",
+        "size": 35596562,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 24
+      },
+      "picks_part25.json": {
+        "sha256": "dbdfffedb71a5ebf340a2a0423dd889b10d172ee4b94618366fb594acdf1fdcc",
+        "size": 36843665,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 25
+      },
+      "picks_part26.json": {
+        "sha256": "702048325f128bf00e5e52427d2219e7de19ab1334c1c387d2e3c335a7bb7b65",
+        "size": 50695065,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 26
+      },
+      "picks_part27.json": {
+        "sha256": "33c47951a3e3f06e6aa726b0eaace6ac045b9f5dc990619ace9d385f48adc8c8",
+        "size": 36992231,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 27
+      },
+      "picks_part28.json": {
+        "sha256": "622126baf426f27e2ea50954e498d9d968c69959c19521c23f72c1faa144620a",
+        "size": 51262126,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 28
+      },
+      "picks_part29.json": {
+        "sha256": "e785d524b01dcba41f80da753ca4986217ea92e4b582e94537110840b3475619",
+        "size": 91134869,
+        "doc_count": 7089,
+        "collection": "picks",
+        "part": 29
+      },
+      "picks_part3.json": {
+        "sha256": "828d8696b227561074bd7424e48a7cd2d8aa265a4b9d28454459134cef8b4809",
+        "size": 26165050,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 3
+      },
+      "picks_part4.json": {
+        "sha256": "21b7e13dd4c220d288d3ebc425210a6bd304d63314da378fe2701ad21b4598fb",
+        "size": 23699869,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 4
+      },
+      "picks_part5.json": {
+        "sha256": "bc06cdd862073606ae871bf715378bc97e9f0bf153a1dcf1778b18500b3f53ba",
+        "size": 24860630,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 5
+      },
+      "picks_part6.json": {
+        "sha256": "4df3bfad2c47b3d3723853bccfb79cec82b58c5daf0c913729c48fadd25d3add",
+        "size": 23311164,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 6
+      },
+      "picks_part7.json": {
+        "sha256": "7ced437f8e2d9c8e1cd76b591b65efa4b7abf7b5fa26326eeb2c8032aa975631",
+        "size": 23589181,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 7
+      },
+      "picks_part8.json": {
+        "sha256": "3bb2abdf642754d8b4a0d40e4134cd28bd45fdcf38f230f81ed23f2d0639ce78",
+        "size": 20562568,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 8
+      },
+      "picks_part9.json": {
+        "sha256": "3f6614e1b25a96011ab500254609135b4ef396acf80779a128d2d1446385a1f2",
+        "size": 31235371,
+        "doc_count": 10000,
+        "collection": "picks",
+        "part": 9
+      },
+      "player_game_actuals_part1.json": {
+        "sha256": "fc22a7e42ad4a157ea7ebfd34dfa2a01af349e9ab1004d5685274f874bd79c90",
+        "size": 6907508,
+        "doc_count": 10000,
+        "collection": "player_game_actuals",
+        "part": 1
+      },
+      "player_game_actuals_part10.json": {
+        "sha256": "b47dbf3cca74dd05a5b98e71a19dfb26b87b71f1a6c3dea91cdd50e8abd11729",
+        "size": 7229006,
+        "doc_count": 10000,
+        "collection": "player_game_actuals",
+        "part": 10
+      },
+      "player_game_actuals_part11.json": {
+        "sha256": "4454edf87db7b3324113a6a0e307111fd55c2360bbb6675450894bf9c3f51ea3",
+        "size": 4780795,
+        "doc_count": 6481,
+        "collection": "player_game_actuals",
+        "part": 11
+      },
+      "player_game_actuals_part2.json": {
+        "sha256": "1ce235717ee9a2100a9d23e3d2c6f8507b4e4b2ad363a6a2dfe639b00e11822d",
+        "size": 6908433,
+        "doc_count": 10000,
+        "collection": "player_game_actuals",
+        "part": 2
+      },
+      "player_game_actuals_part3.json": {
+        "sha256": "a7c643c1cfd3a867050d118b9e44baa2cbc1a3e07335fdfa772c339ea5d1df55",
+        "size": 6906562,
+        "doc_count": 10000,
+        "collection": "player_game_actuals",
+        "part": 3
+      },
+      "player_game_actuals_part4.json": {
+        "sha256": "e6c941c0bf8bd0594632e9ac67d849c61032baea165410212e4308ecca0f3a10",
+        "size": 6899096,
+        "doc_count": 10000,
+        "collection": "player_game_actuals",
+        "part": 4
+      },
+      "player_game_actuals_part5.json": {
+        "sha256": "c1bf96cb04e41bbfd9cf9b7fa847fd0decb612aec516148383436fd3d100503d",
+        "size": 6893351,
+        "doc_count": 10000,
+        "collection": "player_game_actuals",
+        "part": 5
+      },
+      "player_game_actuals_part6.json": {
+        "sha256": "3748b3142db460de411bb1fb7d1483ee6e143e119f54a7c7806a0699358d00c2",
+        "size": 6884113,
+        "doc_count": 10000,
+        "collection": "player_game_actuals",
+        "part": 6
+      },
+      "player_game_actuals_part7.json": {
+        "sha256": "405060c2bf9e3a0c5e484cabd96d08aa5e61fabf3b68b85a7e46480afdf721bb",
+        "size": 6911840,
+        "doc_count": 10000,
+        "collection": "player_game_actuals",
+        "part": 7
+      },
+      "player_game_actuals_part8.json": {
+        "sha256": "232ea8f9da9916dbb384727292c5efb345eb464a4d75fa7d8db4667b85bef45d",
+        "size": 6942560,
+        "doc_count": 10000,
+        "collection": "player_game_actuals",
+        "part": 8
+      },
+      "player_game_actuals_part9.json": {
+        "sha256": "25e33a88cd0979466c1be63d09c044fa077df4e9e66f4a3b845cac179d0804cf",
+        "size": 6940599,
+        "doc_count": 10000,
+        "collection": "player_game_actuals",
+        "part": 9
+      },
+      "player_game_logs_part1.json": {
+        "sha256": "9d1df5eb669880074952c04cbb23f0582d695b755018c6e0f0ec6b31ce6c3be7",
+        "size": 3008352,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 1
+      },
+      "player_game_logs_part10.json": {
+        "sha256": "9457336a623bf80558cc302397b008c74608ac586c53ab1dd8f2eb41d9c9b81f",
+        "size": 3038945,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 10
+      },
+      "player_game_logs_part11.json": {
+        "sha256": "f05d972f19d917150da62223b9879007a6767247c9447d5e72f3c2d44b13e02e",
+        "size": 3038654,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 11
+      },
+      "player_game_logs_part12.json": {
+        "sha256": "aa4cdb5b7f0f556ef4f35964235b857d61ce101bfba107cfafd92326b36f5ddc",
+        "size": 3035278,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 12
+      },
+      "player_game_logs_part13.json": {
+        "sha256": "4bc887eb4417897f88586d57f360b4935c86cfd3e007d063815f005cf68cb1f4",
+        "size": 2952826,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 13
+      },
+      "player_game_logs_part14.json": {
+        "sha256": "03be9ffbb1e619be7e6b89496467497ad69d3512601aad5ab4f9e373b4d8c03f",
+        "size": 2938972,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 14
+      },
+      "player_game_logs_part15.json": {
+        "sha256": "9e0e3d71c4d0186685cb554fc9c4041ffe91776351b3b7e8ac9a659325126e4e",
+        "size": 2941271,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 15
+      },
+      "player_game_logs_part16.json": {
+        "sha256": "52e322dd603c5570c2a09b11f8189d170f6ec47ebcfd793e074c715f0d985b14",
+        "size": 2939397,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 16
+      },
+      "player_game_logs_part17.json": {
+        "sha256": "e443296323037149442fa12446204c88b581cac519b91b7a36d7a3275d77e4b8",
+        "size": 3282272,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 17
+      },
+      "player_game_logs_part18.json": {
+        "sha256": "296e69ffdda7782920add4c1dcb14bde41ff8ea1c6876eead91becd59d46fbfb",
+        "size": 3850439,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 18
+      },
+      "player_game_logs_part19.json": {
+        "sha256": "233492a48b4ce0365568a2ef145e50a50195c4492c5e4b87e25935c798f6504f",
+        "size": 2982931,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 19
+      },
+      "player_game_logs_part2.json": {
+        "sha256": "380fb3cdb58b242cbc1cdff70650f11451f98eba08a663799258d4ac8cf7da3f",
+        "size": 2986066,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 2
+      },
+      "player_game_logs_part20.json": {
+        "sha256": "2ccb5236e0ef8576bd1bb873ec0767878a0b13d4f8ad8f22d991aae2a820450d",
+        "size": 3008485,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 20
+      },
+      "player_game_logs_part21.json": {
+        "sha256": "b30b7a1089e2a618bb1a4baaad5431e973c6740b6c1558f70195d86a229ae393",
+        "size": 1186378,
+        "doc_count": 3926,
+        "collection": "player_game_logs",
+        "part": 21
+      },
+      "player_game_logs_part3.json": {
+        "sha256": "d4ba9b8b3a17667dfbcc738b0c814e3284cc55a864b1e7829c97c2571970f19f",
+        "size": 2988298,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 3
+      },
+      "player_game_logs_part4.json": {
+        "sha256": "887a3e9a8486ef4cb408c1e54f9d15bf8c6e1b8af96f4feb1b453817089e7cb4",
+        "size": 2987556,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 4
+      },
+      "player_game_logs_part5.json": {
+        "sha256": "da2452cc76fa0c7a0c52dfeee9fa5bf5049ce090fd896188fca716fe6c8b3029",
+        "size": 2987401,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 5
+      },
+      "player_game_logs_part6.json": {
+        "sha256": "3004894036169558bd4b229c242411fbb3ae973780b7564a91fea6407811d235",
+        "size": 2988541,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 6
+      },
+      "player_game_logs_part7.json": {
+        "sha256": "00009b95c4acf734a8bc13600c9b4bf8f8091ea6263a7a1e15b7d7926d1707cc",
+        "size": 2988054,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 7
+      },
+      "player_game_logs_part8.json": {
+        "sha256": "00d4c43e4fdd64688ff6ee85e25ae31234c0939c863fed7eba005a2a1076c186",
+        "size": 3008149,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 8
+      },
+      "player_game_logs_part9.json": {
+        "sha256": "72aee845eb2d29c6acbeb1994f29ae593a612d75912e13365cc0ce8a044e6c08",
+        "size": 3039023,
+        "doc_count": 10000,
+        "collection": "player_game_logs",
+        "part": 9
+      },
+      "player_identities_part1.json": {
+        "sha256": "7744782862a6ca920af101f3acd2d344f67f6cbbe495e0ff38394cce5edbf252",
+        "size": 23853399,
+        "doc_count": 10000,
+        "collection": "player_identities",
+        "part": 1
+      },
+      "player_identities_part2.json": {
+        "sha256": "593c2fbdd1ee055edd82f15471c998543423965f35f3069e91176f7c2eea1d44",
+        "size": 7189480,
+        "doc_count": 10000,
+        "collection": "player_identities",
+        "part": 2
+      },
+      "player_identities_part3.json": {
+        "sha256": "e8f2ebe7b0ae588da558c05b63145d17ad97a6f90ca3825645f4ebfa109dc54b",
+        "size": 7454522,
+        "doc_count": 10000,
+        "collection": "player_identities",
+        "part": 3
+      },
+      "player_identities_part4.json": {
+        "sha256": "4f98eca52fea72269a68a421e781a08fe5a0fd6224f39a9054628330d524993c",
+        "size": 699971,
+        "doc_count": 994,
+        "collection": "player_identities",
+        "part": 4
+      },
+      "prediction_snapshots_part1.json": {
+        "sha256": "ed4048f32cf039b615b717352fb3fb88e2693f589c6308d7fb43c358d0957294",
+        "size": 16696659,
+        "doc_count": 10000,
+        "collection": "prediction_snapshots",
+        "part": 1
+      },
+      "prediction_snapshots_part10.json": {
+        "sha256": "2ec5e967cb06f1de7906d16576a30e0c636962ec190148d47b8e5575eaf87eb8",
+        "size": 31579221,
+        "doc_count": 10000,
+        "collection": "prediction_snapshots",
+        "part": 10
+      },
+      "prediction_snapshots_part11.json": {
+        "sha256": "8f1c283407e15a960c642a5c6a29546fbdc86ace7d650f5a4e2e29b4fc9809fc",
+        "size": 31427017,
+        "doc_count": 10000,
+        "collection": "prediction_snapshots",
+        "part": 11
+      },
+      "prediction_snapshots_part12.json": {
+        "sha256": "4b282cf68b48bfd7b688598d9d7f2c35903e13ee8bc1437444079966636f5db6",
+        "size": 28171229,
+        "doc_count": 10000,
+        "collection": "prediction_snapshots",
+        "part": 12
+      },
+      "prediction_snapshots_part13.json": {
+        "sha256": "c427ee06008168d13e7ef99aa7e762de81d571f0d24a6c46175b0ac0e79bac6d",
+        "size": 16486937,
+        "doc_count": 6251,
+        "collection": "prediction_snapshots",
+        "part": 13
+      },
+      "prediction_snapshots_part2.json": {
+        "sha256": "375ebf6445713315ac8204df096ed75d71d0bf290a5f1e539d950e3384fb896d",
+        "size": 16867963,
+        "doc_count": 10000,
+        "collection": "prediction_snapshots",
+        "part": 2
+      },
+      "prediction_snapshots_part3.json": {
+        "sha256": "25424a9414fe02798f6184fc7f8ea0728c8ac0c22d445d167675767607884de7",
+        "size": 21508464,
+        "doc_count": 10000,
+        "collection": "prediction_snapshots",
+        "part": 3
+      },
+      "prediction_snapshots_part4.json": {
+        "sha256": "ea6a985503471e595390f752aa762be41c054ddd1cb630c3542d6b9a107bdb8a",
+        "size": 30725740,
+        "doc_count": 10000,
+        "collection": "prediction_snapshots",
+        "part": 4
+      },
+      "prediction_snapshots_part5.json": {
+        "sha256": "0cec8d2815146b14c96cdf2d4c0bbf421322a333b8f2f0e6b8bd783b964132ec",
+        "size": 31917251,
+        "doc_count": 10000,
+        "collection": "prediction_snapshots",
+        "part": 5
+      },
+      "prediction_snapshots_part6.json": {
+        "sha256": "56b0d0cb18e9b5ac5156c9f4f7a34ccb5c78cdb1b70a8eaf9b2c6d3f34ab5557",
+        "size": 31937897,
+        "doc_count": 10000,
+        "collection": "prediction_snapshots",
+        "part": 6
+      },
+      "prediction_snapshots_part7.json": {
+        "sha256": "e899a08514117e67b9e86810f058117c6e0ca8012b2d51910ed4d1ce2e6eb485",
+        "size": 30187506,
+        "doc_count": 10000,
+        "collection": "prediction_snapshots",
+        "part": 7
+      },
+      "prediction_snapshots_part8.json": {
+        "sha256": "145bc2da877aaa789e6bfbcc0e9678b074c6e351579811799e88197c69b568bc",
+        "size": 31227551,
+        "doc_count": 10000,
+        "collection": "prediction_snapshots",
+        "part": 8
+      },
+      "prediction_snapshots_part9.json": {
+        "sha256": "aa64e586340027dd90d8563d9db15a38c757860d9fe5d1921eabdf3e798793d4",
+        "size": 31625929,
+        "doc_count": 10000,
+        "collection": "prediction_snapshots",
+        "part": 9
+      },
+      "pregame_snapshots.json": {
+        "sha256": "1129f14ff8e9df29ff954c06d4e261c29bf22ea22596b7235a6888d4c48802f1",
+        "size": 3805520,
+        "doc_count": 7087,
+        "collection": "pregame_snapshots",
+        "part": null
+      },
+      "publication_events_part1.json": {
+        "sha256": "31f7ce4d1cb03922bc9633863b823f8416f066ab871250f8a688febc5b5ab2ff",
+        "size": 5289432,
+        "doc_count": 10000,
+        "collection": "publication_events",
+        "part": 1
+      },
+      "publication_events_part10.json": {
+        "sha256": "f64857eb1dd2ff084d2eff7f8903ecf82edaa8dd1f45801a730b317e5b7b6abf",
+        "size": 5272991,
+        "doc_count": 10000,
+        "collection": "publication_events",
+        "part": 10
+      },
+      "publication_events_part11.json": {
+        "sha256": "33216a57f25e50584a670124cdb3bc12583a1489da8cf39dcc352b51f1cefb62",
+        "size": 965947,
+        "doc_count": 1833,
+        "collection": "publication_events",
+        "part": 11
+      },
+      "publication_events_part2.json": {
+        "sha256": "0a323fc265f444555732de7d2a5e7334a9882e64a6dda5898c29120f0a8a35d2",
+        "size": 5272730,
+        "doc_count": 10000,
+        "collection": "publication_events",
+        "part": 2
+      },
+      "publication_events_part3.json": {
+        "sha256": "804a092dec0e70aca960c4915ca9ef72d1241d039aed087f42618e1d5119ed6b",
+        "size": 5272934,
+        "doc_count": 10000,
+        "collection": "publication_events",
+        "part": 3
+      },
+      "publication_events_part4.json": {
+        "sha256": "52dcdcdc4adc28665eb43e42bf7b1ca904e3a49e911ea010fa4f39b77f576331",
+        "size": 5272916,
+        "doc_count": 10000,
+        "collection": "publication_events",
+        "part": 4
+      },
+      "publication_events_part5.json": {
+        "sha256": "2ce389ef5ad47a885ad491661835344fd4308b671932a5a8212aadbf76a9b050",
+        "size": 5270784,
+        "doc_count": 10000,
+        "collection": "publication_events",
+        "part": 5
+      },
+      "publication_events_part6.json": {
+        "sha256": "1b576717aad86990461bd5ac660a062261ad0ce8e2888eae56c33b600099820f",
+        "size": 5270973,
+        "doc_count": 10000,
+        "collection": "publication_events",
+        "part": 6
+      },
+      "publication_events_part7.json": {
+        "sha256": "3cd169fd4618831da875938f51a963408748016014ab65e23aeb7dcd23ca2a49",
+        "size": 5273961,
+        "doc_count": 10000,
+        "collection": "publication_events",
+        "part": 7
+      },
+      "publication_events_part8.json": {
+        "sha256": "bf8f47ae70e46b7c7ffa126ea41901be0a308181920c760fb47e457505afc30b",
+        "size": 5292253,
+        "doc_count": 10000,
+        "collection": "publication_events",
+        "part": 8
+      },
+      "publication_events_part9.json": {
+        "sha256": "7fab2f7ea2dd71023baa4bb68604853d8bb67590f77d8068e0b0e9e27c1e7b9e",
+        "size": 5283578,
+        "doc_count": 10000,
+        "collection": "publication_events",
+        "part": 9
+      },
+      "rollover_slate_events.json": {
+        "sha256": "74d0ae50136707a6d05b48c0f6182a93f035a122d0c6ddc0f03eaae668648255",
+        "size": 30046,
+        "doc_count": 20,
+        "collection": "rollover_slate_events",
+        "part": null
+      },
+      "rollover_slates.json": {
+        "sha256": "9f1efe6fdbfe15539959fa3b9d794bf4b6b1c717074257d34522632d2d68d5e7",
+        "size": 20617,
+        "doc_count": 12,
+        "collection": "rollover_slates",
+        "part": null
+      },
+      "settlement_events_part1.json": {
+        "sha256": "b84d70168e078dac02556fbb82764799139356dbae0504a75b068759948b924c",
+        "size": 43929126,
+        "doc_count": 50000,
+        "collection": "settlement_events",
+        "part": 1
+      },
+      "settlement_events_part10.json": {
+        "sha256": "28f34a1ffb3655dfa2d91adc68a82a94769dc4f42d210963df0fb29dc370db37",
+        "size": 13603647,
+        "doc_count": 15804,
+        "collection": "settlement_events",
+        "part": 10
+      },
+      "settlement_events_part2.json": {
+        "sha256": "3e4dfde89d74c0ae846b14464f90d6ce2c8cb990ab52066c2960d7d2988755e0",
+        "size": 46755536,
+        "doc_count": 50000,
+        "collection": "settlement_events",
+        "part": 2
+      },
+      "settlement_events_part3.json": {
+        "sha256": "1a8a6b39f3861e5b2ca5f0d26c69aa3490cb9447a529e915b5eb9ce68f2173da",
+        "size": 46193981,
+        "doc_count": 50000,
+        "collection": "settlement_events",
+        "part": 3
+      },
+      "settlement_events_part4.json": {
+        "sha256": "7a9f4b968605fa96eb210b30eecb0aaab2b66be39c0d4e73f4c2514f8178dd48",
+        "size": 47058492,
+        "doc_count": 50000,
+        "collection": "settlement_events",
+        "part": 4
+      },
+      "settlement_events_part5.json": {
+        "sha256": "0e4a62d6984cb0cc0fff351347b09f4fb49a39d910b22e71cc0f19baaa64fd4b",
+        "size": 46738429,
+        "doc_count": 50000,
+        "collection": "settlement_events",
+        "part": 5
+      },
+      "settlement_events_part6.json": {
+        "sha256": "b9dc340b5ed08ed5ec8e7df2b3dd62a3e15a9b2677284a6542be2f9a34dfb329",
+        "size": 45713066,
+        "doc_count": 50000,
+        "collection": "settlement_events",
+        "part": 6
+      },
+      "settlement_events_part7.json": {
+        "sha256": "b74b37366fdd5291597a54f19e4abdc61befc6357a169bac66f2ab09d4f549f0",
+        "size": 46226454,
+        "doc_count": 50000,
+        "collection": "settlement_events",
+        "part": 7
+      },
+      "settlement_events_part8.json": {
+        "sha256": "400088ba874e3f94599e664e8c1b1a542555601a8d219e05d5331dfb64af9f82",
+        "size": 47065619,
+        "doc_count": 50000,
+        "collection": "settlement_events",
+        "part": 8
+      },
+      "settlement_events_part9.json": {
+        "sha256": "92e54b4dd748d261f04a78cadce80988187f5b31b0abe882e218e3cf2764a6be",
+        "size": 46383109,
+        "doc_count": 50000,
+        "collection": "settlement_events",
+        "part": 9
+      },
+      "soccer_matches_part1.json": {
+        "sha256": "4f3d5e9c7ef05d25c7236a4deb6d9508790441df6c12eb2257a746ec1c48ff76",
+        "size": 4313732,
+        "doc_count": 10000,
+        "collection": "soccer_matches",
+        "part": 1
+      },
+      "soccer_matches_part2.json": {
+        "sha256": "ae8dac7bebd3e57b39afc8d629354dc7d37b0cf5c2dfb1403e7db685eacb896c",
+        "size": 3575520,
+        "doc_count": 8194,
+        "collection": "soccer_matches",
+        "part": 2
+      },
+      "soccer_player_game_logs_part1.json": {
+        "sha256": "05f244202fb35956cb20745eb472f4da783c35aa7bd3b48801b971627ffcbd2f",
+        "size": 10410537,
+        "doc_count": 10000,
+        "collection": "soccer_player_game_logs",
+        "part": 1
+      },
+      "soccer_player_game_logs_part10.json": {
+        "sha256": "cdc56d90236fda21ecf0643409dd01e54047d396c1a48ec82363a8dd0a53d2d3",
+        "size": 7892946,
+        "doc_count": 10000,
+        "collection": "soccer_player_game_logs",
+        "part": 10
+      },
+      "soccer_player_game_logs_part11.json": {
+        "sha256": "51d424f2e04814a81e4d59866b570eee1e1109fdf4839d452584c7bed51a6f2c",
+        "size": 19704,
+        "doc_count": 25,
+        "collection": "soccer_player_game_logs",
+        "part": 11
+      },
+      "soccer_player_game_logs_part2.json": {
+        "sha256": "fd06d87d2b212d9706d8eb462da42fcc976a352c25b97b31c507dd3f30cc84df",
+        "size": 10334301,
+        "doc_count": 10000,
+        "collection": "soccer_player_game_logs",
+        "part": 2
+      },
+      "soccer_player_game_logs_part3.json": {
+        "sha256": "f381e2ae77704b0f6ce75a8da958eea771543bb74868f087ac9852396ff8b131",
+        "size": 10485244,
+        "doc_count": 10000,
+        "collection": "soccer_player_game_logs",
+        "part": 3
+      },
+      "soccer_player_game_logs_part4.json": {
+        "sha256": "14ad14f329a7292355762f61ba76fe72f7a58883128a228e0302dcfdf9061c4f",
+        "size": 10385648,
+        "doc_count": 10000,
+        "collection": "soccer_player_game_logs",
+        "part": 4
+      },
+      "soccer_player_game_logs_part5.json": {
+        "sha256": "99f60e9967995aa44fc0a6061d0a6dced37d588e43e0d531353a7ec818866ec1",
+        "size": 10302083,
+        "doc_count": 10000,
+        "collection": "soccer_player_game_logs",
+        "part": 5
+      },
+      "soccer_player_game_logs_part6.json": {
+        "sha256": "e7abe7cb1dcab7f2ea53af7f4bd6780751232f6a3d7916d23832f3c9c351bbe5",
+        "size": 10506870,
+        "doc_count": 10000,
+        "collection": "soccer_player_game_logs",
+        "part": 6
+      },
+      "soccer_player_game_logs_part7.json": {
+        "sha256": "f8fa8a8ecef012853d376d99587a720b6172ff92da8388197eab5276186a2681",
+        "size": 8027548,
+        "doc_count": 10000,
+        "collection": "soccer_player_game_logs",
+        "part": 7
+      },
+      "soccer_player_game_logs_part8.json": {
+        "sha256": "3bf3533e7a306b7be2f176cc4a58c51950240f54d62e0a84d2f89f98a3e39582",
+        "size": 8016716,
+        "doc_count": 10000,
+        "collection": "soccer_player_game_logs",
+        "part": 8
+      },
+      "soccer_player_game_logs_part9.json": {
+        "sha256": "094d8845949a708f6d68b197fc15d3b13296aa283e11256dc359978ec29b4ae7",
+        "size": 7893703,
+        "doc_count": 10000,
+        "collection": "soccer_player_game_logs",
+        "part": 9
+      },
+      "team_game_actuals_part1.json": {
+        "sha256": "56f923ada4003452e8490903867687f97ce73aaa6702851bfddb8c4fccab0609",
+        "size": 4659982,
+        "doc_count": 10000,
+        "collection": "team_game_actuals",
+        "part": 1
+      },
+      "team_game_actuals_part2.json": {
+        "sha256": "04f98ee8df31102bcd94fdfdbe92300783ae15c60a4852ff08098e1b65414518",
+        "size": 4839719,
+        "doc_count": 10000,
+        "collection": "team_game_actuals",
+        "part": 2
+      },
+      "team_game_actuals_part3.json": {
+        "sha256": "8be7d51044cc68a95e4e96f78a2e2af9a61489b3c7843c5c78975415a0abdfbf",
+        "size": 4843052,
+        "doc_count": 10000,
+        "collection": "team_game_actuals",
+        "part": 3
+      },
+      "team_game_actuals_part4.json": {
+        "sha256": "e35d1ae197a26ffa9d2bacdfb27ec86b75266148e714d293c35c91deae8afd77",
+        "size": 4843843,
+        "doc_count": 10000,
+        "collection": "team_game_actuals",
+        "part": 4
+      },
+      "team_game_actuals_part5.json": {
+        "sha256": "c70523506f22f73f31cbe0cdf3ad0a9ad053c3c7fb7065fa7849203dd3312a98",
+        "size": 4824507,
+        "doc_count": 10000,
+        "collection": "team_game_actuals",
+        "part": 5
+      },
+      "team_game_actuals_part6.json": {
+        "sha256": "99f23e0f90e300df4637d2987cdba1442ad36d48068dc4dc88c5f5c1d529c562",
+        "size": 4684144,
+        "doc_count": 10000,
+        "collection": "team_game_actuals",
+        "part": 6
+      },
+      "team_game_actuals_part7.json": {
+        "sha256": "6e2c42e9228d555f121155f3897174996223bed8a87e8c27cbd72138ba5927cc",
+        "size": 92875,
+        "doc_count": 204,
+        "collection": "team_game_actuals",
+        "part": 7
+      },
+      "tennis_matches_history_part1.json": {
+        "sha256": "53edae885ac04b60d248fcf9532ccd58a0284dfd361510738b532f220b36a685",
+        "size": 7445810,
+        "doc_count": 10000,
+        "collection": "tennis_matches_history",
+        "part": 1
+      },
+      "tennis_matches_history_part2.json": {
+        "sha256": "33395b14a93601d0c5ca595283f4a1e13d7ac465eff15be8180883a6b80593e9",
+        "size": 7448788,
+        "doc_count": 10000,
+        "collection": "tennis_matches_history",
+        "part": 2
+      },
+      "tennis_matches_history_part3.json": {
+        "sha256": "71013d354fe5cb20cdead87b1b17064034e50cace3c5bd284e4f35cd617ffa94",
+        "size": 7447882,
+        "doc_count": 10000,
+        "collection": "tennis_matches_history",
+        "part": 3
+      },
+      "tennis_matches_history_part4.json": {
+        "sha256": "2947beadf361c5ca2066299c8f1f6fad3d6f0ffe70f8a342d9feffe513c679f1",
+        "size": 6264020,
+        "doc_count": 8380,
+        "collection": "tennis_matches_history",
+        "part": 4
+      },
+      "user_bets.json": {
+        "sha256": "1ee4bac3ac1409670cfb96f60f6acb80274c33734fb5b78f1fcecbe8813261c8",
+        "size": 20902,
+        "doc_count": 7,
+        "collection": "user_bets",
+        "part": null
+      },
+      "users.json": {
+        "sha256": "be8dfa603f37cdfb5ac38e0083b3d3dd7eded728165c476d4cf452674e8e2075",
+        "size": 2223,
+        "doc_count": 7,
+        "collection": "users",
+        "part": null
+      }
+    }
+  },
+  "per_collection": {
+    "games": {
+      "preview_count": 12476,
+      "production_count": 10050,
+      "output_count": 17399,
+      "conflicts": 0,
+      "review_required": 2,
+      "aborted": 0,
+      "status": "REVIEW_REQUIRED",
+      "authority_rule": "FINAL_RESULT_REVIEW"
+    },
+    "historical_ingestion_state": {
+      "preview_count": 10,
+      "production_count": 16,
+      "output_count": 20,
+      "conflicts": 6,
+      "review_required": 0,
+      "aborted": 0,
+      "status": "CONFLICTS_RESOLVED",
+      "authority_rule": "PROD_AUTH"
+    },
+    "nfl_ingest_meta": {
+      "preview_count": 1,
+      "production_count": 1,
+      "output_count": 1,
+      "conflicts": 1,
+      "review_required": 0,
+      "aborted": 0,
+      "status": "CONFLICTS_RESOLVED",
+      "authority_rule": "PROD_AUTH"
+    },
+    "nfl_player_weekly": {
+      "preview_count": 133077,
+      "production_count": 133063,
+      "output_count": 133077,
+      "conflicts": 0,
+      "review_required": 0,
+      "aborted": 0,
+      "status": "SAFE",
+      "authority_rule": "UNION_REVIEW_ON_DIFF"
+    },
+    "parlay_history": {
+      "preview_count": 1012,
+      "production_count": 1281,
+      "output_count": 2286,
+      "conflicts": 7,
+      "review_required": 0,
+      "aborted": 0,
+      "status": "CONFLICTS_RESOLVED",
+      "authority_rule": "PROD_AUTH"
+    },
+    "picks": {
+      "preview_count": 275112,
+      "production_count": 287089,
+      "output_count": 324232,
+      "conflicts": 237962,
+      "review_required": 0,
+      "aborted": 0,
+      "status": "CONFLICTS_RESOLVED",
+      "authority_rule": "PROD_AUTH"
+    },
+    "player_game_actuals": {
+      "preview_count": 403784,
+      "production_count": 106481,
+      "output_count": 397251,
+      "conflicts": 0,
+      "review_required": 7353,
+      "aborted": 0,
+      "status": "REVIEW_REQUIRED",
+      "authority_rule": "PROVIDER_ACTUAL_REVIEW"
+    },
+    "player_game_logs": {
+      "preview_count": 374795,
+      "production_count": 203926,
+      "output_count": 436429,
+      "conflicts": 0,
+      "review_required": 26599,
+      "aborted": 0,
+      "status": "REVIEW_REQUIRED",
+      "authority_rule": "UNION_REVIEW_ON_DIFF"
+    },
+    "player_identities": {
+      "preview_count": 62306,
+      "production_count": 30994,
+      "output_count": 32652,
+      "conflicts": 0,
+      "review_required": 30324,
+      "aborted": 0,
+      "status": "REVIEW_REQUIRED",
+      "authority_rule": "UNION_REVIEW_ON_DIFF"
+    },
+    "prediction_snapshots": {
+      "preview_count": 155638,
+      "production_count": 126251,
+      "output_count": 182296,
+      "conflicts": 49795,
+      "review_required": 0,
+      "aborted": 49795,
+      "status": "ABORTED",
+      "authority_rule": "IMMUTABLE_HARD_ABORT"
+    },
+    "pregame_snapshots": {
+      "preview_count": 6514,
+      "production_count": 7087,
+      "output_count": 13601,
+      "conflicts": 0,
+      "review_required": 0,
+      "aborted": 0,
+      "status": "SAFE",
+      "authority_rule": "IMMUTABLE_HARD_ABORT"
+    },
+    "publication_events": {
+      "preview_count": 55500,
+      "production_count": 101833,
+      "output_count": 157333,
+      "conflicts": 0,
+      "review_required": 0,
+      "aborted": 0,
+      "status": "SAFE",
+      "authority_rule": "APPEND_ONLY_REVIEW_ON_DIFF"
+    },
+    "rollover_slate_events": {
+      "preview_count": 12,
+      "production_count": 20,
+      "output_count": 32,
+      "conflicts": 0,
+      "review_required": 0,
+      "aborted": 0,
+      "status": "SAFE",
+      "authority_rule": "APPEND_ONLY_REVIEW_ON_DIFF"
+    },
+    "rollover_slates": {
+      "preview_count": 12,
+      "production_count": 12,
+      "output_count": 14,
+      "conflicts": 10,
+      "review_required": 0,
+      "aborted": 0,
+      "status": "CONFLICTS_RESOLVED",
+      "authority_rule": "PROD_AUTH"
+    },
+    "settlement_events": {
+      "preview_count": 31243,
+      "production_count": 465804,
+      "output_count": 497047,
+      "conflicts": 0,
+      "review_required": 0,
+      "aborted": 0,
+      "status": "SAFE",
+      "authority_rule": "APPEND_ONLY_REVIEW_ON_DIFF"
+    },
+    "soccer_matches": {
+      "preview_count": 25662,
+      "production_count": 18194,
+      "output_count": 25657,
+      "conflicts": 0,
+      "review_required": 5,
+      "aborted": 0,
+      "status": "REVIEW_REQUIRED",
+      "authority_rule": "UNION_REVIEW_ON_DIFF"
+    },
+    "soccer_player_game_logs": {
+      "preview_count": 100025,
+      "production_count": 100025,
+      "output_count": 100025,
+      "conflicts": 0,
+      "review_required": 0,
+      "aborted": 0,
+      "status": "SAFE",
+      "authority_rule": "UNION_REVIEW_ON_DIFF"
+    },
+    "team_game_actuals": {
+      "preview_count": 60206,
+      "production_count": 60204,
+      "output_count": 60206,
+      "conflicts": 0,
+      "review_required": 0,
+      "aborted": 0,
+      "status": "SAFE",
+      "authority_rule": "PROVIDER_ACTUAL_REVIEW"
+    },
+    "tennis_matches_history": {
+      "preview_count": 38380,
+      "production_count": 38380,
+      "output_count": 38379,
+      "conflicts": 0,
+      "review_required": 1,
+      "aborted": 0,
+      "status": "REVIEW_REQUIRED",
+      "authority_rule": "UNION_REVIEW_ON_DIFF"
+    },
+    "user_bets": {
+      "preview_count": 7,
+      "production_count": 7,
+      "output_count": 14,
+      "conflicts": 0,
+      "review_required": 0,
+      "aborted": 0,
+      "status": "SAFE",
+      "authority_rule": "PROD_AUTH"
+    },
+    "users": {
+      "preview_count": 241,
+      "production_count": 7,
+      "output_count": 242,
+      "conflicts": 5,
+      "review_required": 0,
+      "aborted": 0,
+      "status": "CONFLICTS_RESOLVED",
+      "authority_rule": "PROD_AUTH"
+    }
+  },
+  "safety_confirmations": {
+    "production_live_db_touched": false,
+    "preview_live_db_touched": false,
+    "mongo_url_changed": false,
+    "db_name_changed": false,
+    "atlas_created": false,
+    "deployment": false,
+    "background_workers_started": false,
+    "canonical_lease_acquired": false,
+    "settlement_regen_backfill": false,
+    "model_scoring_pub_changes": false,
+    "canonical_dataset_imported": false
+  },
+  "totals": {
+    "SAFE": 8,
+    "CONFLICTS_RESOLVED": 6,
+    "REVIEW_REQUIRED": 6,
+    "ABORTED": 1
+  }
+}
