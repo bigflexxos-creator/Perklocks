@@ -1,0 +1,851 @@
+{
+  "generated_at_unix": 1791084698,
+  "api_target_redacted": "*.emergent.host",
+  "session_id": "perklocks-cutover-20261003-r2",
+  "preflight_env_flags": {
+    "USE_CANONICAL_DB": false,
+    "CANONICAL_IMPORT_ENABLED": true,
+    "CANONICAL_FALLBACK_MODE": true,
+    "BACKGROUND_WORKERS_ENABLED": false,
+    "DATA_AUTHORITY": "preview",
+    "CANONICAL_WRITE_ENABLED": false
+  },
+  "legacy_fingerprint_before": "d1e64dfb9387f400",
+  "canonical_fingerprint_before": "0cc0de2b894262c6",
+  "legacy_fingerprint_after": "9e76fdf683eb02cf",
+  "canonical_fingerprint_after": "8de500a8e8e1f4c9",
+  "legacy_counts_before": {
+    "games": 10069,
+    "historical_ingestion_state": 16,
+    "nfl_ingest_meta": 1,
+    "nfl_player_weekly": 133063,
+    "parlay_history": 1300,
+    "picks": 290142,
+    "player_game_actuals": 106495,
+    "player_game_logs": 205321,
+    "player_identities": 31028,
+    "prediction_snapshots": 137062,
+    "pregame_snapshots": 7174,
+    "publication_events": 112644,
+    "rollover_slate_events": 20,
+    "rollover_slates": 12,
+    "settlement_events": 465935,
+    "soccer_matches": 18195,
+    "soccer_player_game_logs": 100025,
+    "team_game_actuals": 60204,
+    "tennis_matches_history": 38380,
+    "user_bets": 7,
+    "users": 7
+  },
+  "legacy_counts_after": {
+    "games": 10069,
+    "historical_ingestion_state": 16,
+    "nfl_ingest_meta": 1,
+    "nfl_player_weekly": 133063,
+    "parlay_history": 1303,
+    "picks": 290544,
+    "player_game_actuals": 106495,
+    "player_game_logs": 205321,
+    "player_identities": 31028,
+    "prediction_snapshots": 137062,
+    "pregame_snapshots": 7174,
+    "publication_events": 112644,
+    "rollover_slate_events": 21,
+    "rollover_slates": 13,
+    "settlement_events": 465935,
+    "soccer_matches": 18195,
+    "soccer_player_game_logs": 100025,
+    "team_game_actuals": 60204,
+    "tennis_matches_history": 38380,
+    "user_bets": 7,
+    "users": 7
+  },
+  "canonical_counts_before": {
+    "games": 9509,
+    "historical_ingestion_state": 0,
+    "nfl_ingest_meta": 0,
+    "nfl_player_weekly": 37319,
+    "parlay_history": 0,
+    "picks": 19,
+    "player_game_actuals": 0,
+    "player_game_logs": 12322,
+    "player_identities": 0,
+    "prediction_snapshots": 0,
+    "pregame_snapshots": 0,
+    "publication_events": 0,
+    "rollover_slate_events": 0,
+    "rollover_slates": 0,
+    "settlement_events": 0,
+    "soccer_matches": 0,
+    "soccer_player_game_logs": 0,
+    "team_game_actuals": 0,
+    "tennis_matches_history": 0,
+    "user_bets": 0,
+    "users": 0
+  },
+  "canonical_counts_after": {
+    "games": 12365,
+    "historical_ingestion_state": 20,
+    "nfl_ingest_meta": 1,
+    "nfl_player_weekly": 40892,
+    "parlay_history": 2286,
+    "picks": 54116,
+    "player_game_actuals": 7353,
+    "player_game_logs": 19642,
+    "player_identities": 28893,
+    "prediction_snapshots": 49771,
+    "pregame_snapshots": 10575,
+    "publication_events": 41265,
+    "rollover_slate_events": 32,
+    "rollover_slates": 14,
+    "settlement_events": 77836,
+    "soccer_matches": 2,
+    "soccer_player_game_logs": 29577,
+    "team_game_actuals": 23698,
+    "tennis_matches_history": 20573,
+    "user_bets": 10,
+    "users": 242
+  },
+  "legacy_intact": false,
+  "phase5_status": {
+    "sessions": [
+      {
+        "_id": "6ac19bba7944462a0d1a997d",
+        "session_id": "perklocks-cutover-20261003-r2",
+        "last_updated_at": "2026-10-04T03:30:41.682000",
+        "source_checkpoints": {
+          "phase5_sha": "4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7",
+          "phase6_sha": "327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22",
+          "preview_baseline_sha": "26cd67d0648ef62f495807c5303fdc1acafb28a3015e249718a7b47a3728d78b"
+        },
+        "started_at": "2026-10-04T00:20:10.883000"
+      }
+    ],
+    "aggregated_batches": {
+      "games": {
+        "batches": 9,
+        "accepted": 17401,
+        "rejected": 0,
+        "total_docs": 17401
+      },
+      "historical_ingestion_state": {
+        "batches": 1,
+        "accepted": 20,
+        "rejected": 0,
+        "total_docs": 20
+      },
+      "nfl_ingest_meta": {
+        "batches": 1,
+        "accepted": 1,
+        "rejected": 0,
+        "total_docs": 1
+      },
+      "nfl_player_weekly": {
+        "batches": 67,
+        "accepted": 133077,
+        "rejected": 0,
+        "total_docs": 133077
+      },
+      "parlay_history": {
+        "batches": 2,
+        "accepted": 2286,
+        "rejected": 0,
+        "total_docs": 2286
+      },
+      "picks": {
+        "batches": 163,
+        "accepted": 325190,
+        "rejected": 0,
+        "total_docs": 325190
+      },
+      "player_game_actuals": {
+        "batches": 4,
+        "accepted": 7353,
+        "rejected": 0,
+        "total_docs": 7353
+      },
+      "player_game_logs": {
+        "batches": 14,
+        "accepted": 26569,
+        "rejected": 0,
+        "total_docs": 26569
+      },
+      "player_identities": {
+        "batches": 32,
+        "accepted": 62985,
+        "rejected": 0,
+        "total_docs": 62985
+      },
+      "prediction_snapshots": {
+        "batches": 117,
+        "accepted": 232089,
+        "rejected": 0,
+        "total_docs": 232089
+      },
+      "pregame_snapshots": {
+        "batches": 7,
+        "accepted": 13601,
+        "rejected": 0,
+        "total_docs": 13601
+      },
+      "publication_events": {
+        "batches": 79,
+        "accepted": 157333,
+        "rejected": 0,
+        "total_docs": 157333
+      },
+      "rollover_slate_events": {
+        "batches": 1,
+        "accepted": 32,
+        "rejected": 0,
+        "total_docs": 32
+      },
+      "rollover_slates": {
+        "batches": 1,
+        "accepted": 14,
+        "rejected": 0,
+        "total_docs": 14
+      },
+      "settlement_events": {
+        "batches": 249,
+        "accepted": 497047,
+        "rejected": 0,
+        "total_docs": 497047
+      },
+      "soccer_matches": {
+        "batches": 1,
+        "accepted": 2,
+        "rejected": 0,
+        "total_docs": 2
+      },
+      "soccer_player_game_logs": {
+        "batches": 51,
+        "accepted": 100025,
+        "rejected": 0,
+        "total_docs": 100025
+      },
+      "team_game_actuals": {
+        "batches": 31,
+        "accepted": 60206,
+        "rejected": 0,
+        "total_docs": 60206
+      },
+      "tennis_matches_history": {
+        "batches": 20,
+        "accepted": 38380,
+        "rejected": 0,
+        "total_docs": 38380
+      },
+      "user_bets": {
+        "batches": 1,
+        "accepted": 14,
+        "rejected": 0,
+        "total_docs": 14
+      },
+      "users": {
+        "batches": 1,
+        "accepted": 242,
+        "rejected": 0,
+        "total_docs": 242
+      }
+    },
+    "current_canonical": {
+      "games": {
+        "canonical_count": 12365,
+        "logical_key_fields": [
+          "sport",
+          "game_id"
+        ]
+      },
+      "historical_ingestion_state": {
+        "canonical_count": 20,
+        "logical_key_fields": [
+          "_id"
+        ]
+      },
+      "nfl_ingest_meta": {
+        "canonical_count": 1,
+        "logical_key_fields": [
+          "_id"
+        ]
+      },
+      "nfl_player_weekly": {
+        "canonical_count": 40892,
+        "logical_key_fields": [
+          "player_id",
+          "season",
+          "week"
+        ]
+      },
+      "parlay_history": {
+        "canonical_count": 2286,
+        "logical_key_fields": [
+          "_id"
+        ]
+      },
+      "picks": {
+        "canonical_count": 54116,
+        "logical_key_fields": [
+          "id"
+        ]
+      },
+      "player_game_actuals": {
+        "canonical_count": 7353,
+        "logical_key_fields": [
+          "sport",
+          "event_id",
+          "player_id"
+        ]
+      },
+      "player_game_logs": {
+        "canonical_count": 19642,
+        "logical_key_fields": [
+          "sport",
+          "game_id",
+          "player_id"
+        ]
+      },
+      "player_identities": {
+        "canonical_count": 28893,
+        "logical_key_fields": [
+          "canonical_player_id"
+        ]
+      },
+      "prediction_snapshots": {
+        "canonical_count": 49771,
+        "logical_key_fields": [
+          "prediction_id",
+          "snapshot_version"
+        ]
+      },
+      "pregame_snapshots": {
+        "canonical_count": 10575,
+        "logical_key_fields": [
+          "snapshot_hash"
+        ]
+      },
+      "publication_events": {
+        "canonical_count": 41265,
+        "logical_key_fields": [
+          "payload_hash"
+        ]
+      },
+      "rollover_slate_events": {
+        "canonical_count": 32,
+        "logical_key_fields": [
+          "slate_date",
+          "event",
+          "at"
+        ]
+      },
+      "rollover_slates": {
+        "canonical_count": 14,
+        "logical_key_fields": [
+          "slate_id"
+        ]
+      },
+      "settlement_events": {
+        "canonical_count": 77836,
+        "logical_key_fields": [
+          "settlement_id"
+        ]
+      },
+      "soccer_matches": {
+        "canonical_count": 2,
+        "logical_key_fields": [
+          "league",
+          "season",
+          "home_team",
+          "away_team",
+          "date"
+        ]
+      },
+      "soccer_player_game_logs": {
+        "canonical_count": 29577,
+        "logical_key_fields": [
+          "match_id",
+          "player_id"
+        ]
+      },
+      "team_game_actuals": {
+        "canonical_count": 23698,
+        "logical_key_fields": [
+          "sport",
+          "event_id",
+          "canonical_team_id"
+        ]
+      },
+      "tennis_matches_history": {
+        "canonical_count": 20573,
+        "logical_key_fields": [
+          "tourney_id",
+          "winner_id",
+          "loser_id"
+        ]
+      },
+      "user_bets": {
+        "canonical_count": 10,
+        "logical_key_fields": [
+          "id"
+        ]
+      },
+      "users": {
+        "canonical_count": 242,
+        "logical_key_fields": [
+          "id"
+        ]
+      }
+    },
+    "import_enabled": true
+  },
+  "phase6_results": [],
+  "phase7_indexes": {
+    "results": [
+      {
+        "collection": "games",
+        "created": [
+          "ux_sport_game_id",
+          "ix_sport_date"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "historical_ingestion_state",
+        "created": [
+          "ix_his_id",
+          "ux_his_sport_season"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "nfl_ingest_meta",
+        "created": [
+          "ix_nflim_id"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "nfl_player_weekly",
+        "created": [
+          "ux_nflpw_identity"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "parlay_history",
+        "created": [
+          "ix_parlay_id",
+          "ux_parlay_signature"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "picks",
+        "created": [
+          "ux_pick_id",
+          "ix_sport_published",
+          "ix_board_version"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "player_game_actuals",
+        "created": [
+          "ux_pga_identity"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "player_game_logs",
+        "created": [
+          "ux_pgl_identity"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "player_identities",
+        "created": [
+          "ux_pi_canonical"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "prediction_snapshots",
+        "created": [
+          "ux_prediction_snapshot_version"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "pregame_snapshots",
+        "created": [
+          "ux_snapshot_hash"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "publication_events",
+        "created": [
+          "ux_payload_hash",
+          "ix_published_at"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "rollover_slate_events",
+        "created": [
+          "ux_rollover_event_identity"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "rollover_slates",
+        "created": [
+          "ux_rollover_slate_id"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "settlement_events",
+        "created": [
+          "ux_settlement_id",
+          "ix_settlement_event_id",
+          "ix_sport_settled"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "soccer_matches",
+        "created": [
+          "ux_sm_identity"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "soccer_player_game_logs",
+        "created": [
+          "ux_spgl_identity"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "team_game_actuals",
+        "created": [
+          "ux_tga_identity"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "tennis_matches_history",
+        "created": [
+          "ux_tmh_identity"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "user_bets",
+        "created": [
+          "ux_user_bets_id",
+          "ix_user_created"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      },
+      {
+        "collection": "users",
+        "created": [
+          "ux_user_id",
+          "ux_user_email"
+        ],
+        "existed": [],
+        "failed": [],
+        "ok": true
+      }
+    ],
+    "all_ok": true
+  },
+  "phase8_certification": {
+    "certified_at": "2026-10-04T03:31:31.938245+00:00",
+    "collections": [
+      {
+        "collection": "games",
+        "count": 12365,
+        "logical_key_fields": [
+          "sport",
+          "game_id"
+        ],
+        "fingerprint": "10621bdb41f54e19da666943a4aa7aaa0feeed15072b269b9338dd086cb7a992",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "historical_ingestion_state",
+        "count": 20,
+        "logical_key_fields": [
+          "_id"
+        ],
+        "fingerprint": "dd35383fe8d4f31dc8da5e3139d54647fe4b4350a11bd00b845928a0f2cacc88",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "nfl_ingest_meta",
+        "count": 1,
+        "logical_key_fields": [
+          "_id"
+        ],
+        "fingerprint": "5bd7e0eb94144696107aedd72dab03798f26ec0c4254acc547d2e445f9556805",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "nfl_player_weekly",
+        "count": 40892,
+        "logical_key_fields": [
+          "player_id",
+          "season",
+          "week"
+        ],
+        "fingerprint": "a123b03263123ee5192b1919be20675e28eddfdf8d18df5431a2b919879c2e39",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "parlay_history",
+        "count": 2286,
+        "logical_key_fields": [
+          "_id"
+        ],
+        "fingerprint": "92c99a9e2ce191355aab1b148eee17ec5e8fdc49762dcc53e3fca4a8f07ec6ed",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "picks",
+        "count": 54116,
+        "logical_key_fields": [
+          "id"
+        ],
+        "fingerprint": "93d1be5c404b47d7c36793b15f240eaa8907aaf41bffecf1df06608f4756e640",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "player_game_actuals",
+        "count": 7353,
+        "logical_key_fields": [
+          "sport",
+          "event_id",
+          "player_id"
+        ],
+        "fingerprint": "14311b7aa2a9a4f5b1f36449d0d060a8a15b94e126a9df0584814ab618c57090",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "player_game_logs",
+        "count": 19642,
+        "logical_key_fields": [
+          "sport",
+          "game_id",
+          "player_id"
+        ],
+        "fingerprint": "bbffc22122c3f4dd2a11ec532f4b11d9086db2d9c132f948950c4fb482f74692",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "player_identities",
+        "count": 28893,
+        "logical_key_fields": [
+          "canonical_player_id"
+        ],
+        "fingerprint": "0fe8cd25d1bc3d4cfff9a74d8cbf23c7859bc50747bae699bcba30d2cf5e4e8e",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "prediction_snapshots",
+        "count": 49771,
+        "logical_key_fields": [
+          "prediction_id",
+          "snapshot_version"
+        ],
+        "fingerprint": "64acaf6a1f2b4ed3b9b054bd12dd072f9dd33973ad496126781cfc9a1507d9ad",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "pregame_snapshots",
+        "count": 10575,
+        "logical_key_fields": [
+          "snapshot_hash"
+        ],
+        "fingerprint": "3e972cd0f73abfc2a02c742fea9a8a1297edd79341a62015c532ebd7bf14f98b",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "publication_events",
+        "count": 41265,
+        "logical_key_fields": [
+          "payload_hash"
+        ],
+        "fingerprint": "eebca05926a49f178f6881c61a042dc81a4a62dc08e4c9b80e8a403591f5acb7",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "rollover_slate_events",
+        "count": 32,
+        "logical_key_fields": [
+          "slate_date",
+          "event",
+          "at"
+        ],
+        "fingerprint": "e0a67860e5f72573a39dd6c086082ae44ebe956f877a78b5b6912f3a9e7c47a0",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "rollover_slates",
+        "count": 14,
+        "logical_key_fields": [
+          "slate_id"
+        ],
+        "fingerprint": "6812962e15b51bc845b7df837be04e84e88f12827d024fd45510036658242b34",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "settlement_events",
+        "count": 77836,
+        "logical_key_fields": [
+          "settlement_id"
+        ],
+        "fingerprint": "ab9e9b182ec60a346b9b9e0a5a37d22b7c8557a495575f85974ccb24c3c9726e",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "soccer_matches",
+        "count": 2,
+        "logical_key_fields": [
+          "league",
+          "season",
+          "home_team",
+          "away_team",
+          "date"
+        ],
+        "fingerprint": "b00a1bd5957f0bfe633bb9d830dee26ea35acb805925bebe31511f8412b0c7cd",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "soccer_player_game_logs",
+        "count": 29577,
+        "logical_key_fields": [
+          "match_id",
+          "player_id"
+        ],
+        "fingerprint": "3edb3d57005118f7800e2aeecfd66f6636ef2c56c1bda260dfb67ec7cacbefaa",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "team_game_actuals",
+        "count": 23698,
+        "logical_key_fields": [
+          "sport",
+          "event_id",
+          "canonical_team_id"
+        ],
+        "fingerprint": "c54bc5e2110df1fb68ebd2aa04cb8400f02e1f958a411ce74d02108a10352228",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "tennis_matches_history",
+        "count": 20573,
+        "logical_key_fields": [
+          "tourney_id",
+          "winner_id",
+          "loser_id"
+        ],
+        "fingerprint": "ae8377aa22d47a06d52612712751407f7a4b56725978e31c32b25037fbb791bc",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "user_bets",
+        "count": 10,
+        "logical_key_fields": [
+          "id"
+        ],
+        "fingerprint": "21d2964d0ccfa83edd1c0c7c8d01859726a74ada5a9c0ea71ce4f4540eeb9361",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      },
+      {
+        "collection": "users",
+        "count": 242,
+        "logical_key_fields": [
+          "id"
+        ],
+        "fingerprint": "a1dd1cfd187dc0631b8bf7a6d31c1a472128b88376f7b65fe4f9ab33d362bc4d",
+        "duplicate_logical_identities": 0,
+        "excluded_or_quarantined_leaked": 0
+      }
+    ],
+    "duplicate_logical_identities_total": 0,
+    "excluded_or_quarantined_leaked_total": 0,
+    "import_endpoint_disabled": false,
+    "overall_pass": true
+  },
+  "safety_gates": {
+    "duplicates_zero": true,
+    "excluded_leaked_zero": true,
+    "legacy_intact": false,
+    "overall_pass": true,
+    "indexes_all_ok": true
+  }
+}
