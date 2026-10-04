@@ -288,7 +288,7 @@ BATCH_COLLECTION         = "_canonical_import_batches"
 AUDIT_COLLECTION         = "_canonical_import_audit"
 
 
-async def record_batch(
+async def record_batch_begin(
     db: AsyncIOMotorDatabase,
     *,
     session_id: str,
@@ -299,12 +299,23 @@ async def record_batch(
     accepted: int,
     rejected: int,
     source_checkpoints: dict,
-) -> dict:
-    """Record a batch outcome.  Idempotent re-record requires exact same
-    content_hash.  Mismatch raises ``RuntimeError`` — a safety gate
-    for altered-replay detection."""
+) -> tuple[dict, str]:
+    """Phase-5-R3 atomic protocol STEP 1 — read batch state and (if not
+    already SUCCEEDED) mark it ``in_progress``.
+
+    Returns ``(record, mode)`` where ``mode`` is one of:
+      * ``"succeeded_replay"`` — a prior attempt already succeeded with
+        the same ``content_hash``.  Caller MUST skip the bulk_write and
+        return idempotently.
+      * ``"altered_replay_rejected"`` — raises ``RuntimeError`` instead
+        of returning.
+      * ``"attempt_proceed"`` — caller MUST execute the bulk_write and
+        then call ``record_batch_success`` on success or
+        ``record_batch_failure`` on error.
+    """
     key = {"session_id": session_id, "collection": collection, "batch_no": batch_no}
     existing = await db[BATCH_COLLECTION].find_one(key)
+    now = datetime.now(timezone.utc)
     if existing is not None:
         if existing.get("content_hash") != content_hash:
             raise RuntimeError(
@@ -313,17 +324,88 @@ async def record_batch(
                 f"old_hash={existing.get('content_hash')!r} "
                 f"new_hash={content_hash!r}"
             )
-        return existing, True
-    doc = dict(key, **{
-        "content_hash":      content_hash,
-        "doc_count":         doc_count,
-        "accepted":          accepted,
-        "rejected":          rejected,
-        "source_checkpoints": source_checkpoints,
-        "recorded_at":       datetime.now(timezone.utc),
-    })
-    await db[BATCH_COLLECTION].insert_one(doc)
-    return doc, False
+        # Same content_hash — only short-circuit if the prior attempt
+        # ACTUALLY SUCCEEDED. (Phase-5-R2 bug fix: previously ANY existing
+        # record short-circuited, which silently dropped bulk_write
+        # failures on retry.)
+        if existing.get("status") == "succeeded":
+            return existing, "succeeded_replay"
+    # Not succeeded (either never seen, in_progress, failed, or
+    # incomplete_write).  Mark attempt_proceed and let the caller run
+    # the actual bulk_write.  Upserts are per-logical-identity so a
+    # fresh attempt remains fully idempotent at the row level.
+    update = {
+        "$set": {
+            "status":             "in_progress",
+            "content_hash":       content_hash,
+            "doc_count":          doc_count,
+            "accepted_count":     accepted,
+            "rejected_count":     rejected,
+            "source_checkpoints": source_checkpoints,
+            "started_at":         now,
+            "last_attempt_at":    now,
+        },
+        "$inc": {"attempt_count": 1},
+        "$setOnInsert": {"first_seen_at": now},
+    }
+    await db[BATCH_COLLECTION].update_one(key, update, upsert=True)
+    return await db[BATCH_COLLECTION].find_one(key), "attempt_proceed"
+
+
+async def record_batch_success(
+    db: AsyncIOMotorDatabase,
+    *,
+    session_id: str,
+    collection: str,
+    batch_no: int,
+    upserted: int,
+    matched: int,
+) -> None:
+    """Phase-5-R3 atomic protocol STEP 2a — ONLY call after bulk_write
+    succeeded AND the result passed the verification gate
+    (``upserted + matched == len(ops)``).  Marks the batch durably
+    completed.  Must be the single place that writes
+    ``status=succeeded``.
+    """
+    key = {"session_id": session_id, "collection": collection, "batch_no": batch_no}
+    now = datetime.now(timezone.utc)
+    await db[BATCH_COLLECTION].update_one(key, {"$set": {
+        "status":          "succeeded",
+        "upserted_count":  int(upserted),
+        "matched_count":   int(matched),
+        "completed_at":    now,
+        "recorded_at":     now,     # kept for backward-compat with R1/R2 readers
+    }})
+
+
+async def record_batch_failure(
+    db: AsyncIOMotorDatabase,
+    *,
+    session_id: str,
+    collection: str,
+    batch_no: int,
+    reason: str,
+    error_detail: str,
+) -> None:
+    """Phase-5-R3 atomic protocol STEP 2b — ONLY call after bulk_write
+    raised OR verification failed.  Marks the batch failed/incomplete
+    so a safe retry can take over.  NEVER writes ``status=succeeded``.
+    """
+    key = {"session_id": session_id, "collection": collection, "batch_no": batch_no}
+    now = datetime.now(timezone.utc)
+    await db[BATCH_COLLECTION].update_one(key, {"$set": {
+        "status":           reason,      # "failed" | "incomplete_write"
+        "last_error":       str(error_detail)[:800],
+        "last_failed_at":   now,
+    }})
+
+
+# ─── Legacy shim kept so any older caller does not break at import time
+async def record_batch(*args, **kwargs):
+    raise RuntimeError(
+        "record_batch() was deprecated by Phase-5-R3; use "
+        "record_batch_begin / record_batch_success / record_batch_failure"
+    )
 
 
 async def upsert_session(
@@ -403,10 +485,22 @@ async def import_batch(
     # Content hash of the ACCEPTED subset (idempotency key)
     content_hash = batch_content_hash(collection, accepted)
 
-    # Session + batch tracking
+    # Session + batch tracking — PHASE-5-R3 ATOMIC PROTOCOL
+    #
+    # STEP A (validate+hash) — content_hash computed above.
+    # STEP B (begin) — read-or-mark-in_progress, SHORT-CIRCUIT only if a
+    #                  previous attempt is definitively ``succeeded``.
+    # STEP C (bulk_write) — execute the upserts.
+    # STEP D (verify) — require ``upserted + matched == len(ops)``.
+    # STEP E (commit) — mark ``status=succeeded`` ONLY AFTER verify.
+    #
+    # On any failure between B and E, ``status`` is kept as
+    # ``in_progress``/``failed``/``incomplete_write`` so the next retry
+    # is NOT short-circuited — bulk_write runs again (per-row upserts
+    # on unique logical identities are naturally idempotent).
     await upsert_session(db, session_id=session_id, source_checkpoints=source_checkpoints)
     try:
-        batch_record, is_replay = await record_batch(
+        batch_record, mode = await record_batch_begin(
             db,
             session_id=session_id,
             collection=collection,
@@ -424,18 +518,21 @@ async def import_batch(
             "batch_no": batch_no, "err": str(e)[:400]})
         raise
 
-    # Idempotent replay: content_hash matched an existing recorded batch.
-    if is_replay:
+    # Succeeded-replay fast path: a prior attempt proved durability.
+    if mode == "succeeded_replay":
         await audit_log(db, "batch_replay_idempotent", {
             "session_id": session_id, "collection": collection,
             "batch_no": batch_no, "accepted": len(accepted),
             "rejected": len(rejected)})
         return {"collection": collection, "accepted": len(accepted),
                 "rejected": len(rejected), "rejections": rejected[:50],
-                "batch_no": batch_no, "idempotent_replay": True,
+                "upserted":  int(batch_record.get("upserted_count") or 0),
+                "matched":   int(batch_record.get("matched_count")  or 0),
+                "batch_no":  batch_no, "idempotent_replay": True,
+                "status":    "succeeded",
                 "content_hash": content_hash}
 
-    # Upsert using logical identity
+    # Build upsert ops using logical identity
     key_fields = logical_key_fields(collection)
     ops: list[UpdateOne] = []
     for doc in accepted:
@@ -448,6 +545,7 @@ async def import_batch(
         payload = {k: v for k, v in doc.items() if k != "_id"}
         ops.append(UpdateOne(key, {"$set": payload}, upsert=True))
 
+    # STEP C — bulk_write
     upserted = 0
     matched  = 0
     if ops:
@@ -456,11 +554,49 @@ async def import_batch(
             upserted = res.upserted_count
             matched  = res.matched_count
         except BulkWriteError as e:
-            # Partial failure — surface detail but do not retry.
+            # STEP D (fail) — persist failure state so retry is NOT
+            # short-circuited; surface the raw error to the caller.
+            await record_batch_failure(
+                db, session_id=session_id, collection=collection,
+                batch_no=batch_no, reason="failed",
+                error_detail=f"BulkWriteError: {str(e)[:600]}")
             await audit_log(db, "bulk_write_error", {
                 "session_id": session_id, "collection": collection,
                 "batch_no": batch_no, "details": str(e)[:800]})
             raise
+        except Exception as e:   # noqa: BLE001 — fail-closed for ANY DB error
+            await record_batch_failure(
+                db, session_id=session_id, collection=collection,
+                batch_no=batch_no, reason="failed",
+                error_detail=f"{type(e).__name__}: {str(e)[:600]}")
+            await audit_log(db, "bulk_write_exception", {
+                "session_id": session_id, "collection": collection,
+                "batch_no": batch_no, "error_type": type(e).__name__,
+                "details": str(e)[:800]})
+            raise
+
+    # STEP D (verify) — upsert + match must account for every op.
+    # Fail-closed on any shortfall; retry is safe because upserts are
+    # idempotent on the (logical-key) filter.
+    if ops and (upserted + matched) != len(ops):
+        await record_batch_failure(
+            db, session_id=session_id, collection=collection,
+            batch_no=batch_no, reason="incomplete_write",
+            error_detail=(f"upserted({upserted}) + matched({matched}) "
+                           f"!= ops({len(ops)})"))
+        await audit_log(db, "incomplete_batch_write", {
+            "session_id": session_id, "collection": collection,
+            "batch_no":   batch_no, "upserted": upserted,
+            "matched":    matched, "ops":      len(ops)})
+        raise RuntimeError(
+            f"INCOMPLETE_BATCH_WRITE: coll={collection} batch={batch_no} "
+            f"upserted={upserted} matched={matched} ops={len(ops)}"
+        )
+
+    # STEP E (commit) — mark batch SUCCEEDED only after verify passed.
+    await record_batch_success(
+        db, session_id=session_id, collection=collection,
+        batch_no=batch_no, upserted=upserted, matched=matched)
 
     await audit_log(db, "batch_accepted", {
         "session_id": session_id, "collection": collection,
@@ -472,6 +608,7 @@ async def import_batch(
             "rejected": len(rejected), "rejections": rejected[:50],
             "upserted": upserted, "matched": matched,
             "batch_no": batch_no, "idempotent_replay": False,
+            "status":   "succeeded",
             "content_hash": content_hash}
 
 
