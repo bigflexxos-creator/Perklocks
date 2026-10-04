@@ -55,7 +55,7 @@ from services.canonical_cutover import (
     RECONCILIATION_COLLECTIONS, ENVIRONMENT_STATE_COLLECTIONS,
     import_batch, collection_fingerprint, ensure_canonical_indexes,
     copy_legacy_collection, logical_key_fields, extract_logical_key,
-    SESSION_COLLECTION, BATCH_COLLECTION,
+    SESSION_COLLECTION, BATCH_COLLECTION, AUDIT_COLLECTION,
 )
 
 logger = logging.getLogger("perklocks.cutover_routes")
@@ -193,6 +193,126 @@ async def canonical_import_status(
         "aggregated_batches":  per_coll_agg,
         "current_canonical":   per_coll_current,
         "import_enabled":      _import_enabled(),
+    }
+
+
+# ─── Forensic read-only audit (Phase-5-R2 settlement_events investigation) ──
+@router.get("/canonical-import/forensic-audit")
+async def canonical_import_forensic_audit(
+    admin: Annotated[UserPublic, Depends(_require_admin)],
+    session_id: str,
+    collection: str,
+):
+    """READ-ONLY forensic diagnostic — never writes, never activates.
+    Returns per-session+collection:
+      * batch records with (batch_no, accepted, rejected, content_hash)
+      * audit log aggregates for batch_accepted (sum of upserted/matched)
+      * audit log counts for bulk_write_error and altered_replay_rejected
+      * current canonical collection count
+      * per-identity sample (first 20) with is_active split so we can
+        prove whether the active/historical ledger rows survived.
+    """
+    canon_db = get_canonical_database()
+    # Batch records
+    batches: list[dict] = []
+    bcur = canon_db[BATCH_COLLECTION].find(
+        {"session_id": session_id, "collection": collection}
+    ).sort("batch_no", 1)
+    async for b in bcur:
+        batches.append({
+            "batch_no":     b.get("batch_no"),
+            "accepted":     b.get("accepted"),
+            "rejected":     b.get("rejected"),
+            "doc_count":    b.get("doc_count"),
+            "content_hash": b.get("content_hash"),
+            "recorded_at":  str(b.get("recorded_at")),
+        })
+
+    # Audit log aggregates
+    sum_upserted = sum_matched = n_batch_accepted = 0
+    n_bulk_error = n_altered_replay = n_replay_idempotent = 0
+    recent_errors: list[dict] = []
+    acur = canon_db[AUDIT_COLLECTION].find(
+        {"meta.session_id": session_id, "meta.collection": collection}
+    )
+    async for a in acur:
+        event = a.get("event")
+        meta = a.get("meta", {}) or {}
+        if event == "batch_accepted":
+            n_batch_accepted += 1
+            sum_upserted += int(meta.get("upserted") or 0)
+            sum_matched  += int(meta.get("matched")  or 0)
+        elif event == "bulk_write_error":
+            n_bulk_error += 1
+            if len(recent_errors) < 5:
+                recent_errors.append({
+                    "batch_no": meta.get("batch_no"),
+                    "details":  str(meta.get("details"))[:400],
+                })
+        elif event == "altered_replay_rejected":
+            n_altered_replay += 1
+        elif event == "batch_replay_idempotent":
+            n_replay_idempotent += 1
+
+    # Current canonical collection count
+    try:
+        canonical_count = await canon_db[collection].count_documents({})
+    except Exception:
+        canonical_count = -1
+
+    # Logical-key distribution sanity: unique keys among the first 50 K docs
+    unique_lk_sample = 0
+    is_active_true = 0
+    is_active_false = 0
+    is_active_null = 0
+    missing_lk = 0
+    lk_fields = list(logical_key_fields(collection))
+    try:
+        projection = {f: 1 for f in lk_fields}
+        projection["_id"] = 0
+        projection["is_active"] = 1
+        seen = set()
+        async for d in canon_db[collection].find({}, projection).limit(500_000):
+            lk = tuple(d.get(f) for f in lk_fields)
+            if any(v is None for v in lk):
+                missing_lk += 1
+            else:
+                seen.add(lk)
+            a = d.get("is_active")
+            if a is True: is_active_true += 1
+            elif a is False: is_active_false += 1
+            else: is_active_null += 1
+        unique_lk_sample = len(seen)
+    except Exception:
+        pass
+
+    return {
+        "session_id":           session_id,
+        "collection":           collection,
+        "logical_key_fields":   lk_fields,
+        "batch_count":          len(batches),
+        "sum_accepted":         sum(b["accepted"] or 0 for b in batches),
+        "sum_rejected":         sum(b["rejected"] or 0 for b in batches),
+        "sum_doc_count":        sum(b["doc_count"] or 0 for b in batches),
+        "audit": {
+            "n_batch_accepted_events":    n_batch_accepted,
+            "n_batch_replay_idempotent":  n_replay_idempotent,
+            "n_bulk_write_error_events":  n_bulk_error,
+            "n_altered_replay_rejected":  n_altered_replay,
+            "sum_upserted_count":         sum_upserted,
+            "sum_matched_count":          sum_matched,
+            "recent_bulk_write_errors":   recent_errors,
+        },
+        "canonical_now": {
+            "count_total":                canonical_count,
+            "unique_logical_key_sampled": unique_lk_sample,
+            "sample_missing_logical_key": missing_lk,
+            "is_active_true":             is_active_true,
+            "is_active_false":            is_active_false,
+            "is_active_null_or_absent":   is_active_null,
+        },
+        "first_10_batches":  batches[:10],
+        "last_10_batches":   batches[-10:],
     }
 
 
