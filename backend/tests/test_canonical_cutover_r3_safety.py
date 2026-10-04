@@ -341,6 +341,41 @@ def test_H_push_driver_has_resumable_retry_structure():
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Test H2: _post persistent-retry cap is 3 (not 6)
+# ──────────────────────────────────────────────────────────────────────
+def test_H2_post_retry_cap_is_three():
+    """Phase-5-R3 hardened: a single bad batch must not be allowed to
+    consume ~30 min via 6 bounded-backoff retries.  The persistent
+    retry cap on `_post` is 3, and Pass 2 provides the one extra
+    recovery pass.  Guard both the default and the inline docs so a
+    future refactor cannot silently raise the cap again."""
+    import importlib.util
+    src_path = pathlib.Path(
+        "/app/reconcile_workspace/scripts/push_canonical_to_production.py"
+    )
+    spec = importlib.util.spec_from_file_location("push_canonical_mod", src_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+
+    import inspect
+    sig = inspect.signature(mod._post)
+    assert sig.parameters["retries"].default == 3, (
+        f"_post default retries must be 3, got {sig.parameters['retries'].default}"
+    )
+
+    src = src_path.read_text()
+    assert "CAPPED AT 3 ATTEMPTS" in src, \
+        "inline docs must explicitly declare the 3-attempt cap"
+    assert "bounded 3-attempt policy" in src, \
+        "Pass-2 banner must declare 3-attempt bounded policy"
+    assert "retries: int = 3" in src, \
+        "retry cap must be literal 3 in _post signature (grep-locked)"
+    # Explicitly forbid regression back to 6
+    assert "retries: int = 6" not in src, \
+        "retry cap must NOT be 6; the Phase-5-R3 hardening caps it at 3"
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Test I: soft reset preserves canonical data, clears bookkeeping only
 # ──────────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
