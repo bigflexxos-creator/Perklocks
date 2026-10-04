@@ -122,22 +122,29 @@ def _is_excluded(doc: dict) -> bool:
     return False
 
 
-def _post(url: str, headers: dict, body: dict, retries: int = 6,
+def _post(url: str, headers: dict, body: dict, retries: int = 3,
           backoff: float = 2.0) -> dict:
     """Resilient POST — Phase-5-R3 tuned for the managed Mongo write
     characteristics observed on bet-edge-ai-1.emergent.host:
       * server-side request timeout bumped to 300 s (bulk_write of
-        2000-row upserts occasionally exceeds the 120 s default under
+        250-row upserts occasionally exceeds the 120 s default under
         shared-cluster load).
-      * 6 retries with capped exponential back-off (2 s, 4 s, 8 s,
-        16 s, 32 s, 60 s) — gives the server time to recover without
-        starving the overall import.
+      * **CAPPED AT 3 ATTEMPTS** per batch with bounded exponential
+        back-off (2 s, 4 s, 8 s).  Prior R3 variant allowed 6 attempts
+        which let a single bad batch block the orchestrator for
+        ~30 min while the shared cluster stayed slow.  Lowering the
+        cap preserves resilience while enforcing fail-fast on any
+        batch stuck in a persistent-timeout window — Pass 2 provides
+        the one additional recovery opportunity.
       * fail-closed on 400/401/403/413 (configuration errors).
       * 409 ALTERED_REPLAY_REJECTED surfaced immediately — server
         rejected because the batch's canonical identity changed under
         us, which must never silently resolve.
     """
     data = json.dumps(body, default=str).encode()
+    # Bounded exponential backoff schedule.  Only the first `retries - 1`
+    # entries are consumed when retries is capped at 3; the longer tail
+    # is retained so Pass-2 or future reconfigurations remain safe.
     delays = [2, 4, 8, 16, 32, 60]
     for attempt in range(retries):
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
@@ -260,14 +267,22 @@ def main() -> int:
             continue
         print(f"  → {coll}: source={src.name} (size={src.stat().st_size})")
 
-        # Phase-5-R3 resumable retry pattern:
-        #   PASS 1 — process every batch; on persistent failure (6 retries
-        #            exhausted) record the (coll, batch_no, batch_payload)
-        #            and continue.  Never silently skip.
-        #   PASS 2 — at end of all collections, retry the recorded failed
-        #            batches with the same bounded 6-retry policy.
+        # Phase-5-R3 resumable retry pattern (capped-at-3 variant):
+        #   PASS 1 — process every batch; on persistent failure
+        #            (3 bounded retries exhausted) record the
+        #            (coll, batch_no, batch_payload) and continue.
+        #            Never silently skip.
+        #   PASS 2 — at end of all collections, retry the recorded
+        #            failed batches with the same bounded 3-retry
+        #            policy.  This is the ONE additional recovery
+        #            attempt a batch gets after Pass 1.
         # If any batch is STILL failed after Pass 2 → the push driver
         # exits non-zero and the orchestrator refuses Phase 6/7/8.
+        # Rationale for the 3-attempt cap: on the shared cluster,
+        # a batch that cannot complete within 3 bounded-backoff
+        # attempts is overwhelmingly in a persistent-timeout window;
+        # letting it burn 6 attempts (~30 min) blocks the entire
+        # import without materially improving success rate.
         batch = []
         batch_no = 0
         coll_accepted = 0
@@ -333,7 +348,7 @@ def main() -> int:
     #                     with the same 6-retry bounded policy.
     total_failed_after_pass1 = sum(len(v) for v in failed_registry.values())
     if total_failed_after_pass1:
-        print(f"\n[retry-pass] {total_failed_after_pass1} batch(es) failed in pass 1 — retrying each with full bounded policy")
+        print(f"\n[retry-pass] {total_failed_after_pass1} batch(es) failed in pass 1 — retrying each with bounded 3-attempt policy")
         still_failed = {}
         for coll, items in failed_registry.items():
             for item in items:
