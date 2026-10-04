@@ -56,12 +56,26 @@ logger = logging.getLogger("lockscore.database")
 # Kept identical to the previous deps.py values so this refactor is
 # behaviour-preserving.  They are also documented as the Phase 3B
 # canonical pool sizing.
+#
+# Phase-5-R3 fix (2026-10-04): a managed-production MONGO_URL on the
+# Emergent-managed cluster carries ``timeoutMS=10000`` embedded in the
+# connection-string querystring.  That URL-level value overrides any
+# per-operation CSOT the application might set, so bulk-write
+# operations larger than 10 s were being killed client-side regardless
+# of the ``MONGO_SOCKET_TIMEOUT_MS=300000`` env override.  PyMongo /
+# Motor let an explicit top-level ``timeoutMS`` kwarg override the
+# URL-querystring value — so we now ALWAYS pass ``timeoutMS``
+# explicitly, resolved from the SAME env var (``MONGO_SOCKET_TIMEOUT_MS``)
+# that already drives ``socketTimeoutMS``.  No other connection-string
+# params are modified; this is the minimum-surface fix requested by
+# Emergent Support.
 _DEFAULT_POOL_KWARGS: dict[str, int | bool | str] = {
     "maxPoolSize":               20,
     "minPoolSize":               2,
     "serverSelectionTimeoutMS": 10_000,
     "connectTimeoutMS":         10_000,
     "socketTimeoutMS":          60_000,
+    "timeoutMS":                60_000,
     "waitQueueTimeoutMS":       15_000,
     "retryWrites":              True,
     "appname":                  "perklocks-api",
@@ -82,6 +96,10 @@ def _resolve_pool_kwargs() -> dict[str, Any]:
     kw["serverSelectionTimeoutMS"] = _env_int("MONGO_SERVER_SEL_TIMEOUT_MS", kw["serverSelectionTimeoutMS"])
     kw["connectTimeoutMS"]         = _env_int("MONGO_CONNECT_TIMEOUT_MS",  kw["connectTimeoutMS"])
     kw["socketTimeoutMS"]          = _env_int("MONGO_SOCKET_TIMEOUT_MS",   kw["socketTimeoutMS"])
+    # Phase-5-R3: explicit top-level CSOT overrides any `timeoutMS=…`
+    # embedded in MONGO_URL.  Pulls from the SAME env var that drives
+    # socketTimeoutMS so operators have exactly one knob to turn.
+    kw["timeoutMS"]                = _env_int("MONGO_SOCKET_TIMEOUT_MS",   kw["timeoutMS"])
     kw["waitQueueTimeoutMS"]       = _env_int("MONGO_WAIT_QUEUE_TIMEOUT_MS", kw["waitQueueTimeoutMS"])
     return kw
 
