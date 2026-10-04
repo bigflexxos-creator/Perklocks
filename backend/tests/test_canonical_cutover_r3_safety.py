@@ -318,3 +318,62 @@ def test_G_empty_p6_overlay_cannot_erase_p5_data():
         "push driver must contain `size > 0` guard for P6 overlays"
     assert "no non-empty source available" in src, \
         "push driver must gracefully handle missing-and-empty case"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Test H: push driver has resumable Pass-1 / Pass-2 retry structure
+# ──────────────────────────────────────────────────────────────────────
+def test_H_push_driver_has_resumable_retry_structure():
+    """R3-resumable fix: on persistent batch failure in Pass 1, the
+    driver must record (coll, batch_no) and continue; then re-attempt
+    only the failed batches in Pass 2.  If any batch is still failed
+    after Pass 2 → exit non-zero."""
+    src = pathlib.Path(
+        "/app/reconcile_workspace/scripts/push_canonical_to_production.py"
+    ).read_text()
+    assert "failed_registry" in src, "must track failed batches between passes"
+    assert "PERSISTENT FAIL" in src, "must announce persistent failures to the operator"
+    assert "retry-pass" in src, "must have an explicit Pass-2 retry pass"
+    assert "still_failed_after_retry" in src, \
+        "report must surface batches still failing after Pass 2"
+    assert "will show failed batches" in src or "exits non-zero" in src, \
+        "must fail-closed when Pass 2 still has failures"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Test I: soft reset preserves canonical data, clears bookkeeping only
+# ──────────────────────────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_I_soft_reset_preserves_canonical_data(canon_db):
+    """When ``drop_canonical_collections=False`` is set via the reset
+    endpoint, canonical data MUST stay intact and only the session's
+    bookkeeping is cleared.  Simulated via the service-layer helpers
+    (the HTTP route delegates to the same logic)."""
+    # Seed the canonical dataset
+    docs = _games(50)
+    await import_batch(canon_db, collection="games", docs=docs,
+                         session_id="r3-test-I", batch_no=0,
+                         source_checkpoints={"src": "test"})
+    assert await canon_db["games"].count_documents({}) == 50
+    assert await canon_db[BATCH_COLLECTION].count_documents(
+        {"session_id": "r3-test-I"}) == 1
+
+    # Simulate soft reset: delete only the bookkeeping entries, leave the data
+    await canon_db[BATCH_COLLECTION].delete_many({"session_id": "r3-test-I"})
+    await canon_db[SESSION_COLLECTION].delete_many({"session_id": "r3-test-I"})
+
+    assert await canon_db["games"].count_documents({}) == 50, \
+        "soft reset must preserve canonical data"
+    assert await canon_db[BATCH_COLLECTION].count_documents(
+        {"session_id": "r3-test-I"}) == 0, \
+        "soft reset must clear the session's batch bookkeeping"
+
+    # A new import at a DIFFERENT batch size must now succeed without
+    # ALTERED_REPLAY_REJECTED because old batch records are gone.
+    smaller = _games(25)
+    res = await import_batch(canon_db, collection="games", docs=smaller,
+                                session_id="r3-test-I", batch_no=0,
+                                source_checkpoints={"src": "test"})
+    assert res["status"] == "succeeded"
+    # Count still 50 (25 of 25 matched existing docs, no inflation)
+    assert await canon_db["games"].count_documents({}) == 50

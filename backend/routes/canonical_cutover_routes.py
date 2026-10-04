@@ -119,11 +119,19 @@ class CreateIndexesRequest(BaseModel):
 
 class ResetCanonicalDatasetRequest(BaseModel):
     """Scoped reset of canonical dataset. REFUSES to touch legacy or any
-    collection outside the 21-collection reconciliation allowlist."""
+    collection outside the 21-collection reconciliation allowlist.
+
+    Phase-5-R3 resumable-retry fix: setting ``drop_canonical_collections=False``
+    keeps every ``canonical_<name>`` collection intact and only clears
+    the session's batch/session bookkeeping — used to switch batch
+    size on an already-partially-imported session without triggering
+    ``ALTERED_REPLAY_REJECTED`` on content_hash change.
+    """
     confirm:                                 bool = Field(default=False)
     i_understand_this_drops_canonical:       str  = Field(default="")
     only_canonical_prefix_collections_allowed: bool = Field(default=False)
     session_id_to_clear_bookkeeping_for:     Optional[str] = Field(default=None)
+    drop_canonical_collections:              bool = Field(default=True)
 
 
 class R3CertificationRequest(BaseModel):
@@ -430,38 +438,37 @@ async def canonical_reset_canonical_dataset(
     canon_db = get_canonical_database()
     fallback = canonical_fallback_enabled()
     results = []
-    for coll in RECONCILIATION_COLLECTIONS:
-        # Resolve physical name through the proxy — in fallback mode this
-        # becomes 'canonical_<coll>'; in direct mode this is simply <coll>
-        # inside the (separate) canonical database.
-        physical_name = getattr(canon_db[coll], "name", coll)
-        if fallback and not physical_name.startswith("canonical_"):
-            results.append({"collection": coll,
-                             "physical": physical_name,
-                             "dropped":  False,
-                             "error":    "REFUSED_NON_CANONICAL_PREFIX_IN_FALLBACK"})
-            continue
-        if coll not in RECONCILIATION_COLLECTIONS:
-            # Defensive — iteration already restricts to allowlist, but
-            # keeping the check in case the loop source changes.
-            results.append({"collection": coll, "physical": physical_name,
-                             "dropped": False,
-                             "error":   "NOT_IN_ALLOWLIST"})
-            continue
-        try:
-            n_before = await canon_db[coll].count_documents({})
-            await canon_db[coll].drop()
-            n_after  = await canon_db[coll].count_documents({})
-            results.append({"collection": coll,
-                             "physical":   physical_name,
-                             "n_before":   n_before,
-                             "n_after":    n_after,
-                             "dropped":    (n_after == 0)})
-        except Exception as e:   # noqa: BLE001
+    if req.drop_canonical_collections:
+        for coll in RECONCILIATION_COLLECTIONS:
+            physical_name = getattr(canon_db[coll], "name", coll)
+            if fallback and not physical_name.startswith("canonical_"):
+                results.append({"collection": coll,
+                                 "physical": physical_name,
+                                 "dropped":  False,
+                                 "error":    "REFUSED_NON_CANONICAL_PREFIX_IN_FALLBACK"})
+                continue
+            try:
+                n_before = await canon_db[coll].count_documents({})
+                await canon_db[coll].drop()
+                n_after  = await canon_db[coll].count_documents({})
+                results.append({"collection": coll,
+                                 "physical":   physical_name,
+                                 "n_before":   n_before,
+                                 "n_after":    n_after,
+                                 "dropped":    (n_after == 0)})
+            except Exception as e:   # noqa: BLE001
+                results.append({"collection": coll,
+                                 "physical":   physical_name,
+                                 "dropped":    False,
+                                 "error":      f"{type(e).__name__}: {str(e)[:200]}"})
+    else:
+        # Soft reset — bookkeeping only, canonical data preserved.
+        for coll in RECONCILIATION_COLLECTIONS:
+            physical_name = getattr(canon_db[coll], "name", coll)
             results.append({"collection": coll,
                              "physical":   physical_name,
                              "dropped":    False,
-                             "error":      f"{type(e).__name__}: {str(e)[:200]}"})
+                             "preserved":  True})
 
     # Session-scoped bookkeeping cleanup (optional).  NEVER wipes
     # bookkeeping for OTHER sessions — R1/R2 records are preserved.
@@ -483,8 +490,10 @@ async def canonical_reset_canonical_dataset(
     })
     return {
         "fallback_mode":      fallback,
+        "soft_reset":         not req.drop_canonical_collections,
         "results":            results,
-        "all_dropped":        all(r.get("dropped") for r in results),
+        "all_dropped":        (req.drop_canonical_collections
+                                 and all(r.get("dropped") for r in results)),
         "bookkeeping_cleared": bookkeeping_cleared,
     }
 

@@ -221,6 +221,7 @@ def main() -> int:
 
     report = {"collections": [], "total_accepted": 0, "total_rejected": 0,
               "api_target_redacted": _redact_host(api_base), "session": session}
+    failed_registry: dict[str, list[dict]] = {}
     for coll in RECONCILED_21:
         if filter_set and coll not in filter_set:
             continue
@@ -259,48 +260,112 @@ def main() -> int:
             continue
         print(f"  → {coll}: source={src.name} (size={src.stat().st_size})")
 
+        # Phase-5-R3 resumable retry pattern:
+        #   PASS 1 — process every batch; on persistent failure (6 retries
+        #            exhausted) record the (coll, batch_no, batch_payload)
+        #            and continue.  Never silently skip.
+        #   PASS 2 — at end of all collections, retry the recorded failed
+        #            batches with the same bounded 6-retry policy.
+        # If any batch is STILL failed after Pass 2 → the push driver
+        # exits non-zero and the orchestrator refuses Phase 6/7/8.
         batch = []
         batch_no = 0
         coll_accepted = 0
         coll_rejected = 0
+        coll_failed = []
+
+        def _attempt(bno, b):
+            """Returns (ok, result_or_error_str)."""
+            try:
+                return True, _post(
+                    f"{api_base}/api/admin/canonical-import",
+                    headers_post,
+                    {"session_id":         session,
+                     "collection":         coll,
+                     "batch_no":           bno,
+                     "docs":               b,
+                     "source_checkpoints": source_cps})
+            except Exception as e:   # noqa: BLE001
+                return False, str(e)[:400]
+
         for doc in _ndjson_rows(src):
             if _is_excluded(doc):
                 coll_rejected += 1
                 continue
             batch.append(doc)
             if len(batch) >= batch_size:
-                res = _post(
-                    f"{api_base}/api/admin/canonical-import",
-                    headers_post,
-                    {"session_id":         session,
-                     "collection":         coll,
-                     "batch_no":           batch_no,
-                     "docs":               batch,
-                     "source_checkpoints": source_cps})
-                coll_accepted += res.get("accepted", 0)
-                coll_rejected += res.get("rejected", 0)
-                print(f"      batch #{batch_no}: accepted={res.get('accepted')} "
-                      f"rejected={res.get('rejected')} replay={res.get('idempotent_replay')}")
+                ok, res = _attempt(batch_no, batch)
+                if ok:
+                    coll_accepted += res.get("accepted", 0)
+                    coll_rejected += res.get("rejected", 0)
+                    print(f"      batch #{batch_no}: accepted={res.get('accepted')} "
+                          f"rejected={res.get('rejected')} "
+                          f"status={res.get('status')} "
+                          f"replay={res.get('idempotent_replay')}")
+                else:
+                    print(f"      batch #{batch_no}: PERSISTENT FAIL — will retry at end  err={res}")
+                    coll_failed.append({"batch_no": batch_no, "payload": list(batch)})
                 batch_no += 1
                 batch = []
         if batch:
-            res = _post(
-                f"{api_base}/api/admin/canonical-import",
-                headers_post,
-                {"session_id":         session,
-                 "collection":         coll,
-                 "batch_no":           batch_no,
-                 "docs":               batch,
-                 "source_checkpoints": source_cps})
-            coll_accepted += res.get("accepted", 0)
-            coll_rejected += res.get("rejected", 0)
-            print(f"      batch #{batch_no}: accepted={res.get('accepted')} "
-                  f"rejected={res.get('rejected')} replay={res.get('idempotent_replay')}")
-        report["collections"].append({"collection": coll,
-                                        "accepted": coll_accepted,
-                                        "rejected": coll_rejected})
+            ok, res = _attempt(batch_no, batch)
+            if ok:
+                coll_accepted += res.get("accepted", 0)
+                coll_rejected += res.get("rejected", 0)
+                print(f"      batch #{batch_no}: accepted={res.get('accepted')} "
+                      f"rejected={res.get('rejected')} status={res.get('status')} "
+                      f"replay={res.get('idempotent_replay')}")
+            else:
+                print(f"      batch #{batch_no}: PERSISTENT FAIL — will retry at end  err={res}")
+                coll_failed.append({"batch_no": batch_no, "payload": list(batch)})
+
+        report["collections"].append({"collection":     coll,
+                                        "accepted":       coll_accepted,
+                                        "rejected":       coll_rejected,
+                                        "failed_batches": [f["batch_no"] for f in coll_failed]})
         report["total_accepted"] += coll_accepted
         report["total_rejected"] += coll_rejected
+        # stash failed-batch payloads for Pass 2
+        failed_registry.setdefault(coll, []).extend(coll_failed)
+        del coll_failed
+
+    # ── Phase-5-R3 Pass 2: retry only the batches that failed in Pass 1
+    #                     with the same 6-retry bounded policy.
+    total_failed_after_pass1 = sum(len(v) for v in failed_registry.values())
+    if total_failed_after_pass1:
+        print(f"\n[retry-pass] {total_failed_after_pass1} batch(es) failed in pass 1 — retrying each with full bounded policy")
+        still_failed = {}
+        for coll, items in failed_registry.items():
+            for item in items:
+                bno = item["batch_no"]
+                payload = item["payload"]
+                try:
+                    res = _post(
+                        f"{api_base}/api/admin/canonical-import",
+                        headers_post,
+                        {"session_id":         session,
+                         "collection":         coll,
+                         "batch_no":           bno,
+                         "docs":               payload,
+                         "source_checkpoints": source_cps})
+                    print(f"      retry {coll} batch #{bno}: accepted={res.get('accepted')} "
+                          f"status={res.get('status')} replay={res.get('idempotent_replay')}")
+                    report["total_accepted"] += res.get("accepted", 0) or 0
+                    report["total_rejected"] += res.get("rejected", 0) or 0
+                except Exception as e:   # noqa: BLE001
+                    msg = str(e)[:400]
+                    print(f"      retry {coll} batch #{bno}: STILL FAILED  err={msg}")
+                    still_failed.setdefault(coll, []).append({"batch_no": bno, "err": msg})
+        report["still_failed_after_retry"] = still_failed
+        if still_failed:
+            print(f"\n❌ After retry pass, {sum(len(v) for v in still_failed.values())} "
+                  f"batch(es) remain failed — pushing driver exits non-zero so Phase 6/7/8 are refused.")
+            print(f"[5/5] fetching session status (will show failed batches) …")
+            status = _get(f"{api_base}/api/admin/canonical-import/status?session_id={session}",
+                             headers_get)
+            report["server_status"] = status
+            print(json.dumps(report, indent=2, default=str))
+            return 1
 
     # Final status
     print(f"[5/5] fetching session status …")
