@@ -122,26 +122,42 @@ def _is_excluded(doc: dict) -> bool:
     return False
 
 
-def _post(url: str, headers: dict, body: dict, retries: int = 3,
+def _post(url: str, headers: dict, body: dict, retries: int = 6,
           backoff: float = 2.0) -> dict:
+    """Resilient POST — Phase-5-R3 tuned for the managed Mongo write
+    characteristics observed on bet-edge-ai-1.emergent.host:
+      * server-side request timeout bumped to 300 s (bulk_write of
+        2000-row upserts occasionally exceeds the 120 s default under
+        shared-cluster load).
+      * 6 retries with capped exponential back-off (2 s, 4 s, 8 s,
+        16 s, 32 s, 60 s) — gives the server time to recover without
+        starving the overall import.
+      * fail-closed on 400/401/403/413 (configuration errors).
+      * 409 ALTERED_REPLAY_REJECTED surfaced immediately — server
+        rejected because the batch's canonical identity changed under
+        us, which must never silently resolve.
+    """
     data = json.dumps(body, default=str).encode()
+    delays = [2, 4, 8, 16, 32, 60]
     for attempt in range(retries):
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=300) as resp:
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
             text = e.read().decode(errors="replace")[:400]
-            # Idempotent server behaviour — 200 or specific 409 for replay
+            # Fail closed on these — never silently retried.
             if e.code in (401, 403, 400, 413):
                 raise RuntimeError(f"HTTP {e.code}: {text}")
+            if e.code == 409 and "ALTERED_REPLAY_REJECTED" in text:
+                raise RuntimeError(f"HTTP 409 ALTERED_REPLAY_REJECTED: {text}")
             if attempt == retries - 1:
                 raise RuntimeError(f"HTTP {e.code} after {retries} tries: {text}")
-            time.sleep(backoff ** attempt)
-        except (urllib.error.URLError, TimeoutError) as e:
+            time.sleep(delays[min(attempt, len(delays) - 1)])
+        except (urllib.error.URLError, TimeoutError):
             if attempt == retries - 1:
                 raise
-            time.sleep(backoff ** attempt)
+            time.sleep(delays[min(attempt, len(delays) - 1)])
     raise RuntimeError("retries exhausted")
 
 
