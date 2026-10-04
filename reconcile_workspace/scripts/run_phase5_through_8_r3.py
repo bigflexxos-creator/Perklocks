@@ -209,24 +209,29 @@ def main() -> int:
               f"quarantined={e.get('quarantined_rows'):>5}  "
               f"null_lk={e.get('null_logical_key_rows'):>5}")
 
-    # ── Phase 4.5: Scoped canonical reset ───────────────────────────
-    print("\n==================== PHASE 4.5 — SCOPED CANONICAL RESET ====================")
+    # ── Phase 4.5: Scoped canonical SOFT reset ──────────────────────
+    # R3 resumable retry mode: canonical_* data preserved; ONLY the
+    # session's batch/session bookkeeping is cleared so a different
+    # ``MAX_BATCH_SIZE`` can be used without hitting ALTERED_REPLAY_REJECTED.
+    print("\n==================== PHASE 4.5 — SCOPED CANONICAL SOFT RESET ====================")
+    soft_reset = os.environ.get("SOFT_RESET", "false").lower() == "true"
+    reset_body = {
+        "confirm":                                   True,
+        "i_understand_this_drops_canonical":         "YES-DROP-CANONICAL-DATASET",
+        "only_canonical_prefix_collections_allowed": True,
+        "session_id_to_clear_bookkeeping_for":       session,
+        "drop_canonical_collections":                not soft_reset,
+    }
     code, rst = _post(f"{api_base}/api/admin/canonical-cutover/reset-canonical-dataset",
-                        hdr_t, {
-            "confirm":                                   True,
-            "i_understand_this_drops_canonical":         "YES-DROP-CANONICAL-DATASET",
-            "only_canonical_prefix_collections_allowed": True,
-            # Clear ONLY the r3 session bookkeeping if any pre-exists
-            "session_id_to_clear_bookkeeping_for":       session,
-        })
-    if code != 200 or not isinstance(rst, dict) or not rst.get("all_dropped"):
+                        hdr_t, reset_body)
+    ok = (code == 200 and isinstance(rst, dict)
+            and (rst.get("soft_reset") or rst.get("all_dropped")))
+    if not ok:
         print(f"STOP: reset failed status={code} body={rst}", file=sys.stderr); return 20
-    print(f"[reset] fallback_mode = {rst.get('fallback_mode')}")
-    for r in rst["results"]:
-        print(f"   {r['collection']:35s} physical={r['physical']:45s}  "
-              f"before={r.get('n_before'):>7}  after={r.get('n_after'):>3}  "
-              f"dropped={r['dropped']}")
-    print(f"[reset] bookkeeping_cleared = {rst.get('bookkeeping_cleared')}")
+    print(f"[reset] fallback_mode={rst.get('fallback_mode')}  "
+          f"soft_reset={rst.get('soft_reset')}  "
+          f"all_dropped={rst.get('all_dropped')}  "
+          f"bookkeeping_cleared={rst.get('bookkeeping_cleared')}")
 
     # ── Phase 5: push driver ────────────────────────────────────────
     print("\n==================== PHASE 5 — R3 IMPORT ====================")
