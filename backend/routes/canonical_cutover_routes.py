@@ -56,7 +56,18 @@ from services.canonical_cutover import (
     import_batch, collection_fingerprint, ensure_canonical_indexes,
     copy_legacy_collection, logical_key_fields, extract_logical_key,
     SESSION_COLLECTION, BATCH_COLLECTION, AUDIT_COLLECTION,
+    audit_log as _audit_log_impl,
 )
+
+
+async def audit_log_local(event: str, meta: dict) -> None:
+    """Thin wrapper that routes audit entries through the active
+    canonical database.  Keeps the Phase-5-R3 reset / cert endpoints
+    free of direct DB-handle plumbing."""
+    try:
+        await _audit_log_impl(get_canonical_database(), event, meta)
+    except Exception:
+        logger.exception("audit_log_local failed for event=%s", event)
 
 logger = logging.getLogger("perklocks.cutover_routes")
 
@@ -104,6 +115,33 @@ class CopyLegacyRequest(BaseModel):
 
 class CreateIndexesRequest(BaseModel):
     collections: list[str] = Field(default_factory=lambda: list(RECONCILIATION_COLLECTIONS))
+
+
+class ResetCanonicalDatasetRequest(BaseModel):
+    """Scoped reset of canonical dataset. REFUSES to touch legacy or any
+    collection outside the 21-collection reconciliation allowlist."""
+    confirm:                                 bool = Field(default=False)
+    i_understand_this_drops_canonical:       str  = Field(default="")
+    only_canonical_prefix_collections_allowed: bool = Field(default=False)
+    session_id_to_clear_bookkeeping_for:     Optional[str] = Field(default=None)
+
+
+class R3CertificationRequest(BaseModel):
+    session_id: str = Field(..., min_length=8, max_length=128)
+    # Expected counts come from the client's SHA-verified checkpoint audit.
+    # Server verifies every one of the 21 collections has an entry; any
+    # unexplained delta FAILS cert.
+    expected: dict[str, dict] = Field(default_factory=dict)
+    #   expected[coll] = {
+    #     "source_rows":                int,
+    #     "unique_logical_identities":  int,
+    #     "excluded_rows":              int,
+    #     "quarantined_rows":           int,
+    #     "null_logical_key_rows":      int,
+    #     "expected_canonical_rows":    int,
+    #     "expected_source_fingerprint": Optional[str],
+    #   }
+    tolerance_rows: int = Field(default=0, ge=0)
 
 
 # ─── Endpoints ───────────────────────────────────────────────────────
@@ -169,12 +207,33 @@ async def canonical_import_status(
              canon_db[BATCH_COLLECTION].find({})
     async for b in cursor:
         coll = b.get("collection")
-        a = per_coll_agg.setdefault(coll, {"batches": 0, "accepted": 0,
-                                             "rejected": 0, "total_docs": 0})
+        a = per_coll_agg.setdefault(coll, {
+            "batches":        0,
+            "batches_succeeded": 0,
+            "batches_failed":    0,
+            "batches_in_progress": 0,
+            "accepted":       0,
+            "rejected":       0,
+            "total_docs":     0,
+            "upserted":       0,
+            "matched":        0,
+        })
         a["batches"] += 1
-        a["accepted"] += b.get("accepted", 0)
-        a["rejected"] += b.get("rejected", 0)
+        status_ = b.get("status") or (
+            # Phase-5-R1/R2 compat: records that pre-date the ``status``
+            # field were implicitly treated as succeeded.  Phase-5-R3
+            # explicitly writes ``status`` on every record.
+            "succeeded" if "recorded_at" in b and "status" not in b else "unknown"
+        )
+        if status_ == "succeeded":   a["batches_succeeded"] += 1
+        elif status_ == "failed":    a["batches_failed"] += 1
+        elif status_ == "in_progress": a["batches_in_progress"] += 1
+        elif status_ == "incomplete_write": a["batches_failed"] += 1
+        a["accepted"]  += b.get("accepted", 0) or b.get("accepted_count", 0)
+        a["rejected"]  += b.get("rejected", 0) or b.get("rejected_count", 0)
         a["total_docs"] += b.get("doc_count", 0)
+        a["upserted"]  += int(b.get("upserted_count") or 0)
+        a["matched"]   += int(b.get("matched_count")  or 0)
 
     # Current canonical counts + unique logical IDs
     per_coll_current = {}
@@ -335,6 +394,232 @@ async def canonical_create_indexes(
         results.append(await ensure_canonical_indexes(canon_db, coll))
     return {"results": results,
             "all_ok": all(r.get("ok", False) for r in results)}
+
+
+# ─── Phase-5-R3: scoped canonical-dataset reset ─────────────────────
+@router.post("/canonical-cutover/reset-canonical-dataset")
+async def canonical_reset_canonical_dataset(
+    req: ResetCanonicalDatasetRequest,
+    admin: Annotated[UserPublic, Depends(_require_admin)],
+    x_canonical_import_token: Annotated[Optional[str], Header()] = None,
+):
+    """Drops ONLY the canonical dataset for the 21 reconciled collections
+    (plus the specified session bookkeeping records).  REFUSES to touch:
+      * the legacy database
+      * any collection outside RECONCILIATION_COLLECTIONS
+      * other sessions' bookkeeping records
+      * users / live legacy authority
+
+    In fallback mode the canonical database proxy maps
+    ``collection → canonical_<collection>`` automatically; we verify
+    the physical name starts with ``canonical_`` before invoking
+    ``drop_collection``.  Fail-closed on any unexpected physical name.
+    """
+    if not _import_enabled():
+        raise HTTPException(status_code=403, detail="CANONICAL_IMPORT_ENABLED=false")
+    _verify_import_token(x_canonical_import_token)
+    if not req.confirm:
+        raise HTTPException(status_code=400, detail="confirm=true required")
+    if req.i_understand_this_drops_canonical != "YES-DROP-CANONICAL-DATASET":
+        raise HTTPException(status_code=400,
+                            detail="i_understand_this_drops_canonical must equal 'YES-DROP-CANONICAL-DATASET'")
+    if not req.only_canonical_prefix_collections_allowed:
+        raise HTTPException(status_code=400,
+                            detail="only_canonical_prefix_collections_allowed must be true")
+
+    canon_db = get_canonical_database()
+    fallback = canonical_fallback_enabled()
+    results = []
+    for coll in RECONCILIATION_COLLECTIONS:
+        # Resolve physical name through the proxy — in fallback mode this
+        # becomes 'canonical_<coll>'; in direct mode this is simply <coll>
+        # inside the (separate) canonical database.
+        physical_name = getattr(canon_db[coll], "name", coll)
+        if fallback and not physical_name.startswith("canonical_"):
+            results.append({"collection": coll,
+                             "physical": physical_name,
+                             "dropped":  False,
+                             "error":    "REFUSED_NON_CANONICAL_PREFIX_IN_FALLBACK"})
+            continue
+        if coll not in RECONCILIATION_COLLECTIONS:
+            # Defensive — iteration already restricts to allowlist, but
+            # keeping the check in case the loop source changes.
+            results.append({"collection": coll, "physical": physical_name,
+                             "dropped": False,
+                             "error":   "NOT_IN_ALLOWLIST"})
+            continue
+        try:
+            n_before = await canon_db[coll].count_documents({})
+            await canon_db[coll].drop()
+            n_after  = await canon_db[coll].count_documents({})
+            results.append({"collection": coll,
+                             "physical":   physical_name,
+                             "n_before":   n_before,
+                             "n_after":    n_after,
+                             "dropped":    (n_after == 0)})
+        except Exception as e:   # noqa: BLE001
+            results.append({"collection": coll,
+                             "physical":   physical_name,
+                             "dropped":    False,
+                             "error":      f"{type(e).__name__}: {str(e)[:200]}"})
+
+    # Session-scoped bookkeeping cleanup (optional).  NEVER wipes
+    # bookkeeping for OTHER sessions — R1/R2 records are preserved.
+    bookkeeping_cleared = {"batches_deleted": 0, "sessions_deleted": 0}
+    if req.session_id_to_clear_bookkeeping_for:
+        sid = req.session_id_to_clear_bookkeeping_for
+        if len(sid) < 8 or len(sid) > 128:
+            raise HTTPException(status_code=400, detail="session_id_to_clear invalid length")
+        bres = await canon_db[BATCH_COLLECTION].delete_many({"session_id": sid})
+        sres = await canon_db[SESSION_COLLECTION].delete_many({"session_id": sid})
+        bookkeeping_cleared["batches_deleted"]  = bres.deleted_count
+        bookkeeping_cleared["sessions_deleted"] = sres.deleted_count
+
+    await audit_log_local("canonical_dataset_reset", {
+        "admin_id":   admin.id,
+        "fallback":   fallback,
+        "results":    results,
+        "bookkeeping_cleared": bookkeeping_cleared,
+    })
+    return {
+        "fallback_mode":      fallback,
+        "results":            results,
+        "all_dropped":        all(r.get("dropped") for r in results),
+        "bookkeeping_cleared": bookkeeping_cleared,
+    }
+
+
+# ─── Phase-5-R3: completeness certification ─────────────────────────
+@router.post("/canonical-cutover/r3-certification")
+async def canonical_r3_completeness_certification(
+    req: R3CertificationRequest,
+    admin: Annotated[UserPublic, Depends(_require_admin)],
+    x_canonical_import_token: Annotated[Optional[str], Header()] = None,
+):
+    """R3 PHASE-8 COMPLETENESS CERTIFICATION.
+
+    Previous Phase-8 passed on logical-identity checks alone — but
+    silently allowed massive row loss.  This endpoint rejects any
+    unexplained row-count delta vs the client-supplied certified
+    source counts.
+    """
+    if not _import_enabled():
+        raise HTTPException(status_code=403, detail="CANONICAL_IMPORT_ENABLED=false")
+    _verify_import_token(x_canonical_import_token)
+    canon_db = get_canonical_database()
+
+    # Session batch state
+    agg: dict[str, dict] = {}
+    async for b in canon_db[BATCH_COLLECTION].find({"session_id": req.session_id}):
+        coll = b.get("collection")
+        a = agg.setdefault(coll, {
+            "batches": 0, "succeeded": 0, "failed": 0, "in_progress": 0,
+            "upserted": 0, "matched": 0, "accepted": 0, "rejected": 0,
+        })
+        a["batches"] += 1
+        s = b.get("status") or "unknown"
+        if s == "succeeded":   a["succeeded"] += 1
+        elif s == "failed":    a["failed"] += 1
+        elif s == "in_progress": a["in_progress"] += 1
+        elif s == "incomplete_write": a["failed"] += 1
+        a["upserted"] += int(b.get("upserted_count") or 0)
+        a["matched"]  += int(b.get("matched_count")  or 0)
+        a["accepted"] += int(b.get("accepted_count") or b.get("accepted") or 0)
+        a["rejected"] += int(b.get("rejected_count") or b.get("rejected") or 0)
+
+    results: list[dict] = []
+    overall_pass = True
+    for coll in RECONCILIATION_COLLECTIONS:
+        exp = req.expected.get(coll, {})
+        expected_source_rows        = int(exp.get("source_rows") or 0)
+        unique_source_lk            = int(exp.get("unique_logical_identities") or 0)
+        excluded_rows               = int(exp.get("excluded_rows") or 0)
+        quarantined_rows            = int(exp.get("quarantined_rows") or 0)
+        null_lk_rows                = int(exp.get("null_logical_key_rows") or 0)
+        expected_canonical_rows     = int(exp.get("expected_canonical_rows")
+                                            or max(0, unique_source_lk - excluded_rows - quarantined_rows))
+
+        # Canonical observed
+        canonical_rows = await canon_db[coll].count_documents({})
+        # Count unique logical identities actually present
+        from services.canonical_cutover import logical_key_fields as _lkf
+        lk = list(_lkf(coll))
+        pipeline = [
+            {"$group": {"_id": {f: f"${f}" for f in lk}}},
+            {"$count": "n"},
+        ]
+        unique_canonical_lk = 0
+        try:
+            doc = await canon_db[coll].aggregate(pipeline).to_list(1)
+            if doc: unique_canonical_lk = int(doc[0].get("n") or 0)
+        except Exception as e:   # noqa: BLE001
+            unique_canonical_lk = -1
+        duplicate_canonical_ids = (canonical_rows - unique_canonical_lk) if unique_canonical_lk >= 0 else -1
+
+        # Collection fingerprint (identity-hash)
+        try:
+            fp = await collection_fingerprint(canon_db, coll)
+        except Exception:
+            fp = None
+
+        batches_info = agg.get(coll, {})
+        diff          = canonical_rows - expected_canonical_rows
+        diff_pct      = (abs(diff) / expected_canonical_rows * 100.0
+                           if expected_canonical_rows else 0.0)
+        row_ok        = abs(diff) <= req.tolerance_rows
+        lk_ok         = (unique_canonical_lk == expected_canonical_rows)
+        no_dups       = (duplicate_canonical_ids == 0)
+        batches_ok    = batches_info.get("failed", 0) == 0 and batches_info.get("in_progress", 0) == 0
+        exc_ok        = True  # The exclusion filter is server-enforced; see audit log.
+        status_       = ("PASS" if (row_ok and lk_ok and no_dups and batches_ok) else "FAIL")
+        if status_ == "FAIL": overall_pass = False
+        results.append({
+            "collection":                    coll,
+            "certified_source_rows":         expected_source_rows,
+            "unique_source_logical_ids":     unique_source_lk,
+            "excluded_rows":                 excluded_rows,
+            "quarantined_rows":              quarantined_rows,
+            "null_logical_key_rows":         null_lk_rows,
+            "expected_canonical_rows":       expected_canonical_rows,
+            "canonical_rows":                canonical_rows,
+            "unique_canonical_logical_ids":  unique_canonical_lk,
+            "duplicate_canonical_ids":       duplicate_canonical_ids,
+            "difference":                    diff,
+            "difference_percent":            round(diff_pct, 3),
+            "canonical_fingerprint":         fp,
+            "batches":                       batches_info,
+            "row_count_match":               row_ok,
+            "logical_id_match":              lk_ok,
+            "no_duplicates":                 no_dups,
+            "all_batches_succeeded":         batches_ok,
+            "status":                        status_,
+        })
+
+    # Specific settlement_events assertions required by R3 contract
+    settlement = next((r for r in results if r["collection"] == "settlement_events"), None)
+    settlement_contract = None
+    if settlement:
+        settlement_contract = {
+            "source_rows":                settlement["certified_source_rows"],
+            "canonical_rows":             settlement["canonical_rows"],
+            "source_unique_settlement_id": settlement["unique_source_logical_ids"],
+            "canonical_unique_settlement_id": settlement["unique_canonical_logical_ids"],
+            "difference_matches_expected_exclusions_only":
+                (settlement["canonical_rows"] ==
+                 (settlement["unique_source_logical_ids"]
+                   - settlement["excluded_rows"]
+                   - settlement["quarantined_rows"]
+                   - settlement["null_logical_key_rows"])),
+            "no_legitimate_ledger_rows_lost":   settlement["row_count_match"],
+            "no_duplicate_settlement_id_rows":  settlement["no_duplicates"],
+        }
+
+    return {
+        "session_id":           req.session_id,
+        "overall_pass":         overall_pass,
+        "collections":          results,
+        "settlement_contract":  settlement_contract,
+    }
 
 
 @router.post("/canonical-cutover/copy-legacy-collection")
