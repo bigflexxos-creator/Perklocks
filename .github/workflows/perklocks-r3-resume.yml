@@ -1,0 +1,128 @@
+name: Perklocks R3 Resume
+
+# Temporary, one-shot migration workflow.  Runs the EXTERNAL R3
+# resume controller from GitHub-hosted infrastructure so the import
+# is immune to Emergent Production pod recycles.
+#
+# This workflow MUST NOT be triggered automatically; manual dispatch
+# only.  It is scheduled for removal immediately after Phase 8 PASS.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resume-r3:
+    name: External R3 Resume (Phase 5 → 8, STOP at Phase 9)
+    runs-on: ubuntu-latest
+
+    # 6-hour cap is the GitHub-hosted maximum.  The push driver is
+    # idempotent-resumable, so even if the job hits the ceiling we can
+    # re-run and the ~749 succeeded batches skip in fast-path.
+    timeout-minutes: 350
+
+    env:
+      # Paths are per-run ephemeral — nothing persists on the runner.
+      CHKP_DIR:        ${{ runner.temp }}/perklocks-checkpoints
+      RECONCILE_TMP:   ${{ runner.temp }}/perklocks-reconcile
+      LOGS_DIR:        ${{ runner.temp }}/perklocks-logs
+      MAX_BATCH_SIZE:  "250"
+
+      # Pinned SHA-256s.  The job aborts hard if the downloaded bytes
+      # do not match EXACTLY.  Hardcoded here (not a secret) so the
+      # verification is auditable in the workflow definition itself.
+      PHASE5_SHA256: 4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
+      PHASE6_SHA256: 327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare runner directories
+        run: |
+          mkdir -p "$CHKP_DIR" "$RECONCILE_TMP" "$LOGS_DIR"
+          echo "CHKP_DIR=$CHKP_DIR"
+          echo "RECONCILE_TMP=$RECONCILE_TMP"
+          echo "LOGS_DIR=$LOGS_DIR"
+
+      # Download step uses curl --fail --silent --show-error so a
+      # non-200 fails the job cleanly.  The token is passed via a
+      # header-only env var that is NEVER echoed; curl writes it to
+      # the socket but not to stdout/stderr.  GitHub Actions also
+      # masks any ${{ secrets.* }} value in logs automatically.
+      - name: Download phase5 checkpoint (SHA-pinned)
+        env:
+          PREVIEW_BASE_URL:         ${{ secrets.PREVIEW_BASE_URL }}
+          MIGRATION_DOWNLOAD_TOKEN: ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+        run: |
+          curl --fail --silent --show-error --location \
+               --retry 3 --retry-delay 5 \
+               -H "X-Download-Token: ${MIGRATION_DOWNLOAD_TOKEN}" \
+               -o "${CHKP_DIR}/phase5_20261003_190628Z.tar.gz" \
+               "${PREVIEW_BASE_URL}/api/_migration_download/phase5_20261003_190628Z.tar.gz"
+          ls -la "${CHKP_DIR}/phase5_20261003_190628Z.tar.gz"
+
+      - name: Download phase6 checkpoint (SHA-pinned)
+        env:
+          PREVIEW_BASE_URL:         ${{ secrets.PREVIEW_BASE_URL }}
+          MIGRATION_DOWNLOAD_TOKEN: ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+        run: |
+          curl --fail --silent --show-error --location \
+               --retry 3 --retry-delay 5 \
+               -H "X-Download-Token: ${MIGRATION_DOWNLOAD_TOKEN}" \
+               -o "${CHKP_DIR}/phase6_20261003_192150Z.tar.gz" \
+               "${PREVIEW_BASE_URL}/api/_migration_download/phase6_20261003_192150Z.tar.gz"
+          ls -la "${CHKP_DIR}/phase6_20261003_192150Z.tar.gz"
+
+      - name: Verify SHA-256 of both checkpoints (abort on mismatch)
+        run: |
+          cat > "${RUNNER_TEMP}/checksums.sha256" <<EOF
+          ${PHASE5_SHA256}  phase5_20261003_190628Z.tar.gz
+          ${PHASE6_SHA256}  phase6_20261003_192150Z.tar.gz
+          EOF
+          echo "--- expected checksums ---"
+          cat "${RUNNER_TEMP}/checksums.sha256"
+          echo "--- verifying ---"
+          cd "${CHKP_DIR}"
+          sha256sum -c "${RUNNER_TEMP}/checksums.sha256"
+          echo "✅ Both checkpoints SHA-verified"
+
+      - name: Resume R3 (Phase 5 → 7 → 8, STOP at Phase 9)
+        env:
+          # All secrets passed via env so GitHub Actions auto-masks
+          # them in logs.  Never interpolated inline into shell.
+          PROD_API_BASE:            ${{ secrets.PROD_API_BASE }}
+          PROD_ADMIN_EMAIL:         ${{ secrets.PROD_ADMIN_EMAIL }}
+          PROD_ADMIN_PASSWORD:      ${{ secrets.PROD_ADMIN_PASSWORD }}
+          CANONICAL_IMPORT_TOKEN:   ${{ secrets.CANONICAL_IMPORT_TOKEN }}
+          CANONICAL_IMPORT_SESSION: ${{ secrets.CANONICAL_IMPORT_SESSION }}
+        run: |
+          python3 --version
+          echo "[workflow] launching external R3 controller"
+          echo "[workflow] CHKP_DIR=${CHKP_DIR}"
+          echo "[workflow] LOGS_DIR=${LOGS_DIR}"
+          echo "[workflow] MAX_BATCH_SIZE=${MAX_BATCH_SIZE}"
+          python3 -u reconcile_workspace/scripts/resume_r3_no_reset.py
+        # If any sub-exit code is non-zero the job fails but we still
+        # upload the logs via the always()-guarded step below.
+
+      - name: Upload Phase 8 report + push driver logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perklocks-r3-resume-artifacts-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/perklocks-logs/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status
+        if: always()
+        run: |
+          echo "Job status (step/job-level): ${{ job.status }}"
+          echo "Artifacts: perklocks-r3-resume-artifacts-${{ github.run_id }}"
+          echo "STOPPED at Phase 9 per controller contract."
