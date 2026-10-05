@@ -217,9 +217,13 @@ def main() -> int:
             "MAX_BATCH_SIZE":             os.environ.get("MAX_BATCH_SIZE", "250"),
           }
     push_log = LOGS / f"push_canonical_r3_resume_{int(time.time())}.log"
+    # Push driver lives next to this script — resolve relative to __file__
+    # so Codespaces / any external execution host works without needing
+    # the /app/reconcile_workspace path to physically exist.
+    push_driver_path = str(pathlib.Path(__file__).resolve().parent / "push_canonical_to_production.py")
     with open(push_log, "w") as lf:
         p = subprocess.run(
-            [sys.executable, "/app/reconcile_workspace/scripts/push_canonical_to_production.py"],
+            [sys.executable, push_driver_path],
             env=env, stdout=lf, stderr=subprocess.STDOUT)
     print(f"[phase5] exit={p.returncode}  log={push_log}")
     if p.returncode != 0:

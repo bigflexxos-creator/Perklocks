@@ -129,7 +129,12 @@ class ResilienceMiddleware(BaseHTTPMiddleware):
         # `Response()` or HTML (e.g. an exception page from a
         # dependency), CF sees that as malformed and serves 520. Coerce
         # to a safe JSON envelope.
-        if is_api:
+        #
+        # Exception: the temporary ``/api/_migration_download/{filename}``
+        # route intentionally streams ``application/gzip`` for one-time
+        # SHA-verified checkpoint transfer during the R3 cutover.  The
+        # bypass is removed when the download route is removed.
+        if is_api and not path.startswith("/api/_migration_download/"):
             ct = (response.headers.get("content-type") or "").lower()
             needs_coerce = False
             # Streaming/file responses are fine — only check normal Responses.

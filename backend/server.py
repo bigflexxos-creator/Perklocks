@@ -177,6 +177,19 @@ except Exception as _ccut_err:
     logger.warning("Canonical cutover routes failed to mount: %s", _ccut_err)
 
 
+# ── TEMPORARY (PREVIEW-ONLY): one-time token-gated download route
+# for the SHA-verified R3 checkpoints.  Remove this block and the
+# accompanying `routes/migration_download_routes.py` after the
+# Codespaces external resume package has downloaded and verified the
+# files.  Fails closed when `MIGRATION_DOWNLOAD_TOKEN` is unset.
+try:
+    from routes.migration_download_routes import router as _migration_download_router
+    app.include_router(_migration_download_router)
+    logger.info("Migration download route mounted at /api/_migration_download/{filename} (fails closed without MIGRATION_DOWNLOAD_TOKEN)")
+except Exception as _mdl_err:
+    logger.warning("Migration download route failed to mount: %s", _mdl_err)
+
+
 
 # ────────────────────── Data version (cache-bust signal) ──────────────────────
 # Bump `DATA_VERSION` whenever a backend change requires phones to wipe their
