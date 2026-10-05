@@ -31,14 +31,12 @@ After the user confirms Codespaces has downloaded both files and
 SHA-verified them, delete this file, unregister it in server.py, and
 remove ``MIGRATION_DOWNLOAD_TOKEN`` from backend/.env.
 """
-from __future__ import annotations
-
 import hmac
 import os
 import pathlib
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 router = APIRouter(prefix="/api", tags=["_migration_download"])
@@ -69,6 +67,7 @@ def _constant_time_eq(a: str, b: str) -> bool:
 @router.get("/_migration_download/{filename}")
 def download_checkpoint(
     filename: str,
+    request: Request,
     x_download_token: Optional[str] = Header(default=None, alias="X-Download-Token"),
 ):
     expected_token = os.environ.get("MIGRATION_DOWNLOAD_TOKEN")
@@ -114,30 +113,74 @@ def download_checkpoint(
             detail="checkpoint_not_present_on_server",
         )
 
-    size = file_path.stat().st_size
+    file_size = file_path.stat().st_size
+
+    # ─── Manual HTTP Range handling ──────────────────────────────
+    # Starlette's FileResponse ignores Range headers in current
+    # versions, so we parse `Range: bytes=A-B` ourselves and emit a
+    # proper 206 Partial Content response with Content-Range.  This
+    # is necessary because the Emergent/Cloudflare preview ingress
+    # has a ~60 s response-stream ceiling; a 337 MB file over a
+    # slow runner tunnel occasionally truncates to a 200 with a
+    # short body.  Range support lets the client resume with
+    # `curl --continue-at -` (or re-fetch chunks via `--range`).
+    range_header = request.headers.get("range", "").strip()
+    start, end = 0, file_size - 1
+    is_partial = False
+    if range_header.lower().startswith("bytes="):
+        try:
+            spec = range_header[6:].split(",")[0].strip()  # ignore multi-ranges
+            lo, _, hi = spec.partition("-")
+            if lo == "" and hi != "":
+                # suffix form: `bytes=-N` → last N bytes
+                n = int(hi)
+                if n <= 0:
+                    raise ValueError("bad suffix")
+                start = max(0, file_size - n)
+                end = file_size - 1
+            else:
+                start = int(lo)
+                end = int(hi) if hi else (file_size - 1)
+            if start < 0 or end >= file_size or start > end:
+                raise ValueError("out of range")
+            is_partial = True
+        except Exception:
+            # Spec: unsatisfiable range → 416 with Content-Range header
+            raise HTTPException(
+                status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+                detail="invalid_range",
+                headers={"Content-Range": f"bytes */{file_size}"},
+            )
+
+    length = end - start + 1
 
     def _stream():
-        # Open per-request so a container recycle mid-stream fails
-        # the client-side download cleanly (which the SHA check on the
-        # client side will catch) rather than returning a partial body
-        # tagged as success.
+        # Open per-request; seek to `start`; stream `length` bytes.
+        # 64 KiB chunk keeps backend memory flat.
         with open(file_path, "rb") as fh:
-            while True:
-                chunk = fh.read(_CHUNK)
+            fh.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = fh.read(min(_CHUNK, remaining))
                 if not chunk:
                     break
+                remaining -= len(chunk)
                 yield chunk
+
+    headers = {
+        "Content-Length":         str(length),
+        "Accept-Ranges":          "bytes",
+        "Content-Disposition":    f'attachment; filename="{filename}"',
+        "X-File-SHA256":          pinned_sha,
+        "Cache-Control":          "no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if is_partial:
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
 
     return StreamingResponse(
         _stream(),
+        status_code=status.HTTP_206_PARTIAL_CONTENT if is_partial else status.HTTP_200_OK,
         media_type="application/gzip",
-        headers={
-            "Content-Length":        str(size),
-            "Content-Disposition":   f'attachment; filename="{filename}"',
-            # Client-side SHA short-circuit (optional); the pinned
-            # value is also hardcoded on the Codespaces consumer.
-            "X-File-SHA256":         pinned_sha,
-            "Cache-Control":         "no-store",
-            "X-Content-Type-Options": "nosniff",
-        },
+        headers=headers,
     )
