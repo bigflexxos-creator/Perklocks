@@ -206,7 +206,8 @@ def main() -> int:
     print(f"[source-audit] {len(expected)}/21 collections audited")
 
     print("\n==================== PHASE 4.5 — SKIPPED (NO RESET DIRECTIVE) ====================")
-    print("[phase4.5] skipped: preserving all 655 succeeded batches and current session bookkeeping")
+    print("[phase4.5] skipped: preserving ALL previously-succeeded batches "
+          "(authoritative count will be queried by the push driver at startup)")
 
     print("\n==================== PHASE 5 — R3 IMPORT (RESUME, SAME SESSION) ====================")
     env = {**os.environ,
@@ -215,12 +216,28 @@ def main() -> int:
             "CANONICAL_IMPORT_TOKEN":     import_tok,
             "CANONICAL_IMPORT_SESSION":   session,
             "MAX_BATCH_SIZE":             os.environ.get("MAX_BATCH_SIZE", "250"),
+            "NEW_COLLECTION_BATCH_SIZE":  os.environ.get("NEW_COLLECTION_BATCH_SIZE", "1000"),
+            "CONCURRENCY":                os.environ.get("CONCURRENCY", "8"),
+            "USE_ACCELERATED_PUSH":       os.environ.get("USE_ACCELERATED_PUSH", "1"),
           }
     push_log = LOGS / f"push_canonical_r3_resume_{int(time.time())}.log"
     # Push driver lives next to this script — resolve relative to __file__
     # so Codespaces / any external execution host works without needing
     # the /app/reconcile_workspace path to physically exist.
-    push_driver_path = str(pathlib.Path(__file__).resolve().parent / "push_canonical_to_production.py")
+    #
+    # Phase-5-R3 ACCELERATED: when ``USE_ACCELERATED_PUSH=1`` (default on
+    # since the acceleration build), we invoke the concurrency-aware
+    # driver that fast-skips DONE collections, uses larger batches on
+    # not-yet-started collections, and parallelises HTTP POSTs via a
+    # bounded ThreadPoolExecutor.  Server contract, atomic protocol, and
+    # session bookkeeping are unchanged — only transport is accelerated.
+    scripts_dir = pathlib.Path(__file__).resolve().parent
+    if os.environ.get("USE_ACCELERATED_PUSH", "1") == "1":
+        push_driver_path = str(scripts_dir / "push_canonical_accelerated.py")
+        print("[phase5] using ACCELERATED push driver (concurrency + fast-skip + larger new-coll batches)")
+    else:
+        push_driver_path = str(scripts_dir / "push_canonical_to_production.py")
+        print("[phase5] using LEGACY serial push driver (USE_ACCELERATED_PUSH=0)")
     with open(push_log, "w") as lf:
         p = subprocess.run(
             [sys.executable, push_driver_path],

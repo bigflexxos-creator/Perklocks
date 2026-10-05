@@ -33,6 +33,16 @@ jobs:
       LOGS_DIR:        /tmp/perklocks-logs
       MAX_BATCH_SIZE:  "250"
 
+      # Phase-5-R3 ACCELERATED knobs.  The accelerated push driver
+      # (push_canonical_accelerated.py) fast-skips DONE collections,
+      # uses NEW_COLLECTION_BATCH_SIZE for NOT-STARTED collections,
+      # and parallelises HTTP POSTs via a bounded ThreadPoolExecutor.
+      # Server contract, atomic protocol, and session bookkeeping are
+      # unchanged — only transport is accelerated.
+      USE_ACCELERATED_PUSH:       "1"
+      NEW_COLLECTION_BATCH_SIZE:  "1000"
+      CONCURRENCY:                "8"
+
       # Pinned SHA-256s.  The job aborts hard if the downloaded bytes
       # do not match EXACTLY.  Hardcoded here (not a secret) so the
       # verification is auditable in the workflow definition itself.
@@ -204,6 +214,9 @@ jobs:
           echo "[workflow] CHKP_DIR=${CHKP_DIR}"
           echo "[workflow] LOGS_DIR=${LOGS_DIR}"
           echo "[workflow] MAX_BATCH_SIZE=${MAX_BATCH_SIZE}"
+          echo "[workflow] USE_ACCELERATED_PUSH=${USE_ACCELERATED_PUSH}"
+          echo "[workflow] NEW_COLLECTION_BATCH_SIZE=${NEW_COLLECTION_BATCH_SIZE}"
+          echo "[workflow] CONCURRENCY=${CONCURRENCY}"
           python3 -u reconcile_workspace/scripts/resume_r3_no_reset.py
         # If any sub-exit code is non-zero the job fails but we still
         # upload the logs via the always()-guarded step below.
