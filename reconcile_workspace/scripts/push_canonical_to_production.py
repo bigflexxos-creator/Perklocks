@@ -39,7 +39,7 @@ import urllib.request
 import urllib.error
 from typing import Iterator
 
-CHKP = pathlib.Path("/app/reconcile_workspace/checkpoints")
+CHKP = pathlib.Path(os.environ.get("CHKP_DIR") or "/app/reconcile_workspace/checkpoints")
 
 RECONCILED_21 = (
     "games", "historical_ingestion_state", "nfl_ingest_meta", "nfl_player_weekly",
@@ -212,7 +212,9 @@ def main() -> int:
 
     # Reconstruct final canonical in overlay
     print("[3/5] reconstructing final canonical from Phase 5 + Phase 6 …")
-    workdir = pathlib.Path(tempfile.mkdtemp(prefix="canon_push_", dir="/opt/reconcile_tmp"))
+    workdir = pathlib.Path(tempfile.mkdtemp(
+        prefix="canon_push_",
+        dir=os.environ.get("RECONCILE_TMP") or tempfile.gettempdir()))
     p5_root = _extract_checkpoint(CHKP / "phase5_20261003_190628Z.tar.gz", workdir / "p5")
     p6_root = _extract_checkpoint(CHKP / "phase6_20261003_192150Z.tar.gz", workdir / "p6")
     canon5 = p5_root / "canonical"
