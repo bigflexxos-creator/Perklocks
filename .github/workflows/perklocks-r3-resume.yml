@@ -25,9 +25,12 @@ jobs:
 
     env:
       # Paths are per-run ephemeral — nothing persists on the runner.
-      CHKP_DIR:        ${{ runner.temp }}/perklocks-checkpoints
-      RECONCILE_TMP:   ${{ runner.temp }}/perklocks-reconcile
-      LOGS_DIR:        ${{ runner.temp }}/perklocks-logs
+      # Using static /tmp paths (ubuntu-latest runners always have
+      # /tmp writable) so the env block does not reference the
+      # ${{ runner.* }} context before a runner is bound.
+      CHKP_DIR:        /tmp/perklocks-checkpoints
+      RECONCILE_TMP:   /tmp/perklocks-reconcile
+      LOGS_DIR:        /tmp/perklocks-logs
       MAX_BATCH_SIZE:  "250"
 
       # Pinned SHA-256s.  The job aborts hard if the downloaded bytes
@@ -80,15 +83,15 @@ jobs:
 
       - name: Verify SHA-256 of both checkpoints (abort on mismatch)
         run: |
-          cat > "${RUNNER_TEMP}/checksums.sha256" <<EOF
+          cat > /tmp/perklocks-checksums.sha256 <<EOF
           ${PHASE5_SHA256}  phase5_20261003_190628Z.tar.gz
           ${PHASE6_SHA256}  phase6_20261003_192150Z.tar.gz
           EOF
           echo "--- expected checksums ---"
-          cat "${RUNNER_TEMP}/checksums.sha256"
+          cat /tmp/perklocks-checksums.sha256
           echo "--- verifying ---"
           cd "${CHKP_DIR}"
-          sha256sum -c "${RUNNER_TEMP}/checksums.sha256"
+          sha256sum -c /tmp/perklocks-checksums.sha256
           echo "✅ Both checkpoints SHA-verified"
 
       - name: Resume R3 (Phase 5 → 7 → 8, STOP at Phase 9)
@@ -116,7 +119,7 @@ jobs:
         with:
           name: perklocks-r3-resume-artifacts-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/perklocks-logs/**
+            /tmp/perklocks-logs/**
           if-no-files-found: warn
           retention-days: 30
 
