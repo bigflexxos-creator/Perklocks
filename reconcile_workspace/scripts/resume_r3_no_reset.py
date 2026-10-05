@@ -41,12 +41,13 @@ import pathlib
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import urllib.request
 import urllib.error
 
-CHKP = pathlib.Path("/app/reconcile_workspace/checkpoints")
-LOGS = pathlib.Path("/app/reconcile_workspace/logs")
+CHKP = pathlib.Path(os.environ.get("CHKP_DIR") or "/app/reconcile_workspace/checkpoints")
+LOGS = pathlib.Path(os.environ.get("LOGS_DIR") or "/app/reconcile_workspace/logs")
 LOGS.mkdir(parents=True, exist_ok=True)
 
 P5_TAR = CHKP / "phase5_20261003_190628Z.tar.gz"
@@ -125,7 +126,8 @@ def _get(url, headers, timeout=300):
 
 
 def _audit_sources():
-    tmp = pathlib.Path("/opt/reconcile_tmp/r3_resume_audit")
+    tmp_root = pathlib.Path(os.environ.get("RECONCILE_TMP") or tempfile.gettempdir())
+    tmp = tmp_root / "r3_resume_audit"
     if tmp.exists():
         import shutil; shutil.rmtree(tmp)
     tmp.mkdir(parents=True, exist_ok=True)
