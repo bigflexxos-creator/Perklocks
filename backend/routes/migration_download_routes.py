@@ -64,29 +64,88 @@ def _constant_time_eq(a: str, b: str) -> bool:
         return False
 
 
+def _require_token(x_download_token: Optional[str]) -> None:
+    """Shared token guard.  Returns None on success, raises HTTPException
+    otherwise.  Behavior matches the per-request guard below exactly."""
+    expected_token = os.environ.get("MIGRATION_DOWNLOAD_TOKEN")
+    if not expected_token:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="migration_download_disabled",
+        )
+    if not x_download_token or not _constant_time_eq(x_download_token, expected_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid_or_missing_token",
+        )
+
+
+@router.get("/_migration_manifest")
+def migration_manifest(
+    x_download_token: Optional[str] = Header(default=None, alias="X-Download-Token"),
+):
+    """Return the AUTHORITATIVE Phase 5 + Phase 6 checkpoint descriptors
+    so external migration drivers (GitHub Actions / Codespaces) can
+    resolve the current ``filename`` / ``bytes`` / ``sha256`` instead
+    of hardcoding them in two separate workflow files that can drift.
+
+    Returns ONLY the fields the drivers need; nothing identifies file
+    system paths beyond the public allowlisted filename.  Token-gated
+    identically to the download route.  Read-only.
+
+    Response shape:
+        {
+          "phase5": {
+            "filename": "phase5_20261003_190628Z.tar.gz",
+            "bytes":    337143523,
+            "sha256":   "4adc998...e9d7",
+            "present":  true
+          },
+          "phase6": { ... same shape ... }
+        }
+
+    ``present`` reflects whether the on-disk file exists AND SHA matches
+    the pinned allowlist.  Any mismatch yields ``present=false`` without
+    exposing the mismatching value — the caller MUST re-check the SHA
+    returned by the download route anyway.
+    """
+    _require_token(x_download_token)
+
+    def _descriptor(filename: str) -> dict:
+        pinned_sha = _ALLOWLIST.get(filename)
+        p = _CHKP_DIR / filename
+        present = False
+        bytes_on_disk = 0
+        if pinned_sha and p.is_file():
+            try:
+                bytes_on_disk = p.stat().st_size
+                present = True
+            except Exception:
+                present = False
+        return {
+            "filename": filename,
+            "bytes":    bytes_on_disk,
+            "sha256":   pinned_sha or "",
+            "present":  present,
+        }
+
+    return {
+        "schema":   "migration_manifest_v1",
+        "phase5":   _descriptor("phase5_20261003_190628Z.tar.gz"),
+        "phase6":   _descriptor("phase6_20261003_192150Z.tar.gz"),
+    }
+
+
 @router.get("/_migration_download/{filename}")
 def download_checkpoint(
     filename: str,
     request: Request,
     x_download_token: Optional[str] = Header(default=None, alias="X-Download-Token"),
 ):
-    expected_token = os.environ.get("MIGRATION_DOWNLOAD_TOKEN")
-    # If the operator has not provisioned a token at all, the route is
-    # inert.  This is the fail-closed state after the migration ends.
-    if not expected_token:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="migration_download_disabled",
-        )
-
-    # Timing-safe token check first (so unauthenticated callers cannot
-    # probe the allowlist by observing which filenames return 404
-    # vs 401).
-    if not x_download_token or not _constant_time_eq(x_download_token, expected_token):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="invalid_or_missing_token",
-        )
+    # Shared token guard — identical semantics to the pre-manifest
+    # version (503 if token unprovisioned, 401 if mismatched, timing-
+    # safe comparison).
+    _require_token(x_download_token)
 
     # Allowlist enforcement.  Deliberately an exact-equality check.
     pinned_sha = _ALLOWLIST.get(filename)
