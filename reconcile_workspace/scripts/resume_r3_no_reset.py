@@ -243,6 +243,14 @@ def main() -> int:
             [sys.executable, push_driver_path],
             env=env, stdout=lf, stderr=subprocess.STDOUT)
     print(f"[phase5] exit={p.returncode}  log={push_log}")
+    if p.returncode == 42:
+        # Wall-clock budget hit with work still outstanding — this is
+        # NOT a hard failure.  Phase 7/8 cannot run (Phase 5 incomplete)
+        # but the next GH run will cleanly resume from server state.
+        print("\n⏱  PHASE 5 RESUMABLE EXIT — wall-clock budget hit")
+        print("    All succeeded batches preserved. Run the workflow again to continue.")
+        print("    Phases 7/8 intentionally SKIPPED (Phase 5 incomplete).")
+        return 42
     if p.returncode != 0:
         print("STOP: push driver failed — see log", file=sys.stderr); return 30
 

@@ -183,7 +183,10 @@ def _is_excluded(d: dict) -> bool:
 
 # ────────────────────────── HTTP ──────────────────────────────────────
 def _post(url: str, headers: dict, body: dict, *,
-          retries: int = 3, timeout_s: int = 300) -> tuple[int, dict | str]:
+          retries: int, timeout_s: int) -> tuple[int, dict | str]:
+    """POST with bounded retries + bounded backoff.  Caller supplies
+    the retry/timeout budget so the accelerated driver can tighten it
+    globally without touching this helper."""
     data = json.dumps(body, default=str).encode()
     delays = [2, 4, 8]
     last_err = None
@@ -205,7 +208,7 @@ def _post(url: str, headers: dict, body: dict, *,
         except Exception as e:
             last_err = f"{type(e).__name__}: {str(e)[:400]}"
         if attempt < retries - 1:
-            time.sleep(delays[attempt])
+            time.sleep(delays[min(attempt, len(delays) - 1)])
     return 599, last_err or "unknown_error"
 
 
@@ -231,6 +234,16 @@ def main() -> int:
     max_batch_default = _env_int("MAX_BATCH_SIZE", 250, hard_max=2000)
     new_batch_size    = _env_int("NEW_COLLECTION_BATCH_SIZE", 1000, hard_max=2000)
     concurrency       = _env_int("CONCURRENCY", 8, hard_max=16)
+    # Phase-5-R3 ACCELERATION HARDENING (post-Run-#5 forensic fix):
+    #   Each worker's bounded request budget is now tight so a single
+    #   slow bulk_write cannot block a worker for ~15 min.  The driver
+    #   itself owns a wall-clock budget and exits CLEANLY at it so the
+    #   GH 350-min cap cannot SIGKILL mid-write (Pass 7/8 can then run
+    #   on the next resume).  Stall detection prevents silent hangs.
+    request_timeout_s = _env_int("REQUEST_TIMEOUT_S", 180, hard_max=600)
+    request_retries   = _env_int("REQUEST_RETRIES", 2, hard_max=5)
+    wall_clock_budget = _env_int("WALL_CLOCK_BUDGET_MIN", 320, hard_max=350)
+    stall_seconds     = _env_int("STALL_SECONDS", 600, hard_max=3600)
     filter_set = set((os.environ.get("COLLECTIONS_FILTER") or "").split(",")) - {""}
 
     headers_post = {
@@ -241,6 +254,8 @@ def main() -> int:
 
     print(f"[1/6] redacted Prod target: {_redact(api_base)}")
     print(f"[1/6] concurrency={concurrency}  batch(partial/picks)={max_batch_default}  batch(new)={new_batch_size}")
+    print(f"[1/6] request_timeout={request_timeout_s}s  retries={request_retries}  "
+          f"wall_clock_budget={wall_clock_budget}min  stall={stall_seconds}s")
 
     # SHA-verify both checkpoints before touching anything.
     print("[2/6] SHA-verifying checkpoints …")
@@ -349,13 +364,44 @@ def main() -> int:
         shutil.rmtree(workdir, ignore_errors=True)
         return 0
 
-    # Execute Pass 1 with bounded concurrency.
-    print(f"[6/6] Pass 1: dispatching {total_in_plan} batches with concurrency={concurrency}")
+    # ── Interleave plan across collections ────────────────────────────
+    # Prior failure: picks (first in RECONCILED_21) had 1 301 batches
+    # queued contiguously, consuming all 8 workers for ~2 h and
+    # starving later collections — settlement_events only got 5 of
+    # ~497 batches before the GH 350-min cap.  Round-robin ensures
+    # every collection's first batch is committed within the first
+    # few seconds; the queue remainder is dovetailed.
+    by_coll: dict[str, list] = {}
+    for item in plan:
+        by_coll.setdefault(item[0], []).append(item)
+    interleaved: list = []
+    iters = [iter(v) for v in by_coll.values()]
+    while iters:
+        next_iters = []
+        for it in iters:
+            try:
+                interleaved.append(next(it))
+                next_iters.append(it)
+            except StopIteration:
+                pass
+        iters = next_iters
+    plan = interleaved
+    total_in_plan = len(plan)
+
+    # Execute Pass 1 with bounded concurrency, wall-clock budget,
+    # and stall detection.
+    print(f"[6/6] Pass 1: dispatching {total_in_plan} batches "
+          f"concurrency={concurrency} wall={wall_clock_budget}min")
     lock = threading.Lock()
     counters = {"succeeded": 0, "replayed": 0, "accepted": 0, "rejected": 0, "failed": 0}
     failed_tasks: list[tuple[str, int, list[dict]]] = []
+    last_success_ts = time.time()
+    stop_requested = threading.Event()
+    wall_deadline = t0 + wall_clock_budget * 60
 
     def _submit_one(coll: str, bno: int, docs: list[dict]) -> dict:
+        if stop_requested.is_set():
+            return {"code": -1, "result": "stop_requested", "coll": coll, "bno": bno, "n": len(docs)}
         code, result = _post(
             f"{api_base}/api/admin/canonical-import",
             headers_post,
@@ -363,13 +409,14 @@ def main() -> int:
              "collection":         coll,
              "batch_no":           bno,
              "docs":               docs,
-             "source_checkpoints": source_cps})
+             "source_checkpoints": source_cps},
+            retries=request_retries,
+            timeout_s=request_timeout_s)
         return {"code": code, "result": result, "coll": coll, "bno": bno, "n": len(docs)}
 
     def _handle(outcome: dict) -> bool:
-        """Return True iff batch succeeded; False means Pass 2 candidate."""
-        code = outcome["code"]
-        res = outcome["result"]
+        nonlocal last_success_ts
+        code = outcome["code"]; res = outcome["result"]
         coll = outcome["coll"]; bno = outcome["bno"]; n = outcome["n"]
         if code == 200 and isinstance(res, dict) and res.get("status") == "succeeded":
             with lock:
@@ -377,35 +424,97 @@ def main() -> int:
                 if res.get("idempotent_replay"): counters["replayed"] += 1
                 counters["accepted"] += int(res.get("accepted", 0))
                 counters["rejected"] += int(res.get("rejected", 0))
+                last_success_ts = time.time()
                 tot = counters["succeeded"]
-                if tot % 50 == 0 or tot == total_in_plan:
+                # Progress every 10 commits + always on first/last.
+                if tot <= 3 or tot % 10 == 0 or tot == total_in_plan:
                     elapsed = max(time.time() - t0, 0.1)
                     rate = tot / elapsed * 60
+                    budget_left_min = max((wall_deadline - time.time()) / 60.0, 0)
                     print(f"  [{tot}/{total_in_plan}] {coll} b#{bno} n={n} "
                           f"replay={bool(res.get('idempotent_replay'))} "
-                          f"@ {rate:.1f} batches/min")
+                          f"| rate={rate:.1f} b/min  budget_left={budget_left_min:.1f} min  "
+                          f"failed={counters['failed']}")
             return True
         with lock:
             counters["failed"] += 1
             print(f"  ✗ PASS1 FAIL {coll} b#{bno} n={n}  code={code}  "
-                  f"err={str(res)[:200]}")
+                  f"err={str(res)[:200]}", flush=True)
         return False
 
-    with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="pushw") as pool:
-        futures = {pool.submit(_submit_one, c, b, d): (c, b, d) for c, b, d in plan}
-        for fut in as_completed(futures):
-            out = fut.result()
-            if not _handle(out):
-                failed_tasks.append(futures[fut])
+    # Watchdog thread: on wall-clock OR stall, request stop.
+    def _watchdog():
+        while not stop_requested.is_set():
+            time.sleep(5)
+            now = time.time()
+            if now >= wall_deadline:
+                print(f"\n⏱  WALL-CLOCK BUDGET HIT ({wall_clock_budget} min) — "
+                      f"stop_requested; in-flight will finish, no new submissions", flush=True)
+                stop_requested.set()
+                return
+            with lock:
+                stall = now - last_success_ts
+                have_prog = counters["succeeded"] > 0
+            if have_prog and stall >= stall_seconds:
+                print(f"\n⚠  STALL DETECTED (no success for {stall:.0f}s ≥ "
+                      f"{stall_seconds}s) — stop_requested; exiting cleanly", flush=True)
+                stop_requested.set()
+                return
 
+    watchdog = threading.Thread(target=_watchdog, daemon=True, name="watchdog")
+    watchdog.start()
+
+    with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="pushw") as pool:
+        pending_futs = {}
+        plan_iter = iter(plan)
+        # Prime up to concurrency*2 (small buffer).
+        for _ in range(concurrency * 2):
+            try:
+                c, b, d = next(plan_iter)
+                pending_futs[pool.submit(_submit_one, c, b, d)] = (c, b, d)
+            except StopIteration:
+                break
+
+        while pending_futs:
+            # Wait for next completed future.
+            done_fut = None
+            for fut in as_completed(list(pending_futs.keys()), timeout=None):
+                done_fut = fut
+                break
+            if done_fut is None:
+                break
+            task = pending_futs.pop(done_fut)
+            out = done_fut.result()
+            if not _handle(out):
+                failed_tasks.append(task)
+            # Submit next unless stopped.
+            if not stop_requested.is_set():
+                try:
+                    c, b, d = next(plan_iter)
+                    pending_futs[pool.submit(_submit_one, c, b, d)] = (c, b, d)
+                except StopIteration:
+                    pass
+        # If we exited due to stop_requested, pool.__exit__ waits for
+        # in-flight workers to finish (which get stop_requested on
+        # their first _submit_one call → return quickly).
+
+    stop_requested.set()
     pass1_elapsed = time.time() - t0
     pass1_succ = counters["succeeded"]
     pass1_rate = pass1_succ / max(pass1_elapsed, 0.1) * 60
-    print(f"\n[pass1] completed in {pass1_elapsed:.1f}s  succeeded={pass1_succ}  failed={len(failed_tasks)}  rate={pass1_rate:.1f} batches/min")
+    print(f"\n[pass1] completed in {pass1_elapsed:.1f}s  succeeded={pass1_succ}  "
+          f"failed={len(failed_tasks)}  rate={pass1_rate:.1f} batches/min  "
+          f"budget_hit={time.time() >= wall_deadline}")
 
-    # Pass 2.
-    if failed_tasks:
-        print(f"\n[pass2] retrying {len(failed_tasks)} failed batch(es) with same bounded 3-attempt policy")
+    budget_hit = time.time() >= wall_deadline
+
+    # Pass 2 only if we have time left AND there are failures AND not stall-stopped.
+    # If we hit wall-clock budget: skip Pass 2, exit 42 so the next GH run
+    # resumes Pass 1 (which will retry the still-failed batches via
+    # server-side status=failed → re-attempt).
+    if failed_tasks and not budget_hit:
+        print(f"\n[pass2] retrying {len(failed_tasks)} failed batch(es) with "
+              f"bounded {request_retries}-attempt policy")
         still_failed: list[dict] = []
         with ThreadPoolExecutor(max_workers=max(2, concurrency // 2), thread_name_prefix="retryw") as pool:
             futures = {pool.submit(_submit_one, c, b, d): (c, b, d) for c, b, d in failed_tasks}
@@ -428,9 +537,18 @@ def main() -> int:
     print(f"\n[DONE] {counters['succeeded']}/{total_in_plan} batches committed in {total_elapsed:.1f}s "
           f"| rate={final_rate:.1f} batches/min "
           f"| accepted={counters['accepted']} rejected={counters['rejected']} "
-          f"| replayed-fast-path={counters['replayed']}")
+          f"| replayed-fast-path={counters['replayed']} "
+          f"| left_for_next_run={len(failed_tasks) + (total_in_plan - counters['succeeded'] - counters['failed'])}")
 
     shutil.rmtree(workdir, ignore_errors=True)
+
+    # Exit 42 if wall-clock budget was hit with work remaining or
+    # failures outstanding — orchestrator should NOT run Phase 7/8
+    # yet but SHOULD NOT fail hard (next GH run will resume cleanly).
+    if budget_hit and (failed_tasks or counters["succeeded"] < total_in_plan):
+        print(f"\n⏱  WALL-CLOCK EXIT (42) — {total_in_plan - counters['succeeded']} batches "
+              f"not yet attempted + {len(failed_tasks)} to retry on next run")
+        return 42
     return 0
 
 
