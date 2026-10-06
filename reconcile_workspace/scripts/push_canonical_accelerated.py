@@ -185,14 +185,32 @@ def _is_excluded(d: dict) -> bool:
 
 # ────────────────────────── HTTP ──────────────────────────────────────
 def _post(url: str, headers: dict, body: dict, *,
-          retries: int, timeout_s: int) -> tuple[int, dict | str]:
+          retries: int, timeout_s: int,
+          metrics: dict | None = None) -> tuple[int, dict | str]:
     """POST with bounded retries + bounded backoff.  Caller supplies
     the retry/timeout budget so the accelerated driver can tighten it
-    globally without touching this helper."""
+    globally without touching this helper.
+
+    When ``metrics`` dict is passed, the function increments the
+    following keys atomically-ish (caller must guard with its own
+    lock if cross-thread aggregation is needed):
+
+        metrics["http_attempts_total"]       — every attempt made
+        metrics["http_retries"]              — attempts beyond the first
+        metrics["http_timeouts"]             — ``socket.timeout`` style
+        metrics["http_connection_resets"]    — ``ConnectionResetError``
+        metrics["http_http_errors"]          — non-5xx HTTPError kept
+                                                (fail-fast codes land in
+                                                caller via return)
+    """
     data = json.dumps(body, default=str).encode()
     delays = [2, 4, 8]
     last_err = None
     for attempt in range(retries):
+        if metrics is not None:
+            metrics["http_attempts_total"] = metrics.get("http_attempts_total", 0) + 1
+            if attempt > 0:
+                metrics["http_retries"] = metrics.get("http_retries", 0) + 1
         req = urllib.request.Request(url, data=data,
                 headers={**headers, "Content-Type": "application/json"}, method="POST")
         try:
@@ -200,6 +218,8 @@ def _post(url: str, headers: dict, body: dict, *,
                 return resp.status, json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
             txt = e.read().decode(errors="replace")[:400]
+            if metrics is not None:
+                metrics["http_http_errors"] = metrics.get("http_http_errors", 0) + 1
             # 400/401/403/413 are configuration errors — fail fast.
             if e.code in (400, 401, 403, 413):
                 return e.code, txt
@@ -208,7 +228,14 @@ def _post(url: str, headers: dict, body: dict, *,
                 return e.code, txt
             last_err = f"HTTP {e.code}: {txt}"
         except Exception as e:
-            last_err = f"{type(e).__name__}: {str(e)[:400]}"
+            msg = str(e)
+            if metrics is not None:
+                lname = type(e).__name__.lower()
+                if "timeout" in lname or "timed out" in msg.lower():
+                    metrics["http_timeouts"] = metrics.get("http_timeouts", 0) + 1
+                if "connectionreset" in lname or "connection reset" in msg.lower():
+                    metrics["http_connection_resets"] = metrics.get("http_connection_resets", 0) + 1
+            last_err = f"{type(e).__name__}: {msg[:400]}"
         if attempt < retries - 1:
             time.sleep(delays[min(attempt, len(delays) - 1)])
     return 599, last_err or "unknown_error"
@@ -400,6 +427,16 @@ def main() -> int:
           f"concurrency={concurrency} wall={wall_clock_budget}min")
     lock = threading.Lock()
     counters = {"succeeded": 0, "replayed": 0, "accepted": 0, "rejected": 0, "failed": 0}
+    # Benchmark-mode instrumentation: opt-in via BENCHMARK_METRICS_PATH env.
+    # Captures per-batch wall-clock latencies, HTTP retries/timeouts/
+    # resets.  Does NOT change any write path or server contract.
+    bench_metrics_path = os.environ.get("BENCHMARK_METRICS_PATH") or ""
+    http_metrics = {
+        "http_attempts_total": 0, "http_retries": 0,
+        "http_timeouts": 0, "http_connection_resets": 0,
+        "http_http_errors": 0,
+    }
+    batch_latencies_ms: list[float] = []
     failed_tasks: list[tuple[str, int, list[dict]]] = []
     last_success_ts = time.time()
     stop_requested = threading.Event()
@@ -407,7 +444,8 @@ def main() -> int:
 
     def _submit_one(coll: str, bno: int, docs: list[dict]) -> dict:
         if stop_requested.is_set():
-            return {"code": -1, "result": "stop_requested", "coll": coll, "bno": bno, "n": len(docs)}
+            return {"code": -1, "result": "stop_requested", "coll": coll, "bno": bno, "n": len(docs), "elapsed_ms": 0.0}
+        t_start = time.time()
         code, result = _post(
             f"{api_base}/api/admin/canonical-import",
             headers_post,
@@ -417,8 +455,13 @@ def main() -> int:
              "docs":               docs,
              "source_checkpoints": source_cps},
             retries=request_retries,
-            timeout_s=request_timeout_s)
-        return {"code": code, "result": result, "coll": coll, "bno": bno, "n": len(docs)}
+            timeout_s=request_timeout_s,
+            metrics=http_metrics)
+        elapsed_ms = (time.time() - t_start) * 1000.0
+        with lock:
+            batch_latencies_ms.append(elapsed_ms)
+        return {"code": code, "result": result, "coll": coll, "bno": bno,
+                "n": len(docs), "elapsed_ms": elapsed_ms}
 
     def _handle(outcome: dict) -> bool:
         nonlocal last_success_ts
@@ -545,6 +588,53 @@ def main() -> int:
           f"| accepted={counters['accepted']} rejected={counters['rejected']} "
           f"| replayed-fast-path={counters['replayed']} "
           f"| left_for_next_run={len(failed_tasks) + (total_in_plan - counters['succeeded'] - counters['failed'])}")
+
+    # Emit benchmark metrics JSON if BENCHMARK_METRICS_PATH is set.
+    # Content is lossless summary + percentiles for the orchestrator
+    # to consume.  Nothing is written to canonical collections.
+    if bench_metrics_path:
+        try:
+            def _pct(xs, p):
+                if not xs: return 0.0
+                xs2 = sorted(xs)
+                k = max(0, min(len(xs2) - 1, int(round((p / 100.0) * (len(xs2) - 1)))))
+                return float(xs2[k])
+            # Non-replay batch latencies (replays are near-instant fast-skip
+            # on the server and distort the distribution).  Both views
+            # emitted so the operator can compare.
+            all_lats = list(batch_latencies_ms)
+            summary = {
+                "schema":                "benchmark_push_v1",
+                "generated_at_unix":     int(time.time()),
+                "elapsed_s":             round(total_elapsed, 2),
+                "concurrency":           concurrency,
+                "batch_size_new":        new_batch_size,
+                "batch_size_partial":    max_batch_default,
+                "wall_clock_budget_min": wall_clock_budget,
+                "total_batches_planned": total_in_plan,
+                "batches_committed":     counters["succeeded"],
+                "batches_replayed":      counters["replayed"],
+                "batches_failed_pass1":  len(failed_tasks),
+                "docs_accepted":         counters["accepted"],
+                "docs_rejected":         counters["rejected"],
+                "pass1_rate_bpm":        round(final_rate, 2),
+                "latency_ms": {
+                    "n":    len(all_lats),
+                    "min":  round(min(all_lats), 1) if all_lats else 0.0,
+                    "max":  round(max(all_lats), 1) if all_lats else 0.0,
+                    "mean": round(sum(all_lats) / len(all_lats), 1) if all_lats else 0.0,
+                    "p50":  round(_pct(all_lats, 50), 1),
+                    "p95":  round(_pct(all_lats, 95), 1),
+                    "p99":  round(_pct(all_lats, 99), 1),
+                },
+                "http":                  dict(http_metrics),
+                "wall_clock_budget_hit": budget_hit,
+            }
+            with open(bench_metrics_path, "w") as f:
+                json.dump(summary, f, indent=2)
+            print(f"[benchmark] metrics written to {bench_metrics_path}")
+        except Exception as _berr:
+            print(f"[benchmark] metrics write failed: {_berr}", file=sys.stderr)
 
     shutil.rmtree(workdir, ignore_errors=True)
 

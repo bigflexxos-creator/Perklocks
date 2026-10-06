@@ -678,6 +678,39 @@ async def data_authority_status(
         import hashlib, json
         return hashlib.sha256(json.dumps(summary, sort_keys=True).encode()).hexdigest()[:16]
 
+    # Build / commit identifier so the post-Publish benchmark workflow
+    # can prove it's talking to the newly-published code (Emergent
+    # Support 2026-10-05 event-loop-starvation fix).  Resolution order:
+    #   1. BUILD_SHA env var (set by the deployment pipeline if any)
+    #   2. /app/BUILD_SHA file (opt-in operator-written marker)
+    #   3. /app/.git/refs/heads/main (if the git dir survives Publish)
+    #   4. "unknown"
+    # Never returns secret material.  Short SHA only (12 chars) and the
+    # 40-char full to let the client decide.
+    def _build_sha() -> dict:
+        import pathlib
+        sha = (os.environ.get("BUILD_SHA") or "").strip()
+        if not sha:
+            try:
+                p = pathlib.Path("/app/BUILD_SHA")
+                if p.exists():
+                    sha = p.read_text().strip()
+            except Exception:
+                pass
+        if not sha:
+            try:
+                p = pathlib.Path("/app/.git/refs/heads/main")
+                if p.exists():
+                    sha = p.read_text().strip()
+            except Exception:
+                pass
+        if not sha:
+            return {"full": "unknown", "short": "unknown", "source": "none"}
+        source = ("env" if os.environ.get("BUILD_SHA") else
+                   "file" if pathlib.Path("/app/BUILD_SHA").exists() else
+                   "git")
+        return {"full": sha, "short": sha[:12], "source": source}
+
     return {
         "routing":             diag,
         "env_flags": {
@@ -688,6 +721,7 @@ async def data_authority_status(
             "DATA_AUTHORITY":              os.environ.get("DATA_AUTHORITY") or "",
             "CANONICAL_WRITE_ENABLED":     (os.environ.get("CANONICAL_WRITE_ENABLED") or "false").strip().lower() == "true",
         },
+        "build":               _build_sha(),
         "legacy_summary":      legacy_summary,
         "canonical_summary":   canonical_summary,
         "legacy_fingerprint":  _fp(legacy_summary),
