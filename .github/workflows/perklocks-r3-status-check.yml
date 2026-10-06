@@ -1,0 +1,152 @@
+name: Perklocks R3 Status Check
+
+# STRICTLY READ-ONLY diagnostic for the running R3 session.
+# Takes two snapshots of GET /api/admin/canonical-import/status (default
+# 5 minutes apart) and reports whether succeeded / in_progress /
+# last_updated counters advanced.  Does NOT:
+#   * cancel, restart, pause, or interact with the running
+#     "Perklocks R3 Resume" workflow in any way
+#   * import, write, update, patch, delete, reset, or replay anything
+#   * create a new migration session or modify the existing one
+#   * download or verify checkpoints
+#   * run the push driver
+#   * touch the Preview backend
+#
+# Only verbs issued:
+#   POST /api/auth/login            — stateless JWT mint (no sessions
+#                                     invalidated; see server.py:380)
+#   GET  /api/admin/canonical-import/status?session_id=…
+#                                   — pure read aggregation (see
+#                                     canonical_cutover_routes.py:197)
+#
+# The write-side route POST /api/admin/canonical-import is NEVER
+# called by this workflow; the Python script refuses to run if
+# CANONICAL_IMPORT_TOKEN is present in its environment.
+#
+# Reuses the EXISTING GitHub Actions secrets.  No new secrets, no
+# secret values ever written to logs (step env + ::add-mask::).
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_id:
+        description: 'R3 session to observe (default = active cutover session)'
+        required: false
+        default: 'perklocks-cutover-20261003-r3'
+      interval_seconds:
+        description: 'Seconds between snapshots (default 300, hard cap 600)'
+        required: false
+        default: '300'
+
+permissions:
+  contents: read
+
+jobs:
+  r3-status-check:
+    name: R3 Status Delta (read-only diagnostic)
+    runs-on: ubuntu-latest
+    # 15 min = 5-min interval + 10-min slack for API latency, auth,
+    # and artifact upload.  Hard safety cap in case the API hangs.
+    timeout-minutes: 15
+
+    env:
+      LOGS_DIR: /tmp/perklocks-logs
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare runner directory
+        run: |
+          mkdir -p "$LOGS_DIR"
+
+      - name: Validate inputs
+        env:
+          SESSION_ID:       ${{ inputs.session_id }}
+          INTERVAL_SECONDS: ${{ inputs.interval_seconds }}
+        run: |
+          set -eu
+          if [ -z "${SESSION_ID}" ]; then
+            echo "session_id must not be empty" >&2; exit 1
+          fi
+          if [ "${INTERVAL_SECONDS}" -lt 10 ] || [ "${INTERVAL_SECONDS}" -gt 600 ]; then
+            echo "interval_seconds must be in [10, 600] (got ${INTERVAL_SECONDS})" >&2; exit 1
+          fi
+          echo "inputs OK: session=${SESSION_ID} interval=${INTERVAL_SECONDS}s"
+
+      - name: Run read-only R3 status delta
+        id: delta
+        env:
+          # Secrets passed via step env so GitHub Actions auto-masks
+          # any accidental echo.  JWT is additionally masked by the
+          # script via ::add-mask::.
+          PROD_API_BASE:        ${{ secrets.PROD_API_BASE }}
+          PROD_ADMIN_EMAIL:     ${{ secrets.PROD_ADMIN_EMAIL }}
+          PROD_ADMIN_PASSWORD:  ${{ secrets.PROD_ADMIN_PASSWORD }}
+          SESSION_ID:           ${{ inputs.session_id }}
+          INTERVAL_SECONDS:     ${{ inputs.interval_seconds }}
+          REPORT_PATH:          /tmp/perklocks-logs/r3_status_delta_report.json
+          # Belt-and-braces: ensure the write token NEVER reaches this
+          # job's env even if GH secret scopes change.  The script also
+          # refuses to run if CANONICAL_IMPORT_TOKEN is set.
+          CANONICAL_IMPORT_TOKEN: ''
+          MIGRATION_DOWNLOAD_TOKEN: ''
+        run: |
+          python3 --version
+          echo "[workflow] launching Perklocks R3 Status Check (read-only)"
+          echo "[workflow] session_id=${SESSION_ID}  interval=${INTERVAL_SECONDS}s"
+          python3 -u reconcile_workspace/scripts/r3_status_delta.py
+        # Exit code semantics:
+        #   0 → ACTIVELY PROGRESSING | ACTIVITY WITHOUT COMPLETION |
+        #       NO PROGRESS OBSERVED
+        #   1 → CANNOT VERIFY (auth / status endpoint failure)
+        #   2 → argument/invariant violation (e.g. write token leaked)
+
+      - name: Upload status-delta artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perklocks-r3-status-${{ github.run_id }}
+          path: |
+            /tmp/perklocks-logs/r3_status_delta_report.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Print verdict (final)
+        if: always()
+        run: |
+          echo "============================================================"
+          echo " Perklocks R3 Status Check — step outcome: ${{ steps.delta.outcome }}"
+          echo " Report: /tmp/perklocks-logs/r3_status_delta_report.json"
+          echo " (This diagnostic did NOT touch, cancel, or restart Resume)"
+          echo "============================================================"
+          if [ -f /tmp/perklocks-logs/r3_status_delta_report.json ]; then
+            python3 - <<'PY'
+          import json, pathlib
+          r = json.loads(pathlib.Path(
+              '/tmp/perklocks-logs/r3_status_delta_report.json').read_text())
+          print('verdict           :', r.get('verdict'))
+          print('endpoint          :', r.get('endpoint'))
+          print('session_id        :', r.get('session_id'))
+          print('interval_s        :', r.get('interval_s'))
+          s1 = r.get('snap1') or {}
+          s2 = r.get('snap2') or {}
+          d  = r.get('delta') or {}
+          t1 = s1.get('totals') or {}
+          t2 = s2.get('totals') or {}
+          print('snap1 succeeded   :', t1.get('batches_succeeded'))
+          print('snap1 failed      :', t1.get('batches_failed'))
+          print('snap1 in_progress :', t1.get('batches_in_progress'))
+          print('snap1 last_updated:', s1.get('last_updated'))
+          print('snap2 succeeded   :', t2.get('batches_succeeded'))
+          print('snap2 failed      :', t2.get('batches_failed'))
+          print('snap2 in_progress :', t2.get('batches_in_progress'))
+          print('snap2 last_updated:', s2.get('last_updated'))
+          print('Δsucceeded_batches:', d.get('succeeded_batches'))
+          print('Δin_progress      :', d.get('in_progress_batches'))
+          print('Δfailed           :', d.get('failed_batches'))
+          print('last_updated chg  :', d.get('last_updated_changed'))
+          PY
+          fi
