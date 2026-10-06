@@ -4487,7 +4487,12 @@ async def pick_simulation(
             detail=f"Simulation not yet available for {sport or 'this sport'}",
         )
     from brain.sim_runner import simulate_pick  # lazy
-    sim = simulate_pick(pick)
+    # Event-loop isolation (Emergent Support 2026-10-05): simulate_pick
+    # is CPU-bound synchronous work.  Dispatch to a worker thread so
+    # the request handler doesn't stall the event loop while the
+    # Monte Carlo runs.  Behavior/inputs/outputs unchanged.
+    import asyncio as _asyncio_isolate
+    sim = await _asyncio_isolate.to_thread(simulate_pick, pick)
     if not sim:
         raise HTTPException(status_code=404, detail="Simulator could not route this market")
     return sim

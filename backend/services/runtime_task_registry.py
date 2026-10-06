@@ -116,9 +116,53 @@ class RuntimeTaskRegistry:
 
     def register_and_start(
         self, name: str, coroutine_factory: Callable[[], Awaitable[Any]],
+        *, force: bool = False,
         **kw,
-    ) -> asyncio.Task:
-        """Convenience — register then start the task in one call."""
+    ) -> Optional[asyncio.Task]:
+        """Convenience — register then start the task in one call.
+
+        ONE DATABASE AUTHORITY — background-worker gating (2026-10-05)
+        ──────────────────────────────────────────────────────────────
+        Emergent Support root-caused Phase-5 R3 pod recycling to
+        event-loop starvation caused by optional background workers
+        bypassing ``BACKGROUND_WORKERS_ENABLED=false``.  This gate
+        makes the environment flag AUTHORITATIVE for every caller:
+
+        * When ``BACKGROUND_WORKERS_ENABLED`` is false AND ``force``
+          is false → the task is NOT created.  We skip registration
+          entirely (no handle, no coroutine, no CPU) and log the
+          suppression exactly once per task name.
+        * When ``force=True`` is explicitly passed → the task bypasses
+          the gate.  Reserve this for genuinely required tasks (e.g.
+          deferred_task runners already pre-gated by the caller,
+          lease heartbeats, request-serving infrastructure).
+        * When ``BACKGROUND_WORKERS_ENABLED`` is true → normal
+          behavior (register + start).
+
+        Returns the asyncio.Task on success, or ``None`` when the
+        task was suppressed by the authority gate.  Callers that
+        chain off the return value must treat ``None`` as
+        "skipped".
+        """
+        if not force:
+            try:
+                from services.data_authority import (
+                    background_workers_enabled as _wk_enabled,
+                    authority_mode as _mode,
+                )
+                if not _wk_enabled():
+                    logger.info(
+                        "runtime_task_registry: SUPPRESSED optional "
+                        "background task '%s' (mode=%s, "
+                        "BACKGROUND_WORKERS_ENABLED=false)",
+                        name, _mode(),
+                    )
+                    return None
+            except Exception:
+                # Authority module missing — fall through to legacy
+                # behavior so the pod can still boot.  This mirrors
+                # the pre-existing fallback in server._deferred_task.
+                pass
         self.register(name, coroutine_factory, **kw)
         return self.start(name)
 

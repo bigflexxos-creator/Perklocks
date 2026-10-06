@@ -2654,15 +2654,43 @@ async def _ensure_today_picks(allow_heal: bool = False) -> None:
     # (possibly empty this first cold-start tick) and the next call
     # will land a full slate ~60s later.
     # Phase 3F-2: register even the internal admin-refresh task
+    #
+    # ONE DATABASE AUTHORITY — background_refresh is treated as an
+    # OPTIONAL background worker (Emergent Support 2026-10-05 fix).
+    # The runtime_task_registry.register_and_start gate now suppresses
+    # it when BACKGROUND_WORKERS_ENABLED=false; we must mirror the
+    # suppression on the fallback asyncio.create_task path so a
+    # ValueError (duplicate name) doesn't accidentally bypass the gate.
     try:
         from services.runtime_task_registry import get_registry
-        get_registry().register_and_start(
+        from services.data_authority import (
+            background_workers_enabled as _wk_enabled_bg,
+        )
+        _handle_bg = get_registry().register_and_start(
             f'background_refresh:{uuid.uuid4().hex[:8]}',
             _background_refresh,
             task_type='one_shot', critical=False,
         )
+        if _handle_bg is None:
+            # Gate suppressed it — reset the in-flight flag so the next
+            # tick can re-attempt once workers are enabled.
+            try:
+                _refresh_in_flight = False
+            except Exception:
+                pass
     except ValueError:
-        asyncio.create_task(_background_refresh())
+        # Duplicate registration — but DO respect the authority gate on
+        # the fallback.  Only launch if workers are enabled.
+        try:
+            if _wk_enabled_bg():
+                asyncio.create_task(_background_refresh())
+            else:
+                try:
+                    _refresh_in_flight = False
+                except Exception:
+                    pass
+        except Exception:
+            asyncio.create_task(_background_refresh())
     # PERKLOCKS MAIN 39 · P0.1 — stamp the health verdict so the next
     # tens of seconds of requests can hit the cache gate instead of
     # replaying the 18-count sweep.  A slate that failed a starvation
@@ -5407,8 +5435,13 @@ async def on_startup():
                 logger.warning("Deferred startup task failed (delay=%.1fs): %s", delay, e)
         tname = name or getattr(coro_factory, "__name__", None) or f"deferred_{uuid.uuid4().hex[:8]}"
         try:
+            # force=True: _deferred_task has ALREADY applied the
+            # BACKGROUND_WORKERS_ENABLED gate above; passing force=True
+            # here is defensive and preserves original behavior now
+            # that register_and_start enforces the gate centrally.
             _handle = _TASK_REGISTRY.register_and_start(
                 tname, _runner,
+                force=True,
                 task_type="deferred_startup", critical=False,
                 cadence=f"one-shot after {delay:.1f}s",
                 startup_behavior="eager", restart_policy="none",
@@ -5419,6 +5452,7 @@ async def on_startup():
             uid = f"{tname}:{uuid.uuid4().hex[:6]}"
             _handle = _TASK_REGISTRY.register_and_start(
                 uid, _runner,
+                force=True,
                 task_type="deferred_startup", critical=False,
                 cadence=f"one-shot after {delay:.1f}s",
             )
