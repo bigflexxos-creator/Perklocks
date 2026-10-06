@@ -1,0 +1,286 @@
+name: Perklocks R3 Benchmark
+
+# Bounded ≈15-minute real-data benchmark against Production R3 session
+# ``perklocks-cutover-20261003-r3`` to verify the Emergent-Support
+# event-loop-starvation fix (commit expected = EXPECTED_BUILD_PREFIX).
+#
+# HARD SAFETY INVARIANTS (enforced in scripts/benchmark_r3.py):
+#   * Does NOT reset the session.
+#   * Does NOT create a new session.
+#   * Does NOT activate USE_CANONICAL_DB.
+#   * Does NOT run Phase 7 / Phase 8 / Phase 9.
+#   * Does NOT auto-launch "Perklocks R3 Resume" or any other workflow.
+#   * Terminates at or before MAX_WINDOW_MIN wall-clock minutes.
+#   * Preflight ABORTS NO-GO before any write when ANY of these fail:
+#       - /api/health not 200 under 5s
+#       - BACKGROUND_WORKERS_ENABLED  !=  false
+#       - USE_CANONICAL_DB            !=  false
+#       - CANONICAL_IMPORT_ENABLED    !=  true
+#       - build.full != EXPECTED_BUILD_PREFIX* (hard when build.full is
+#         present; soft one-time grace while first Publish propagates)
+#
+# Writes go to the SAME R3 session via POST /api/admin/canonical-import
+# with the SAME content-hash protection, so no in-flight batch can be
+# duplicated and no previously-succeeded batch is re-written.
+#
+# Manual dispatch only.  Scheduled triggers are intentionally omitted.
+#
+# Reuses the EXACT GitHub Actions secret names already used by
+# "Perklocks R3 Resume":
+#   secrets.PREVIEW_BASE_URL          — for checkpoint fetch
+#   secrets.MIGRATION_DOWNLOAD_TOKEN  — for checkpoint fetch
+#   secrets.PROD_API_BASE
+#   secrets.PROD_ADMIN_EMAIL
+#   secrets.PROD_ADMIN_PASSWORD
+#   secrets.CANONICAL_IMPORT_TOKEN
+#   secrets.CANONICAL_IMPORT_SESSION  (must equal perklocks-cutover-20261003-r3)
+# No new secrets are created, read into logs, rotated, or replaced.
+
+on:
+  workflow_dispatch:
+    inputs:
+      window_min:
+        description: 'Bench window minutes (default 15, hard-cap 20)'
+        required: false
+        default: '15'
+      concurrency:
+        description: 'Concurrent POST workers (default 4, hard-cap 8)'
+        required: false
+        default: '4'
+      batch_size:
+        description: 'New-collection batch size (default 1000, hard-cap 2000)'
+        required: false
+        default: '1000'
+      expected_build_prefix:
+        description: 'Commit SHA prefix the deployed Production build must match (empty = SOFT skip)'
+        required: false
+        default: 'dfa6727a'
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark-r3:
+    name: R3 Benchmark (bounded, read-mostly, STOP at Phase 5 only)
+    runs-on: ubuntu-latest
+    # 25-min job cap = 20-min bench hard-cap + 5-min preflight/drain
+    # grace.  Script enforces its own tighter wall-clock budget.
+    timeout-minutes: 25
+
+    env:
+      CHKP_DIR:        /tmp/perklocks-checkpoints
+      RECONCILE_TMP:   /tmp/perklocks-reconcile
+      LOGS_DIR:        /tmp/perklocks-logs
+      # Pinned SHA-256s identical to Perklocks R3 Resume.
+      PHASE5_SHA256: 4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
+      PHASE6_SHA256: 327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare runner directories
+        run: |
+          mkdir -p "$CHKP_DIR" "$RECONCILE_TMP" "$LOGS_DIR"
+
+      # ─── Download + verify checkpoints (resume-aware, SHA-gated) ───
+      # Identical logic to Perklocks R3 Resume so the planner can
+      # reconstruct the full source audit — the benchmark driver uses
+      # the same push_canonical_accelerated.py which SHA-verifies both
+      # tarballs before any write.
+      - name: Download + verify phase5 checkpoint
+        env:
+          PREVIEW_BASE_URL:         ${{ secrets.PREVIEW_BASE_URL }}
+          MIGRATION_DOWNLOAD_TOKEN: ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+          FILE:                     phase5_20261003_190628Z.tar.gz
+          EXPECTED_BYTES:           "337143523"
+          EXPECTED_SHA:             4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
+          MAX_ATTEMPTS:             "6"
+        run: |
+          set -eu
+          TARGET="${CHKP_DIR}/${FILE}"
+          URL="${PREVIEW_BASE_URL}/api/_migration_download/${FILE}"
+          for ATTEMPT in $(seq 1 "${MAX_ATTEMPTS}"); do
+            echo "--- ${FILE} attempt ${ATTEMPT}/${MAX_ATTEMPTS} ---"
+            CURRENT_SIZE=$(stat -c%s "${TARGET}" 2>/dev/null || echo 0)
+            if [ "${CURRENT_SIZE}" -gt "${EXPECTED_BYTES}" ]; then
+              echo "  oversized local copy (${CURRENT_SIZE} > ${EXPECTED_BYTES}) — discarding"
+              rm -f "${TARGET}"; CURRENT_SIZE=0
+            fi
+            if [ "${CURRENT_SIZE}" -lt "${EXPECTED_BYTES}" ]; then
+              if [ "${CURRENT_SIZE}" -gt 0 ]; then
+                echo "  partial local copy (${CURRENT_SIZE}/${EXPECTED_BYTES}) — resuming via HTTP Range"
+                CURL_CONTINUE="--continue-at -"
+              else
+                CURL_CONTINUE=""
+              fi
+              # shellcheck disable=SC2086
+              if ! curl --fail --silent --show-error --location \
+                       --retry 3 --retry-all-errors --retry-delay 5 \
+                       --max-time 1800 \
+                       ${CURL_CONTINUE} \
+                       -H "X-Download-Token: ${MIGRATION_DOWNLOAD_TOKEN}" \
+                       -o "${TARGET}" "${URL}"; then
+                echo "  curl failed on attempt ${ATTEMPT}; backing off"; sleep 8; continue
+              fi
+              CURRENT_SIZE=$(stat -c%s "${TARGET}" 2>/dev/null || echo 0)
+            fi
+            if [ "${CURRENT_SIZE}" -ne "${EXPECTED_BYTES}" ]; then
+              echo "  size mismatch (got ${CURRENT_SIZE}, expected ${EXPECTED_BYTES}) — retrying"; sleep 5; continue
+            fi
+            ACTUAL_SHA=$(sha256sum "${TARGET}" | awk '{print $1}')
+            if [ "${ACTUAL_SHA}" = "${EXPECTED_SHA}" ]; then
+              echo "  ✅ ${FILE}  bytes=${CURRENT_SIZE}  sha256=${ACTUAL_SHA}"
+              exit 0
+            fi
+            echo "  ❌ SHA mismatch — discarding and retrying"; rm -f "${TARGET}"; sleep 5
+          done
+          echo "FATAL: exhausted ${MAX_ATTEMPTS} attempts for ${FILE}" >&2
+          exit 1
+
+      - name: Download + verify phase6 checkpoint
+        env:
+          PREVIEW_BASE_URL:         ${{ secrets.PREVIEW_BASE_URL }}
+          MIGRATION_DOWNLOAD_TOKEN: ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+          FILE:                     phase6_20261003_192150Z.tar.gz
+          EXPECTED_BYTES:           "1606247"
+          EXPECTED_SHA:             327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22
+          MAX_ATTEMPTS:             "6"
+        run: |
+          set -eu
+          TARGET="${CHKP_DIR}/${FILE}"
+          URL="${PREVIEW_BASE_URL}/api/_migration_download/${FILE}"
+          for ATTEMPT in $(seq 1 "${MAX_ATTEMPTS}"); do
+            echo "--- ${FILE} attempt ${ATTEMPT}/${MAX_ATTEMPTS} ---"
+            CURRENT_SIZE=$(stat -c%s "${TARGET}" 2>/dev/null || echo 0)
+            if [ "${CURRENT_SIZE}" -gt "${EXPECTED_BYTES}" ]; then
+              echo "  oversized local copy — discarding"; rm -f "${TARGET}"; CURRENT_SIZE=0
+            fi
+            if [ "${CURRENT_SIZE}" -lt "${EXPECTED_BYTES}" ]; then
+              if [ "${CURRENT_SIZE}" -gt 0 ]; then
+                CURL_CONTINUE="--continue-at -"
+              else
+                CURL_CONTINUE=""
+              fi
+              # shellcheck disable=SC2086
+              if ! curl --fail --silent --show-error --location \
+                       --retry 3 --retry-all-errors --retry-delay 5 \
+                       --max-time 600 \
+                       ${CURL_CONTINUE} \
+                       -H "X-Download-Token: ${MIGRATION_DOWNLOAD_TOKEN}" \
+                       -o "${TARGET}" "${URL}"; then
+                echo "  curl failed; backing off"; sleep 6; continue
+              fi
+              CURRENT_SIZE=$(stat -c%s "${TARGET}" 2>/dev/null || echo 0)
+            fi
+            if [ "${CURRENT_SIZE}" -ne "${EXPECTED_BYTES}" ]; then
+              echo "  size mismatch — retrying"; sleep 4; continue
+            fi
+            ACTUAL_SHA=$(sha256sum "${TARGET}" | awk '{print $1}')
+            if [ "${ACTUAL_SHA}" = "${EXPECTED_SHA}" ]; then
+              echo "  ✅ ${FILE}  bytes=${CURRENT_SIZE}  sha256=${ACTUAL_SHA}"; exit 0
+            fi
+            echo "  ❌ SHA mismatch — discarding and retrying"; rm -f "${TARGET}"; sleep 4
+          done
+          echo "FATAL: exhausted ${MAX_ATTEMPTS} attempts for ${FILE}" >&2
+          exit 1
+
+      # ─── Guard rails on dispatch inputs ────────────────────────────
+      # The script also enforces hard caps; this is a belt-and-braces
+      # check so a bad input returns a clear error quickly.
+      - name: Validate dispatch inputs
+        env:
+          WIN:  ${{ inputs.window_min }}
+          CONC: ${{ inputs.concurrency }}
+          BS:   ${{ inputs.batch_size }}
+        run: |
+          set -eu
+          if [ "${WIN}" -lt 1 ] || [ "${WIN}" -gt 20 ]; then
+            echo "window_min must be 1..20 (got ${WIN})" >&2; exit 1
+          fi
+          if [ "${CONC}" -lt 1 ] || [ "${CONC}" -gt 8 ]; then
+            echo "concurrency must be 1..8 (got ${CONC})" >&2; exit 1
+          fi
+          if [ "${BS}" -lt 50 ] || [ "${BS}" -gt 2000 ]; then
+            echo "batch_size must be 50..2000 (got ${BS})" >&2; exit 1
+          fi
+          echo "inputs OK: window_min=${WIN} concurrency=${CONC} batch_size=${BS}"
+
+      - name: Run bounded R3 benchmark
+        id: bench
+        env:
+          # Secrets passed via step env so GH Actions auto-masks any
+          # accidental echo.  Never interpolated inline into shell.
+          PROD_API_BASE:            ${{ secrets.PROD_API_BASE }}
+          PROD_ADMIN_EMAIL:         ${{ secrets.PROD_ADMIN_EMAIL }}
+          PROD_ADMIN_PASSWORD:      ${{ secrets.PROD_ADMIN_PASSWORD }}
+          CANONICAL_IMPORT_TOKEN:   ${{ secrets.CANONICAL_IMPORT_TOKEN }}
+          CANONICAL_IMPORT_SESSION: ${{ secrets.CANONICAL_IMPORT_SESSION }}
+          # Benchmark knobs (all have hard caps inside the script too).
+          MAX_WINDOW_MIN:           ${{ inputs.window_min }}
+          BENCHMARK_CONCURRENCY:    ${{ inputs.concurrency }}
+          BENCHMARK_BATCH_SIZE:     ${{ inputs.batch_size }}
+          EXPECTED_BUILD_PREFIX:    ${{ inputs.expected_build_prefix }}
+        run: |
+          python3 --version
+          echo "[workflow] launching Perklocks R3 Benchmark"
+          echo "[workflow] CHKP_DIR=${CHKP_DIR}"
+          echo "[workflow] LOGS_DIR=${LOGS_DIR}"
+          echo "[workflow] MAX_WINDOW_MIN=${MAX_WINDOW_MIN}"
+          echo "[workflow] BENCHMARK_CONCURRENCY=${BENCHMARK_CONCURRENCY}"
+          echo "[workflow] BENCHMARK_BATCH_SIZE=${BENCHMARK_BATCH_SIZE}"
+          echo "[workflow] EXPECTED_BUILD_PREFIX=${EXPECTED_BUILD_PREFIX}"
+          python3 -u reconcile_workspace/scripts/benchmark_r3.py
+        # Script returns:
+        #   0 → GO
+        #   2 → preflight NO-GO
+        #   3 → benchmark NO-GO
+        #   1 → crash
+        # Any non-zero fails the workflow step but artifacts still
+        # upload via the always()-guarded step below.
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perklocks-r3-benchmark-artifacts-${{ github.run_id }}
+          path: |
+            /tmp/perklocks-logs/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Print verdict summary
+        if: always()
+        run: |
+          echo "============================================================"
+          echo " Perklocks R3 Benchmark — step status: ${{ steps.bench.outcome }}"
+          echo " Report: /tmp/perklocks-logs/r3_benchmark_report.json"
+          echo " (NO full R3 workflow was auto-launched)"
+          echo "============================================================"
+          if [ -f /tmp/perklocks-logs/r3_benchmark_report.json ]; then
+            python3 - <<'PY'
+          import json, pathlib
+          p = pathlib.Path('/tmp/perklocks-logs/r3_benchmark_report.json')
+          r = json.loads(p.read_text())
+          print('verdict         :', r.get('verdict'))
+          print('reasons         :', r.get('verdict_reasons', []) or 'none')
+          print('elapsed_s       :', r.get('throughput', {}).get('elapsed_s'))
+          print('docs_per_sec    :', r.get('throughput', {}).get('docs_per_sec'))
+          print('batches_per_hr  :', r.get('throughput', {}).get('batches_per_hr'))
+          print('delta_succ      :', r.get('delta', {}).get('succeeded_batches'))
+          print('delta_docs      :', r.get('delta', {}).get('docs_accepted'))
+          print('health_p50_ms   :', r.get('health_during_load', {}).get('p50_ms'))
+          print('health_p95_ms   :', r.get('health_during_load', {}).get('p95_ms'))
+          print('health_fail     :', r.get('health_during_load', {}).get('fail_samples'))
+          pm = r.get('push_driver', {}).get('metrics', {}) or {}
+          print('push_p50_ms     :', (pm.get('latency_ms') or {}).get('p50'))
+          print('push_p95_ms     :', (pm.get('latency_ms') or {}).get('p95'))
+          print('http_timeouts   :', (pm.get('http') or {}).get('http_timeouts'))
+          print('http_retries    :', (pm.get('http') or {}).get('http_retries'))
+          print('http_resets     :', (pm.get('http') or {}).get('http_connection_resets'))
+          print('remaining_batches_at_bench_bsize :',
+                r.get('remaining', {}).get('http_batches_estimate_at_bench_bsize'))
+          PY
+          fi
