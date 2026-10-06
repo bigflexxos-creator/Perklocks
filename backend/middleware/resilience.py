@@ -49,6 +49,40 @@ logger = logging.getLogger("lockscore.resilience")
 # clean JSON 504 ourselves instead of CF returning 524/520.
 REQUEST_TIMEOUT_SECONDS = 85.0
 
+# ─────────────────────────────────────────────────────────────────────
+# Route-specific timeout overrides.
+#
+# Context (2026-10-06 Emergent Support finding):
+#   Legitimate ``POST /api/admin/canonical-import`` batch writes against
+#   Production routinely take 100–181 s (large upsert batches with
+#   ``w:majority`` under event-loop-starvation-free conditions).  The
+#   global 85 s shield originally sized for Cloudflare's 100 s edge
+#   budget is below this envelope and was returning spurious 504s to
+#   the R3 push driver, forcing retries that compounded load.
+#
+#   Fix: raise the budget to 300 s ONLY for this exact route.  Every
+#   other /api/* route keeps the 85 s CF-safe default so the Cloudflare
+#   520 shield stays intact for user-facing endpoints.
+#
+# Keying: (upper-case method, exact FastAPI path).  Lookup is O(1); on
+# miss we fall through to ``REQUEST_TIMEOUT_SECONDS``.
+# ─────────────────────────────────────────────────────────────────────
+_ROUTE_TIMEOUT_OVERRIDES: dict[tuple[str, str], float] = {
+    ("POST", "/api/admin/canonical-import"): 300.0,
+}
+
+
+def _timeout_for(method: str, path: str) -> float:
+    """Return the per-request wall-clock timeout in seconds.
+
+    Exact-match lookup against ``_ROUTE_TIMEOUT_OVERRIDES`` first;
+    otherwise returns the global default.  Keeping it a plain function
+    (not a decorator) means the override map can be audited / unit-
+    tested in isolation and no route needs to opt in explicitly.
+    """
+    return _ROUTE_TIMEOUT_OVERRIDES.get((method.upper(), path),
+                                          REQUEST_TIMEOUT_SECONDS)
+
 
 class ResilienceMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -59,16 +93,19 @@ class ResilienceMiddleware(BaseHTTPMiddleware):
         start = time.perf_counter()
         is_api = path.startswith("/api/")
 
+        route_timeout = _timeout_for(method, path)
+
         try:
             response: Response = await asyncio.wait_for(
                 call_next(request),
-                timeout=REQUEST_TIMEOUT_SECONDS,
+                timeout=route_timeout,
             )
         except asyncio.TimeoutError:
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             logger.error(
-                "REQUEST_TIMEOUT method=%s path=%s rid=%s elapsed_ms=%.0f",
-                method, path, rid, elapsed_ms,
+                "REQUEST_TIMEOUT method=%s path=%s rid=%s "
+                "elapsed_ms=%.0f budget_s=%.1f",
+                method, path, rid, elapsed_ms, route_timeout,
             )
             return JSONResponse(
                 status_code=504,
@@ -189,7 +226,12 @@ def install(app: FastAPI) -> None:
     """One-call wiring used by server.py."""
     app.add_middleware(ResilienceMiddleware)
     install_exception_handlers(app)
+    overrides_summary = ", ".join(
+        f"{m} {p}={s:.0f}s"
+        for (m, p), s in sorted(_ROUTE_TIMEOUT_OVERRIDES.items())
+    ) or "(none)"
     logger.info(
-        "Resilience middleware installed (timeout=%.0fs, JSON-coerce on /api/*)",
-        REQUEST_TIMEOUT_SECONDS,
+        "Resilience middleware installed (default_timeout=%.0fs, "
+        "route_overrides=[%s], JSON-coerce on /api/*)",
+        REQUEST_TIMEOUT_SECONDS, overrides_summary,
     )
