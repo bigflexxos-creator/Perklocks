@@ -1,0 +1,174 @@
+name: Resolve + download Perklocks checkpoint
+description: >-
+  Shared, manifest-first, resume-aware, SHA-gated download of a Perklocks R3
+  cutover checkpoint tarball from the Preview backend's token-gated migration
+  download route.  Used by BOTH "Perklocks R3 Resume" and
+  "Perklocks R3 Benchmark" so the two workflows cannot diverge.
+
+  Resolution order:
+    1. Call GET /api/_migration_manifest (token-gated).  If it responds
+       200 with the requested phase's descriptor marked present=true,
+       the manifest's filename / bytes / sha256 override any hardcoded
+       fallback values.
+    2. If the manifest route is unavailable (404 / 503 / network error)
+       OR the requested phase isn't present=true, fall back to the
+       hardcoded fallback_filename / fallback_bytes / fallback_sha
+       inputs.  Hardcoded fallback preserves the current Resume
+       behavior so no legacy run is silently broken.
+
+  Download step uses the SAME HTTP Range-aware resume + bounded retry +
+  byte-count check + SHA-256 verify logic that successfully fetched both
+  checkpoints during Perklocks R3 Benchmark #1.
+
+inputs:
+  phase:
+    description: 'phase5 | phase6'
+    required: true
+  preview_base_url:
+    description: 'secrets.PREVIEW_BASE_URL'
+    required: true
+  download_token:
+    description: 'secrets.MIGRATION_DOWNLOAD_TOKEN'
+    required: true
+  checkpoint_dir:
+    description: 'Local directory to place the downloaded tarball'
+    required: true
+  fallback_filename:
+    description: 'Filename to use if the manifest is unreachable'
+    required: true
+  fallback_bytes:
+    description: 'Expected byte count if the manifest is unreachable'
+    required: true
+  fallback_sha:
+    description: 'Expected SHA-256 if the manifest is unreachable'
+    required: true
+  max_attempts:
+    description: 'Max outer download attempts (default 6)'
+    required: false
+    default: '6'
+  curl_max_time_seconds:
+    description: 'Per-attempt curl --max-time (default 1800)'
+    required: false
+    default: '1800'
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve manifest (${{ inputs.phase }})
+      id: resolve
+      shell: bash
+      env:
+        PREVIEW_BASE_URL:         ${{ inputs.preview_base_url }}
+        MIGRATION_DOWNLOAD_TOKEN: ${{ inputs.download_token }}
+        PHASE:                    ${{ inputs.phase }}
+        FALLBACK_FILENAME:        ${{ inputs.fallback_filename }}
+        FALLBACK_BYTES:           ${{ inputs.fallback_bytes }}
+        FALLBACK_SHA:             ${{ inputs.fallback_sha }}
+      run: |
+        set -eu
+        # Fetch the manifest; capture status + body separately so a 503
+        # or 404 doesn't abort the step.
+        BODY_FILE=$(mktemp)
+        STATUS=$(curl --silent --show-error --location \
+                     --max-time 30 \
+                     -H "X-Download-Token: ${MIGRATION_DOWNLOAD_TOKEN}" \
+                     -o "${BODY_FILE}" -w "%{http_code}" \
+                     "${PREVIEW_BASE_URL}/api/_migration_manifest" || echo "000")
+
+        # Default to the hardcoded fallback.  jq parses only on 200.
+        FILENAME="${FALLBACK_FILENAME}"
+        BYTES="${FALLBACK_BYTES}"
+        SHA="${FALLBACK_SHA}"
+        SOURCE="fallback"
+
+        if [ "${STATUS}" = "200" ]; then
+          MFILE=$(jq -r --arg phase "${PHASE}" '.[$phase].filename // ""' "${BODY_FILE}")
+          MBYTES=$(jq -r --arg phase "${PHASE}" '.[$phase].bytes // 0' "${BODY_FILE}")
+          MSHA=$(jq -r --arg phase "${PHASE}" '.[$phase].sha256 // ""' "${BODY_FILE}")
+          MPRESENT=$(jq -r --arg phase "${PHASE}" '.[$phase].present // false' "${BODY_FILE}")
+          if [ "${MPRESENT}" = "true" ] && [ -n "${MFILE}" ] && [ -n "${MSHA}" ] && [ "${MBYTES}" != "0" ]; then
+            FILENAME="${MFILE}"
+            BYTES="${MBYTES}"
+            SHA="${MSHA}"
+            SOURCE="manifest"
+          else
+            echo "[resolve] manifest returned 200 but ${PHASE}.present=${MPRESENT} — falling back to hardcoded"
+          fi
+        else
+          echo "[resolve] manifest HTTP ${STATUS} — falling back to hardcoded"
+        fi
+        rm -f "${BODY_FILE}"
+
+        echo "[resolve] phase=${PHASE} source=${SOURCE} filename=${FILENAME} bytes=${BYTES} sha=${SHA:0:12}…"
+        {
+          echo "filename=${FILENAME}"
+          echo "bytes=${BYTES}"
+          echo "sha=${SHA}"
+          echo "source=${SOURCE}"
+        } >> "${GITHUB_OUTPUT}"
+
+    - name: Download + verify ${{ inputs.phase }} checkpoint (resume-aware, SHA-gated)
+      shell: bash
+      env:
+        PREVIEW_BASE_URL:         ${{ inputs.preview_base_url }}
+        MIGRATION_DOWNLOAD_TOKEN: ${{ inputs.download_token }}
+        CHKP_DIR:                 ${{ inputs.checkpoint_dir }}
+        FILE:                     ${{ steps.resolve.outputs.filename }}
+        EXPECTED_BYTES:           ${{ steps.resolve.outputs.bytes }}
+        EXPECTED_SHA:             ${{ steps.resolve.outputs.sha }}
+        MAX_ATTEMPTS:             ${{ inputs.max_attempts }}
+        CURL_MAX_TIME:            ${{ inputs.curl_max_time_seconds }}
+      run: |
+        set -eu
+        mkdir -p "${CHKP_DIR}"
+        TARGET="${CHKP_DIR}/${FILE}"
+        URL="${PREVIEW_BASE_URL}/api/_migration_download/${FILE}"
+        for ATTEMPT in $(seq 1 "${MAX_ATTEMPTS}"); do
+          echo "--- ${FILE} attempt ${ATTEMPT}/${MAX_ATTEMPTS} ---"
+          CURRENT_SIZE=$(stat -c%s "${TARGET}" 2>/dev/null || echo 0)
+
+          if [ "${CURRENT_SIZE}" -gt "${EXPECTED_BYTES}" ]; then
+            echo "  oversized local copy (${CURRENT_SIZE} > ${EXPECTED_BYTES}) — discarding"
+            rm -f "${TARGET}"
+            CURRENT_SIZE=0
+          fi
+
+          if [ "${CURRENT_SIZE}" -lt "${EXPECTED_BYTES}" ]; then
+            if [ "${CURRENT_SIZE}" -gt 0 ]; then
+              echo "  partial local copy (${CURRENT_SIZE}/${EXPECTED_BYTES}) — resuming via HTTP Range"
+              CURL_CONTINUE="--continue-at -"
+            else
+              CURL_CONTINUE=""
+            fi
+            # shellcheck disable=SC2086
+            if ! curl --fail --silent --show-error --location \
+                     --retry 3 --retry-all-errors --retry-delay 5 \
+                     --max-time "${CURL_MAX_TIME}" \
+                     ${CURL_CONTINUE} \
+                     -H "X-Download-Token: ${MIGRATION_DOWNLOAD_TOKEN}" \
+                     -o "${TARGET}" "${URL}"; then
+              echo "  curl failed on attempt ${ATTEMPT}; backing off"
+              sleep 8
+              continue
+            fi
+            CURRENT_SIZE=$(stat -c%s "${TARGET}" 2>/dev/null || echo 0)
+          fi
+
+          if [ "${CURRENT_SIZE}" -ne "${EXPECTED_BYTES}" ]; then
+            echo "  size mismatch (got ${CURRENT_SIZE}, expected ${EXPECTED_BYTES}) — retrying"
+            sleep 5
+            continue
+          fi
+
+          ACTUAL_SHA=$(sha256sum "${TARGET}" | awk '{print $1}')
+          if [ "${ACTUAL_SHA}" = "${EXPECTED_SHA}" ]; then
+            echo "  ✅ ${FILE}  bytes=${CURRENT_SIZE}  sha256=${ACTUAL_SHA}"
+            exit 0
+          fi
+
+          echo "  ❌ SHA mismatch (got ${ACTUAL_SHA}, expected ${EXPECTED_SHA}) — discarding runner-local corrupted copy"
+          rm -f "${TARGET}"
+          sleep 5
+        done
+        echo "FATAL: exhausted ${MAX_ATTEMPTS} attempts for ${FILE}" >&2
+        exit 1

@@ -73,131 +73,31 @@ jobs:
       # Secrets are passed through the step `env:` block so GitHub
       # Actions auto-masks any accidental echo; the token is never
       # interpolated inline into the curl command string.
-      - name: Download + verify phase5 checkpoint (resume-aware, SHA-gated)
-        env:
-          PREVIEW_BASE_URL:         ${{ secrets.PREVIEW_BASE_URL }}
-          MIGRATION_DOWNLOAD_TOKEN: ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
-          FILE:                     phase5_20261003_190628Z.tar.gz
-          EXPECTED_BYTES:           "337143523"
-          EXPECTED_SHA:             4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
-          MAX_ATTEMPTS:             "6"
-        run: |
-          set -eu
-          TARGET="${CHKP_DIR}/${FILE}"
-          URL="${PREVIEW_BASE_URL}/api/_migration_download/${FILE}"
-          for ATTEMPT in $(seq 1 "${MAX_ATTEMPTS}"); do
-            echo "--- ${FILE} attempt ${ATTEMPT}/${MAX_ATTEMPTS} ---"
-            CURRENT_SIZE=$(stat -c%s "${TARGET}" 2>/dev/null || echo 0)
+      - name: Download + verify phase5 checkpoint (shared composite action)
+        uses: ./.github/actions/perklocks-checkpoint-download
+        with:
+          phase:             phase5
+          preview_base_url:  ${{ secrets.PREVIEW_BASE_URL }}
+          download_token:    ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+          checkpoint_dir:    ${{ env.CHKP_DIR }}
+          fallback_filename: phase5_20261003_190628Z.tar.gz
+          fallback_bytes:    "337143523"
+          fallback_sha:      4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
+          max_attempts:      "6"
+          curl_max_time_seconds: "1800"
 
-            # Discard anything larger than expected (corruption / stale).
-            if [ "${CURRENT_SIZE}" -gt "${EXPECTED_BYTES}" ]; then
-              echo "  oversized local copy (${CURRENT_SIZE} > ${EXPECTED_BYTES}) — discarding"
-              rm -f "${TARGET}"
-              CURRENT_SIZE=0
-            fi
-
-            # Download/resume when local file is smaller than expected.
-            if [ "${CURRENT_SIZE}" -lt "${EXPECTED_BYTES}" ]; then
-              if [ "${CURRENT_SIZE}" -gt 0 ]; then
-                echo "  partial local copy (${CURRENT_SIZE}/${EXPECTED_BYTES}) — resuming via HTTP Range"
-                CURL_CONTINUE="--continue-at -"
-              else
-                CURL_CONTINUE=""
-              fi
-              # shellcheck disable=SC2086
-              if ! curl --fail --silent --show-error --location \
-                       --retry 3 --retry-all-errors --retry-delay 5 \
-                       --max-time 1800 \
-                       ${CURL_CONTINUE} \
-                       -H "X-Download-Token: ${MIGRATION_DOWNLOAD_TOKEN}" \
-                       -o "${TARGET}" "${URL}"; then
-                echo "  curl failed on attempt ${ATTEMPT}; backing off"
-                sleep 8
-                continue
-              fi
-              CURRENT_SIZE=$(stat -c%s "${TARGET}" 2>/dev/null || echo 0)
-            fi
-
-            if [ "${CURRENT_SIZE}" -ne "${EXPECTED_BYTES}" ]; then
-              echo "  size mismatch after download (got ${CURRENT_SIZE}, expected ${EXPECTED_BYTES}) — retrying"
-              sleep 5
-              continue
-            fi
-
-            ACTUAL_SHA=$(sha256sum "${TARGET}" | awk '{print $1}')
-            if [ "${ACTUAL_SHA}" = "${EXPECTED_SHA}" ]; then
-              echo "  ✅ ${FILE}  bytes=${CURRENT_SIZE}  sha256=${ACTUAL_SHA}"
-              exit 0
-            fi
-
-            echo "  ❌ SHA mismatch (got ${ACTUAL_SHA}, expected ${EXPECTED_SHA}) — discarding runner-local corrupted copy"
-            rm -f "${TARGET}"
-            sleep 5
-          done
-          echo "FATAL: exhausted ${MAX_ATTEMPTS} attempts for ${FILE} without a valid download" >&2
-          exit 1
-
-      - name: Download + verify phase6 checkpoint (resume-aware, SHA-gated)
-        env:
-          PREVIEW_BASE_URL:         ${{ secrets.PREVIEW_BASE_URL }}
-          MIGRATION_DOWNLOAD_TOKEN: ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
-          FILE:                     phase6_20261003_192150Z.tar.gz
-          EXPECTED_BYTES:           "1606247"
-          EXPECTED_SHA:             327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22
-          MAX_ATTEMPTS:             "6"
-        run: |
-          set -eu
-          TARGET="${CHKP_DIR}/${FILE}"
-          URL="${PREVIEW_BASE_URL}/api/_migration_download/${FILE}"
-          for ATTEMPT in $(seq 1 "${MAX_ATTEMPTS}"); do
-            echo "--- ${FILE} attempt ${ATTEMPT}/${MAX_ATTEMPTS} ---"
-            CURRENT_SIZE=$(stat -c%s "${TARGET}" 2>/dev/null || echo 0)
-
-            if [ "${CURRENT_SIZE}" -gt "${EXPECTED_BYTES}" ]; then
-              echo "  oversized local copy (${CURRENT_SIZE} > ${EXPECTED_BYTES}) — discarding"
-              rm -f "${TARGET}"
-              CURRENT_SIZE=0
-            fi
-
-            if [ "${CURRENT_SIZE}" -lt "${EXPECTED_BYTES}" ]; then
-              if [ "${CURRENT_SIZE}" -gt 0 ]; then
-                echo "  partial local copy (${CURRENT_SIZE}/${EXPECTED_BYTES}) — resuming via HTTP Range"
-                CURL_CONTINUE="--continue-at -"
-              else
-                CURL_CONTINUE=""
-              fi
-              # shellcheck disable=SC2086
-              if ! curl --fail --silent --show-error --location \
-                       --retry 3 --retry-all-errors --retry-delay 5 \
-                       --max-time 600 \
-                       ${CURL_CONTINUE} \
-                       -H "X-Download-Token: ${MIGRATION_DOWNLOAD_TOKEN}" \
-                       -o "${TARGET}" "${URL}"; then
-                echo "  curl failed on attempt ${ATTEMPT}; backing off"
-                sleep 6
-                continue
-              fi
-              CURRENT_SIZE=$(stat -c%s "${TARGET}" 2>/dev/null || echo 0)
-            fi
-
-            if [ "${CURRENT_SIZE}" -ne "${EXPECTED_BYTES}" ]; then
-              echo "  size mismatch after download (got ${CURRENT_SIZE}, expected ${EXPECTED_BYTES}) — retrying"
-              sleep 4
-              continue
-            fi
-
-            ACTUAL_SHA=$(sha256sum "${TARGET}" | awk '{print $1}')
-            if [ "${ACTUAL_SHA}" = "${EXPECTED_SHA}" ]; then
-              echo "  ✅ ${FILE}  bytes=${CURRENT_SIZE}  sha256=${ACTUAL_SHA}"
-              exit 0
-            fi
-
-            echo "  ❌ SHA mismatch (got ${ACTUAL_SHA}, expected ${EXPECTED_SHA}) — discarding runner-local corrupted copy"
-            rm -f "${TARGET}"
-            sleep 4
-          done
-          echo "FATAL: exhausted ${MAX_ATTEMPTS} attempts for ${FILE} without a valid download" >&2
-          exit 1
+      - name: Download + verify phase6 checkpoint (shared composite action)
+        uses: ./.github/actions/perklocks-checkpoint-download
+        with:
+          phase:             phase6
+          preview_base_url:  ${{ secrets.PREVIEW_BASE_URL }}
+          download_token:    ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+          checkpoint_dir:    ${{ env.CHKP_DIR }}
+          fallback_filename: phase6_20261003_192150Z.tar.gz
+          fallback_bytes:    "1606247"
+          fallback_sha:      327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22
+          max_attempts:      "6"
+          curl_max_time_seconds: "600"
 
       - name: Resume R3 (Phase 5 → 7 → 8, STOP at Phase 9)
         env:
