@@ -2029,7 +2029,16 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
     # payload.
     try:
         from sim_engine import simulate_board
-        simulate_board(safe_picks, n_simulations=500)
+        # Event-loop isolation (Emergent Support 2026-10-05): simulate_board
+        # is CPU-bound synchronous Monte Carlo work.  Running it directly
+        # inside an async context pins the main asyncio loop, starving the
+        # health endpoint and R3 import requests.  asyncio.to_thread moves
+        # the work onto a worker thread.  No model/scoring/probability
+        # change — same function, same inputs, same mutation of safe_picks.
+        import asyncio as _asyncio_isolate
+        await _asyncio_isolate.to_thread(
+            simulate_board, safe_picks, n_simulations=500,
+        )
         # Track how many picks got sim results for observability
         sim_ok = sum(1 for p in safe_picks if p.get("sim_result"))
         logger.info("Sim engine: %d/%d picks simulated", sim_ok, len(safe_picks))

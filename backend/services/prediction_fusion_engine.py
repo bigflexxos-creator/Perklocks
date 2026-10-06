@@ -401,7 +401,12 @@ async def _run_simulator_component(db, sport, player, stat, opponent,
             "opponent_team": opponent,
         }
     try:
-        sim = simulate_pick(pick)
+        # Event-loop isolation (Emergent Support 2026-10-05): the
+        # Monte Carlo simulator is CPU-bound synchronous work.
+        # asyncio.to_thread keeps the main loop responsive during
+        # fusion-pipeline sweeps that process many players.
+        import asyncio as _asyncio_isolate
+        sim = await _asyncio_isolate.to_thread(simulate_pick, pick)
     except Exception as e:
         cp.notes.append(f"sim error: {e}")
         return cp

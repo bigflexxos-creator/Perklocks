@@ -33,11 +33,13 @@ What this driver changes (migration-transport only)
    and fast-path skips.  No in-flight picks batch is re-written.
 
 3. **Bounded concurrency.** A ``concurrent.futures.ThreadPoolExecutor``
-   with ``CONCURRENCY`` workers (default 8) issues POSTs in parallel.
-   Each batch still goes through the full server-side atomic protocol
-   — concurrency is purely at the HTTP transport layer.  Different
-   batches target different documents (logical-key upserts), so
-   per-batch write races are impossible by Mongo's own guarantees.
+   with ``CONCURRENCY`` workers (default 4 after the 2026-10-05
+   Emergent-Support event-loop-starvation fix; hard cap 8) issues
+   POSTs in parallel.  Each batch still goes through the full
+   server-side atomic protocol — concurrency is purely at the HTTP
+   transport layer.  Different batches target different documents
+   (logical-key upserts), so per-batch write races are impossible by
+   Mongo's own guarantees.
 
 4. **Same Pass 1 → Pass 2 retry structure.** Per-POST attempts capped
    at 3 with bounded exponential back-off (2 s / 4 s / 8 s).  Any
@@ -57,7 +59,7 @@ ENV OVERRIDES
   (default 250).
 - ``NEW_COLLECTION_BATCH_SIZE`` — not-yet-started collections
   (default 1 000, hard-capped at 2 000).
-- ``CONCURRENCY`` — thread pool size (default 8, hard-capped at 16).
+- ``CONCURRENCY`` — thread pool size (default 4, hard-capped at 8).
 - ``COLLECTIONS_FILTER`` — comma-separated allowlist (legacy param).
 
 NOT-STARTED-COLLECTION OVERRIDE
@@ -233,7 +235,11 @@ def main() -> int:
 
     max_batch_default = _env_int("MAX_BATCH_SIZE", 250, hard_max=2000)
     new_batch_size    = _env_int("NEW_COLLECTION_BATCH_SIZE", 1000, hard_max=2000)
-    concurrency       = _env_int("CONCURRENCY", 8, hard_max=16)
+    # Emergent Support 2026-10-05 — initial safe target is 4 concurrent
+    # POSTs @ 1 000 docs/batch.  Only consider raising toward 6×2 000
+    # after the bounded production benchmark proves p95 remains well
+    # below the 85-sec request budget and health stays responsive.
+    concurrency       = _env_int("CONCURRENCY", 4, hard_max=8)
     # Phase-5-R3 ACCELERATION HARDENING (post-Run-#5 forensic fix):
     #   Each worker's bounded request budget is now tight so a single
     #   slow bulk_write cannot block a worker for ~15 min.  The driver
