@@ -491,41 +491,47 @@ def main() -> int:
                                                     # failed, in_progress,
                                                     # incomplete_write)
 
-        # ── FIXED-SIZE batching from succeeded batches (R3 Resume #14 fix) ──
+        # ── Earliest-authoritative-batch cutpoint derivation (R3 Resume #15 fix) ──
         #
-        # Dual-path forensic #1 proved (settlement_events batch 5):
-        #   PATH A — ORIGINAL driver @ fixed batch_size=250: hash MATCHES server
-        #   PATH B — ACCELERATED per-batch target walker:    hash DIFFERS from server
-        #   same_membership(A, B) = false, first_order_diff_idx = 0
+        # Canary #4 proved that ``max(succeeded doc_counts)`` is NOT
+        # safe.  settlement_events now has 1989 succeeded batches
+        # with max=1000 — because a later Run-B successfully inserted
+        # ONE new batch at the collection tail with doc_count=1000.
+        # The ORIGINAL run (which successfully imported batches
+        # 0..1987 at doc_count=250) is the one we need to replay
+        # against; its authoritative bsize is encoded in the EARLIEST
+        # succeeded batches (``batch_no=0`` and its immediate
+        # neighbors).
         #
-        # Root cause: using ``historical_counts[bno]`` for each batch
-        # honors doc_counts of FAILED altered-replay records (e.g.
-        # ``batch_no=N, doc_count=1000, status=failed``), which shift
-        # NDJSON cutpoints for later batches.  The ORIGINAL driver
-        # used ONE fixed batch_size for the entire collection and is
-        # immune to this.
+        # Rule:
+        #   1. If any succeeded batch exists, take the doc_count of
+        #      the LOWEST-NUMBERED succeeded batch_no as the
+        #      authoritative historical bsize.  Validate by checking
+        #      that at least one of the next few early succeeded
+        #      batches agrees (full batches of the ORIGINAL partition
+        #      share this value; only the final tail is smaller).
+        #   2. If no succeeded batches exist but historical identities
+        #      do, use the doc_count of the lowest-numbered batch
+        #      (succeeded or not) as a conservative best-effort.  The
+        #      preflight hash-match guard remains the final arbiter.
+        #   3. If zero historical identities, this is a truly-new
+        #      collection → use NEW_COLLECTION_BATCH_SIZE.
         #
-        # Correct contract (what we do now):
-        #
-        #   For returning collections (any existing batch identity):
-        #     fixed_bsize = max(doc_count across SUCCEEDED batches only)
-        #     — this is the ORIGINAL run's authoritative partition
-        #     size.  Failed/in-progress/incomplete_write records are
-        #     IGNORED for cutpoint derivation (but their stored
-        #     content_hashes are still checked by the preflight
-        #     hash-match guard).
-        #
-        #   For truly-new collections (zero manifest entries):
-        #     fixed_bsize = NEW_COLLECTION_BATCH_SIZE (default 1000).
-        #
-        #   For returning collections that have NO succeeded batches
-        #     (unusual edge case — e.g. a collection where every
-        #     prior attempt failed): fall back to the smallest
-        #     recorded doc_count as a conservative lower bound; the
-        #     preflight hash guard remains the final arbiter.
-        #
-        # The fixed_bsize is then used for EVERY batch of this
-        # collection — ``_target_for(bno)`` is a constant function.
+        # Rationale for trusting batch_no=0:
+        #   - record_batch_begin raises ALTERED_REPLAY_REJECTED if a
+        #     new attempt's content_hash differs from the existing
+        #     record's.  Once batch_no=0 reaches ``status=succeeded``,
+        #     its ``content_hash`` and ``doc_count`` are IMMUTABLE
+        #     by server contract (lines 316-332 of
+        #     backend/services/canonical_cutover.py).
+        #   - The ORIGINAL driver walks NDJSON linearly from batch 0
+        #     upward with a fixed bsize; it cannot skip batch 0 or
+        #     renumber it.  Hence batch_no=0's doc_count is the
+        #     authoritative original bsize for the first partition,
+        #     with the sole exception that a collection whose total
+        #     fits in a single batch has batch_no=0 as the "tail" —
+        #     but that is still correct (the whole collection fits in
+        #     one fixed-size batch).
         historical_counts: dict[int, int] = {
             bno: v["doc_count"] for bno, v in coll_manifest.items()
             if v.get("doc_count", 0) > 0
@@ -533,21 +539,37 @@ def main() -> int:
         max_hist_bno = max(historical_counts.keys(),
                            default=-1) if historical_counts else -1
 
-        succeeded_sizes = [v["doc_count"] for v in coll_manifest.values()
-                            if v.get("status") == "succeeded"
-                            and v.get("doc_count", 0) > 0]
-        if succeeded_sizes:
-            fixed_bsize    = max(succeeded_sizes)   # ORIGINAL run's size
-            bsize_rationale = (f"max(succeeded doc_counts)={fixed_bsize} "
-                                f"from {len(succeeded_sizes)} succeeded batch(es)")
+        # Succeeded batches sorted ascending by batch_no.
+        succeeded_by_bno = sorted(
+            [(bno, v["doc_count"]) for bno, v in coll_manifest.items()
+             if v.get("status") == "succeeded"
+             and v.get("doc_count", 0) > 0]
+        )
+        # For observability: capture first-N doc_counts so operators
+        # can audit the derivation in the plan summary + report.
+        first_n_succeeded = succeeded_by_bno[:5]
+
+        if succeeded_by_bno:
+            earliest_bno, earliest_bsize = succeeded_by_bno[0]
+            agreement = sum(1 for _, dc in succeeded_by_bno
+                             if dc == earliest_bsize)
+            fixed_bsize    = earliest_bsize
+            bsize_rationale = (
+                f"earliest succeeded batch_no={earliest_bno} has "
+                f"doc_count={earliest_bsize}; {agreement}/"
+                f"{len(succeeded_by_bno)} succeeded batches "
+                f"({100*agreement//len(succeeded_by_bno)}%) agree; "
+                f"first-5 by bno=[{', '.join(f'b{b}:{d}' for b,d in first_n_succeeded)}]"
+            )
         elif historical_counts:
-            # Returning collection but zero succeeded batches — use
-            # the smallest recorded doc_count as a safe lower bound.
-            # The preflight hash guard will catch any mismatch and
-            # STOP LOCALLY before any POST.
-            fixed_bsize    = min(historical_counts.values())
-            bsize_rationale = (f"min(historical doc_counts)={fixed_bsize} "
-                                "(no succeeded batches — conservative)")
+            # No succeeded batches but historical records exist.
+            earliest_bno = min(historical_counts.keys())
+            fixed_bsize    = historical_counts[earliest_bno]
+            bsize_rationale = (
+                f"no succeeded batches; using doc_count of "
+                f"lowest-numbered historical batch_no={earliest_bno} "
+                f"= {fixed_bsize} (preflight hash guard is the final arbiter)"
+            )
         else:
             # Truly new collection (zero manifest entries).
             fixed_bsize    = new_batch_size
@@ -696,23 +718,27 @@ def main() -> int:
                 else:
                     # Succeeded batch locally skipped — recompute to
                     # produce the canary proof row.  Use the SAME
-                    # fixed-bsize contract as the main planner
-                    # (R3 Resume #14 fix): derive bsize from
-                    # succeeded batches only; failed records never
-                    # influence cutpoints.
+                    # earliest-authoritative-batch contract as the
+                    # main planner (R3 Resume #15 fix): derive bsize
+                    # from the LOWEST-numbered succeeded batch, not
+                    # from max over succeeded.
                     _tmp_buf: list[dict] = []
                     src = _source_for(coll)
                     if src is not None:
                         coll_mf = batch_manifest.get(coll, {})
-                        _succ_sizes = [v["doc_count"] for v in coll_mf.values()
-                                       if v.get("status") == "succeeded"
-                                       and v.get("doc_count", 0) > 0]
-                        _hist_counts = [v["doc_count"] for v in coll_mf.values()
-                                         if v.get("doc_count", 0) > 0]
-                        if _succ_sizes:
-                            _fixed_bsize = max(_succ_sizes)
-                        elif _hist_counts:
-                            _fixed_bsize = min(_hist_counts)
+                        _succ_sorted = sorted(
+                            [(b, v["doc_count"]) for b, v in coll_mf.items()
+                             if v.get("status") == "succeeded"
+                             and v.get("doc_count", 0) > 0]
+                        )
+                        _hist_sorted = sorted(
+                            [(b, v["doc_count"]) for b, v in coll_mf.items()
+                             if v.get("doc_count", 0) > 0]
+                        )
+                        if _succ_sorted:
+                            _fixed_bsize = _succ_sorted[0][1]
+                        elif _hist_sorted:
+                            _fixed_bsize = _hist_sorted[0][1]
                         else:
                             _fixed_bsize = new_batch_size
                         _idx = 0
