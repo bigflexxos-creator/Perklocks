@@ -1,17 +1,20 @@
 """r3_indexes_apply — surgical Production index repair for Perklocks R3.
 
-Scope (strictly bounded, 2026-10-06 directive):
+Scope (strictly bounded, 2026-10-06 directive — v2 after 504 forensic):
   1. READ-ONLY duplicate-key safety check for the three target
-     collections via GET /api/admin/canonical-cutover/certification.
-     If ANY of the three reports duplicate_logical_identities > 0, we
-     STOP and do NOT call create-indexes.  No unique index will ever
-     be forced over duplicate rows.
-  2. If (and only if) the three target collections all report
-     duplicate_logical_identities == 0, call
-     POST /api/admin/canonical-cutover/create-indexes with the EXACT
-     three target collections.  The server runs the already-tested
-     ``ensure_canonical_indexes`` which uses the pre-pinned
-     ``_INDEX_SPECS``:
+     collections via GET /api/admin/canonical-cutover/dup-check
+     (SCOPED per-collection endpoint; replaces the broad certification
+     scan that previously returned 504 at 85.2 s on hot Production
+     when none of the target unique indexes existed yet).  Three
+     independent single-collection aggregations with a 300 s route
+     timeout each.  If ANY of the three reports
+     duplicate_logical_identities > 0, we STOP and do NOT call
+     create-indexes.  No unique index is ever forced over duplicates.
+  2. If (and only if) the three target collections all report zero
+     duplicates, call POST /api/admin/canonical-cutover/create-indexes
+     with the exact three target collections.  The server runs the
+     already-tested ``ensure_canonical_indexes`` which uses the
+     pre-pinned ``_INDEX_SPECS``:
          prediction_snapshots:  {prediction_id, snapshot_version} unique
          publication_events:    {payload_hash}                     unique
          settlement_events:     {settlement_id}                    unique
@@ -26,9 +29,13 @@ Hard safety invariants
 ──────────────────────
 * Only HTTP verbs used:
     POST /api/auth/login
-    GET  /api/admin/canonical-cutover/certification
+    GET  /api/admin/canonical-cutover/dup-check?collection=X  (×3)
     POST /api/admin/canonical-cutover/create-indexes
     GET  /api/admin/canonical-import/status
+* The dup-check endpoint only accepts collections in
+  RECONCILIATION_COLLECTIONS (server-side allowlist) and is strictly
+  read-only (one $group aggregation per call).
+* Does NOT run the broad all-collections certification scan.
 * Does NOT reset the session.
 * Does NOT create a new session.
 * Does NOT delete data.
@@ -225,50 +232,69 @@ def main() -> int:
     hdr      = {"Authorization": f"Bearer {jwt}"}
     hdr_tok  = {**hdr, "X-Canonical-Import-Token": import_tok}
 
-    # ── Step 1: duplicate-key safety check ────────────────────────
-    print("\n[step1] GET /api/admin/canonical-cutover/certification "
-          "(READ-ONLY duplicate-key scan)")
-    t = time.time()
-    code, cert = _get_json(
-        f"{api_base}/api/admin/canonical-cutover/certification",
-        hdr, timeout_s=300)
-    print(f"[step1] HTTP {code}  elapsed={(time.time()-t):.1f}s")
-    if code != 200 or not isinstance(cert, dict):
-        _write_report(report_path, {
-            "verdict": "CANNOT_VERIFY", "stage": "certification",
-            "status": code, "body": cert,
-        })
-        return 1
+    # ── Step 1: duplicate-key safety check (SCOPED — 3 collections) ──
+    #
+    # Replaces the previous broad GET /canonical-cutover/certification
+    # scan which iterated all 21 reconciliation collections and
+    # exceeded the 85 s middleware timeout on Perklocks R3 Production
+    # 2026-10-06.  The new per-collection endpoint
+    # GET /api/admin/canonical-cutover/dup-check?collection=X runs a
+    # single $group aggregation on the one collection the caller
+    # names, with a 300 s route-specific timeout override.
+    print("\n[step1] GET /api/admin/canonical-cutover/dup-check "
+          "— per-target duplicate-key scan (SCOPED to the three targets)")
 
-    cols = cert.get("collections") or []
-    dup_rows: list[dict] = []
     cert_three: dict[str, dict] = {}
-    for row in cols:
-        c = row.get("collection")
-        if c not in TARGETS:
-            continue
+    dup_rows: list[dict] = []
+    for c in TARGETS:
+        print(f"[step1] GET dup-check?collection={c}")
+        t_c = time.time()
+        code_c, body_c = _get_json(
+            f"{api_base}/api/admin/canonical-cutover/dup-check"
+            f"?collection={c}",
+            hdr, timeout_s=300)
+        rt_s = time.time() - t_c
+        if code_c != 200 or not isinstance(body_c, dict):
+            print(f"[step1] ❌ dup-check for {c} failed HTTP {code_c} "
+                  f"after {rt_s:.1f}s: {str(body_c)[:200]}",
+                  file=sys.stderr)
+            _write_report(report_path, {
+                "verdict":  "CANNOT_VERIFY",
+                "stage":    f"step1_dup_check_{c}",
+                "status":   code_c,
+                "body":     body_c,
+                "elapsed_s": round(rt_s, 1),
+                "cert_three_partial": cert_three,
+            })
+            return 1
+
+        dups   = int(body_c.get("duplicate_logical_identities", 0) or 0)
+        cnt    = int(body_c.get("canonical_count", -1) or -1)
+        keys   = body_c.get("logical_key_fields") or []
+        srv_ms = int(body_c.get("elapsed_ms", -1) or -1)
         cert_three[c] = {
-            "count":                int(row.get("count", -1) or -1),
-            "duplicate_logical_identities": int(row.get("duplicate_logical_identities", -1) or -1),
-            "excluded_or_quarantined_leaked": int(row.get("excluded_or_quarantined_leaked", 0) or 0),
-            "logical_key_fields":   row.get("logical_key_fields") or [],
-            "fingerprint":          row.get("fingerprint"),
+            "count":                        cnt,
+            "duplicate_logical_identities": dups,
+            "logical_key_fields":           keys,
+            "server_elapsed_ms":            srv_ms,
+            "wall_elapsed_s":               round(rt_s, 2),
         }
-        dups = int(row.get("duplicate_logical_identities", 0) or 0)
+        print(f"[step1] ✓ {c:<28s}  count={cnt}  dup={dups}  "
+              f"server_ms={srv_ms}  wall_s={rt_s:.1f}")
         if dups > 0:
             dup_rows.append({
-                "collection": c,
+                "collection":                   c,
                 "duplicate_logical_identities": dups,
-                "logical_key_fields": row.get("logical_key_fields"),
+                "logical_key_fields":           keys,
             })
 
-    print("\n           collection                      count    dup_logical   excluded_leaked")
-    print("           " + "-" * 72)
+    print("\n           collection                      count    dup_logical   server_ms")
+    print("           " + "-" * 68)
     for c in TARGETS:
         r = cert_three.get(c, {})
         print(f"           {c:<28s}  {str(r.get('count', '?')):>7s}       "
               f"{str(r.get('duplicate_logical_identities', '?')):>5s}             "
-              f"{str(r.get('excluded_or_quarantined_leaked', '?')):>5s}")
+              f"{str(r.get('server_elapsed_ms', '?')):>5s}")
 
     if dup_rows:
         print("\n❌ DUPLICATES DETECTED — refusing to force unique indexes.",

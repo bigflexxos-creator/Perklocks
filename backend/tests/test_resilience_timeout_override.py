@@ -20,6 +20,13 @@ def test_canonical_import_override_is_300s():
     assert resilience._timeout_for("POST", "/api/admin/canonical-import") == 300.0
 
 
+def test_dup_check_override_is_300s():
+    """Scoped per-collection duplicate check needs the long budget
+    because the first-run aggregation on a non-indexed Production
+    canonical collection can take tens of seconds."""
+    assert resilience._timeout_for("GET", "/api/admin/canonical-cutover/dup-check") == 300.0
+
+
 def test_default_timeout_unchanged_for_other_api_routes():
     # Representative sample of unrelated API routes.
     for method, path in [
@@ -33,6 +40,11 @@ def test_default_timeout_unchanged_for_other_api_routes():
         ("GET",  "/api/admin/canonical-import/forensic-audit"),
         # The read status endpoint via POST should also not inherit:
         ("POST", "/api/admin/canonical-import/status"),
+        # Sibling admin maintenance endpoints must NOT inherit the
+        # dup-check 300s override:
+        ("GET",  "/api/admin/canonical-cutover/certification"),
+        ("POST", "/api/admin/canonical-cutover/create-indexes"),
+        ("POST", "/api/admin/canonical-cutover/dup-check"),  # wrong verb
     ]:
         assert resilience._timeout_for(method, path) == resilience.REQUEST_TIMEOUT_SECONDS, (
             f"{method} {path} should use default 85 s, "
@@ -60,5 +72,6 @@ def test_install_logs_override_summary(caplog):
     msgs = " ".join(r.getMessage() for r in caplog.records)
     assert "default_timeout=85s" in msgs or "default_timeout=85" in msgs
     assert "POST /api/admin/canonical-import=300s" in msgs
+    assert "GET /api/admin/canonical-cutover/dup-check=300s" in msgs
     # Belt-and-braces: confirm the middleware was wired exactly once.
     app.add_middleware.assert_called_once()

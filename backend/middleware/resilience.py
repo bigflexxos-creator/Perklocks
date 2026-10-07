@@ -68,7 +68,14 @@ REQUEST_TIMEOUT_SECONDS = 85.0
 # miss we fall through to ``REQUEST_TIMEOUT_SECONDS``.
 # ─────────────────────────────────────────────────────────────────────
 _ROUTE_TIMEOUT_OVERRIDES: dict[tuple[str, str], float] = {
-    ("POST", "/api/admin/canonical-import"): 300.0,
+    ("POST", "/api/admin/canonical-import"):              300.0,
+    # Scoped duplicate-key check — large canonical collections require
+    # a full $group aggregation when the target unique index is not yet
+    # present.  85 s is insufficient (observed 504 at ~85.2 s on
+    # Perklocks R3 Production 2026-10-06).  300 s matches the write-side
+    # override and is still well under any ingress / Cloudflare upper
+    # bound for admin-authenticated maintenance endpoints.
+    ("GET",  "/api/admin/canonical-cutover/dup-check"):   300.0,
 }
 
 
