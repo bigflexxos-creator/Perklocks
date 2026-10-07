@@ -486,18 +486,59 @@ def main() -> int:
         pre_s = pre_succeeded.get(coll, 0)
         coll_manifest = batch_manifest.get(coll, {})
         inferred_server_bsize = inferred_bsize.get(coll, 0)
-        has_prior_batches = inferred_server_bsize > 0
+        has_prior_batches = len(coll_manifest) > 0  # ANY existing batch
+                                                    # identity (succeeded,
+                                                    # failed, in_progress,
+                                                    # incomplete_write)
 
-        # ── Authoritative-manifest batch-size decision ───────────────
-        # If the server has ANY prior batch identity for this
-        # collection in the session, we MUST preserve the original
-        # layout.  Use the inferred original bsize.  Only a collection
-        # with ZERO prior batch records qualifies for the "truly new"
-        # NEW_COLLECTION_BATCH_SIZE path.
-        if has_prior_batches:
-            bsize = inferred_server_bsize
+        # ── Authoritative-manifest reconstruction (R3 Resume #12 fix) ──
+        #
+        # Canary #2 proved that a single collection-level ``bsize`` is
+        # fundamentally wrong for returning collections: the server's
+        # manifest for ``settlement_events`` contains BOTH
+        # ``batch_no=5, doc_count=250, status=succeeded`` (original run
+        # size) AND ``batch_no>=N, doc_count=1000, status=failed``
+        # (run #10 altered-replay rejects).  Picking ``max()`` over
+        # that mixed population produced bsize=1000 and mismatched
+        # every historical batch.
+        #
+        # Correct contract: every historical ``batch_no`` has its OWN
+        # authoritative ``doc_count``.  The driver must reconstruct
+        # each batch independently using its stored doc_count, in
+        # ascending batch_no order.
+        #
+        #   historical_counts[bno] = authoritative doc_count
+        #
+        # For "tail" batches beyond the max historical batch_no
+        # (e.g. when the original run never partitioned the full
+        # NDJSON): prefer the SIZE of the succeeded batches (that was
+        # the original run's partition size).  If no succeeded batches
+        # exist for the collection, fall back to the max historical
+        # doc_count (safest lower-bound on the original intent).  If
+        # the collection has ZERO historical batch records at all,
+        # use NEW_COLLECTION_BATCH_SIZE.
+        historical_counts: dict[int, int] = {
+            bno: v["doc_count"] for bno, v in coll_manifest.items()
+            if v.get("doc_count", 0) > 0
+        }
+        max_hist_bno = max(historical_counts.keys(),
+                           default=-1) if historical_counts else -1
+
+        succeeded_sizes = [v["doc_count"] for v in coll_manifest.values()
+                            if v.get("status") == "succeeded"
+                            and v.get("doc_count", 0) > 0]
+        if succeeded_sizes:
+            # Original run's authoritative partition size.
+            tail_bsize = max(succeeded_sizes)
+        elif historical_counts:
+            # No succeeded batches but we have failed/in-progress
+            # historical identities — use the max historical count
+            # as the tail bsize.  Any new tail batch beyond
+            # max_hist_bno is a new identity so this is safe.
+            tail_bsize = max(historical_counts.values())
         else:
-            bsize = new_batch_size
+            # Truly new collection (zero manifest entries).
+            tail_bsize = new_batch_size
 
         # Materialize batches.
         docs_buffer: list[dict] = []
@@ -520,7 +561,7 @@ def main() -> int:
                         "computed_hash":        local_hash,
                         "authoritative_count":  stored.get("doc_count"),
                         "reconstructed_count":  len(buf),
-                        "inferred_bsize":       bsize,
+                        "target_bsize_used":    historical_counts.get(bno, tail_bsize),
                         "authoritative_status": stored.get("status"),
                     })
                     return  # do NOT add to plan
@@ -531,13 +572,27 @@ def main() -> int:
                     return
             plan.append((coll, bno, list(buf), local_hash))
 
+        # ── Per-batch authoritative partitioning ─────────────────────
+        # For every record pulled from NDJSON, the current batch's
+        # TARGET size is:
+        #   - historical_counts[cur_bno]  if cur_bno ≤ max_hist_bno
+        #   - tail_bsize                  otherwise
+        # We NEVER mix a "new 1000-record partition" into an
+        # already-established historical batch namespace.
+        def _target_for(bno: int) -> int:
+            if bno <= max_hist_bno:
+                return historical_counts.get(bno, tail_bsize)
+            return tail_bsize
+
+        cur_target = _target_for(batches_this_coll)
         for d in _ndjson(src):
             if _is_excluded(d): continue
             docs_buffer.append(d)
-            if len(docs_buffer) >= bsize:
+            if len(docs_buffer) >= cur_target:
                 _flush_batch(batches_this_coll, docs_buffer)
                 batches_this_coll += 1
                 docs_buffer = []
+                cur_target = _target_for(batches_this_coll)
         if docs_buffer:
             _flush_batch(batches_this_coll, docs_buffer)
             batches_this_coll += 1
@@ -554,11 +609,17 @@ def main() -> int:
                                   f"DONE (all {batches_this_coll} succeeded)"))
         else:
             remaining = len(remaining_in_plan)
-            note = f"queue bsize={bsize}"
-            if has_prior_batches and bsize == inferred_server_bsize:
-                note += " [preserved layout]"
-            elif not has_prior_batches:
-                note += " [new collection]"
+            if has_prior_batches:
+                # Per-batch authoritative reconstruction.  The whole
+                # historical range uses stored doc_counts; only
+                # batch_no > max_hist_bno uses tail_bsize.
+                note = (f"per-batch authoritative "
+                        f"(hist bnos 0..{max_hist_bno}, "
+                        f"tail bsize={tail_bsize})")
+                if tail_bsize == new_batch_size and len(historical_counts) == 0:
+                    note += " [edge: no doc_counts]"
+            else:
+                note = f"new collection bsize={new_batch_size}"
             plan_summary.append((coll, batches_this_coll, pre_s, remaining, note))
 
     total_in_plan = len(plan)
@@ -583,7 +644,7 @@ def main() -> int:
               f"STOP LOCALLY, zero POSTs sent", file=sys.stderr)
         print(f"\n{'collection':<30}{'batch_no':>10} {'expected_hash':<66} "
               f"{'computed_hash':<66} {'exp_cnt':>8} {'rec_cnt':>8} "
-              f"{'bsize':>7} status", file=sys.stderr)
+              f"{'target':>7} status", file=sys.stderr)
         print("-" * 220, file=sys.stderr)
         for m in layout_mismatches[:50]:
             print(f"{m['collection']:<30}{m['batch_no']:>10} "
@@ -591,7 +652,7 @@ def main() -> int:
                   f"{str(m['computed_hash']):<66} "
                   f"{str(m['authoritative_count']):>8} "
                   f"{str(m['reconstructed_count']):>8} "
-                  f"{str(m['inferred_bsize']):>7} "
+                  f"{str(m['target_bsize_used']):>7} "
                   f"{m['authoritative_status']}", file=sys.stderr)
         # Persist a machine-readable mismatch report alongside the
         # (optional) canary report.
@@ -635,23 +696,45 @@ def main() -> int:
                     local_hash = plan_by_bno[bno][3]
                 else:
                     # Succeeded batch locally skipped — recompute to
-                    # produce the canary proof row.
+                    # produce the canary proof row.  Use PER-BATCH
+                    # authoritative doc_count (R3 Resume #12 fix): we
+                    # walk NDJSON summing EACH prior batch's
+                    # authoritative doc_count in order, so cutpoints
+                    # for batches [0..bno-1] match the server's and
+                    # the slice for bno is exactly the next
+                    # historical_counts[bno] accepted docs.
                     _tmp_buf: list[dict] = []
                     src = _source_for(coll)
                     if src is not None:
-                        bsize = inferred_bsize.get(coll) or 0
-                        if bsize <= 0:
-                            bsize = new_batch_size
-                        # Walk NDJSON to reproduce only the needed batch.
+                        coll_mf = batch_manifest.get(coll, {})
+                        _hist = {b: v["doc_count"] for b, v in coll_mf.items()
+                                 if v.get("doc_count", 0) > 0}
+                        _succ_sizes = [v["doc_count"] for v in coll_mf.values()
+                                       if v.get("status") == "succeeded"
+                                       and v.get("doc_count", 0) > 0]
+                        if _succ_sizes:
+                            _tail_bsize = max(_succ_sizes)
+                        elif _hist:
+                            _tail_bsize = max(_hist.values())
+                        else:
+                            _tail_bsize = new_batch_size
+                        _max_hb = max(_hist.keys(), default=-1)
+
+                        def _tgt(b):
+                            return _hist.get(b, _tail_bsize) if b <= _max_hb else _tail_bsize
+
                         _idx = 0
                         _buf: list[dict] = []
+                        _cur_t = _tgt(_idx)
                         for d in _ndjson(src):
                             if _is_excluded(d): continue
                             _buf.append(d)
-                            if len(_buf) >= bsize:
+                            if len(_buf) >= _cur_t:
                                 if _idx == bno:
                                     _tmp_buf = list(_buf); break
-                                _idx += 1; _buf = []
+                                _idx += 1
+                                _buf = []
+                                _cur_t = _tgt(_idx)
                         else:
                             if _buf and _idx == bno:
                                 _tmp_buf = list(_buf)
