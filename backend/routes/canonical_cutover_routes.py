@@ -264,6 +264,127 @@ async def canonical_import_status(
     }
 
 
+# ─── Lightweight read-only per-batch manifest (R3 Resume #11+) ──────
+#
+# Why this endpoint exists
+# ────────────────────────
+# R3 Resume #10 Phase 5 failed because the accelerated resume driver
+# repartitioned existing batches in the authoritative session using a
+# fresh 250-record slicing plan.  That produced different payload
+# hashes for already-known ``batch_no`` values, which Production
+# correctly rejected with ``ALTERED_REPLAY_REJECTED`` (HTTP 409).
+#
+# The resume driver needs an authoritative, deterministic snapshot of
+# the server-side batch bookkeeping so it can
+#   1. preserve existing batch identities + layout
+#   2. compute the local payload hash BEFORE sending
+#   3. STOP locally with a ``BATCH_LAYOUT_MISMATCH`` instead of
+#      spraying hundreds of known-to-fail altered-replay 409s.
+#
+# ``/canonical-import/status`` is intentionally session-wide and
+# aggregated.  ``/canonical-import/forensic-audit`` is per-collection
+# but also scans the canonical collection and audit log (expensive).
+# This new endpoint is the smallest possible read-only slice:
+# ``_canonical_import_batches`` filtered by (session_id, collection),
+# returning exactly the fields needed to deterministically reconstruct
+# each prior batch's payload.
+#
+# Contract (READ-ONLY):
+#   * NO writes.  NO mutation.  NO flag flips.  NO replay-contract
+#     changes.  NO session resets.  NO bookkeeping deletes.
+#   * Admin JWT required (same bar as other admin diagnostics).
+#   * ``X-Canonical-Import-Token`` NOT required — this endpoint cannot
+#     cause state change on canonical data.
+@router.get("/canonical-import/batch-manifest")
+async def canonical_import_batch_manifest(
+    admin: Annotated[UserPublic, Depends(_require_admin)],
+    session_id: str,
+    collection: str,
+):
+    """READ-ONLY authoritative per-batch metadata for one
+    (session_id, collection).  Minimum fields required so an external
+    resume driver can deterministically reconstruct the exact prior
+    batch layout and verify its local payload hash matches the
+    server's stored ``content_hash`` BEFORE issuing any POST.
+
+    Response shape::
+
+        {
+          "session_id": "...",
+          "collection": "...",
+          "logical_key_fields": [...],
+          "batches": [
+            {
+              "batch_no":        0,
+              "content_hash":    "sha256-hex",
+              "status":          "succeeded"|"failed"|"in_progress"|"incomplete_write"|"unknown",
+              "doc_count":       250,
+              "accepted_count":  250,
+              "rejected_count":  0,
+              "upserted_count":  0,
+              "matched_count":   250,
+              "attempt_count":   3,
+              "first_seen_at":   "...",
+              "last_attempt_at": "..."
+            },
+            ...
+          ],
+          "total_batches":        N,
+          "max_batch_no":         N-1,
+          "max_doc_count":        250,
+          "distinct_doc_counts":  [250, 73]
+        }
+
+    The response is deterministically sorted by ``batch_no``.  Nothing
+    outside ``_canonical_import_batches`` is read, so the endpoint
+    stays well under the 85 s middleware envelope for any session.
+    """
+    if not session_id or len(session_id) < 8 or len(session_id) > 128:
+        raise HTTPException(status_code=400,
+            detail="session_id must be 8..128 chars")
+    if collection not in RECONCILIATION_COLLECTIONS:
+        raise HTTPException(status_code=400,
+            detail=f"UNKNOWN_COLLECTION: {collection!r}")
+
+    canon_db = get_canonical_database()
+    batches: list[dict] = []
+    cursor = canon_db[BATCH_COLLECTION].find(
+        {"session_id": session_id, "collection": collection}
+    ).sort("batch_no", 1)
+    async for b in cursor:
+        status_ = b.get("status") or (
+            "succeeded" if "recorded_at" in b and "status" not in b else "unknown"
+        )
+        batches.append({
+            "batch_no":        int(b.get("batch_no", -1)),
+            "content_hash":    b.get("content_hash"),
+            "status":          status_,
+            "doc_count":       int(b.get("doc_count") or 0),
+            "accepted_count":  int(b.get("accepted_count") or b.get("accepted") or 0),
+            "rejected_count":  int(b.get("rejected_count") or b.get("rejected") or 0),
+            "upserted_count":  int(b.get("upserted_count") or 0),
+            "matched_count":   int(b.get("matched_count")  or 0),
+            "attempt_count":   int(b.get("attempt_count")  or 0),
+            "first_seen_at":   str(b.get("first_seen_at") or ""),
+            "last_attempt_at": str(b.get("last_attempt_at") or b.get("recorded_at") or ""),
+        })
+
+    doc_counts = sorted({b["doc_count"] for b in batches if b["doc_count"] > 0})
+    max_doc_count = max(doc_counts) if doc_counts else 0
+    max_batch_no = max((b["batch_no"] for b in batches), default=-1)
+
+    return {
+        "session_id":          session_id,
+        "collection":          collection,
+        "logical_key_fields":  list(logical_key_fields(collection)),
+        "batches":             batches,
+        "total_batches":       len(batches),
+        "max_batch_no":        max_batch_no,
+        "max_doc_count":       max_doc_count,
+        "distinct_doc_counts": doc_counts,
+    }
+
+
 # ─── Forensic read-only audit (Phase-5-R2 settlement_events investigation) ──
 @router.get("/canonical-import/forensic-audit")
 async def canonical_import_forensic_audit(

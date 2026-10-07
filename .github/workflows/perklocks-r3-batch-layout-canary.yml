@@ -1,0 +1,125 @@
+name: Perklocks R3 Batch-Layout Canary (ZERO-WRITE)
+
+# ──────────────────────────────────────────────────────────────────────
+# R3 Resume #11 surgical fix — zero-write hash-match proof.
+#
+# Why this workflow exists
+# ────────────────────────
+# R3 Resume #10 Phase 5 failed because the accelerated resume driver
+# repartitioned existing session batches, producing different payload
+# hashes for already-known batch_no values.  Production correctly
+# rejected those altered replays with HTTP 409 ALTERED_REPLAY_REJECTED.
+#
+# Before re-dispatching a full Phase-5 resume, this workflow runs a
+# ZERO-WRITE canary against Production that:
+#
+#   1. Fetches the authoritative per-batch manifest for every
+#      collection (new read-only /canonical-import/batch-manifest
+#      endpoint).
+#   2. Infers each collection's ORIGINAL batch partition size from
+#      the server's stored doc_count values.
+#   3. Materialises the exact prior batch layout locally.
+#   4. Computes a byte-for-byte identical payload hash
+#      (replicates services/canonical_cutover.batch_content_hash).
+#   5. Compares every batch's local hash to the server's stored
+#      content_hash.
+#   6. Issues ZERO POSTs under any circumstance.
+#
+# A single hash mismatch stops the driver locally with
+# BATCH_LAYOUT_MISMATCH (exit 44).  All matches → exit 0 with a
+# machine-readable canary report.
+#
+# This workflow must be dispatched BEFORE perklocks-r3-resume so the
+# operator can prove the layout reconstruction is correct.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    name: R3 Batch-Layout Canary (ZERO-WRITE)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      CHKP_DIR:        /tmp/perklocks-checkpoints
+      RECONCILE_TMP:   /tmp/perklocks-reconcile
+      LOGS_DIR:        /tmp/perklocks-logs
+      # Zero-write proof flag — the accelerated driver issues ZERO
+      # POSTs when CANARY_ONLY=1, regardless of any other knob.
+      CANARY_ONLY:     "1"
+      # Pinned SHA-256s.
+      PHASE5_SHA256: 4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
+      PHASE6_SHA256: 327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare runner directories
+        run: |
+          mkdir -p "$CHKP_DIR" "$RECONCILE_TMP" "$LOGS_DIR"
+
+      - name: Download + verify phase5 checkpoint (shared composite action)
+        uses: ./.github/actions/perklocks-checkpoint-download
+        with:
+          phase:             phase5
+          preview_base_url:  ${{ secrets.PREVIEW_BASE_URL }}
+          download_token:    ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+          checkpoint_dir:    ${{ env.CHKP_DIR }}
+          fallback_filename: phase5_20261003_190628Z.tar.gz
+          fallback_bytes:    "337143523"
+          fallback_sha:      4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
+          max_attempts:      "10"
+          curl_max_time_seconds: "1800"
+
+      - name: Download + verify phase6 checkpoint (shared composite action)
+        uses: ./.github/actions/perklocks-checkpoint-download
+        with:
+          phase:             phase6
+          preview_base_url:  ${{ secrets.PREVIEW_BASE_URL }}
+          download_token:    ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+          checkpoint_dir:    ${{ env.CHKP_DIR }}
+          fallback_filename: phase6_20261003_192150Z.tar.gz
+          fallback_bytes:    "1606247"
+          fallback_sha:      327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22
+          max_attempts:      "10"
+          curl_max_time_seconds: "600"
+
+      - name: Run R3 batch-layout canary (ZERO-WRITE)
+        env:
+          # Secrets passed via env block so GitHub auto-masks them.
+          PROD_API_BASE:            ${{ secrets.PROD_API_BASE }}
+          PROD_ADMIN_EMAIL:         ${{ secrets.PROD_ADMIN_EMAIL }}
+          PROD_ADMIN_PASSWORD:      ${{ secrets.PROD_ADMIN_PASSWORD }}
+          CANONICAL_IMPORT_TOKEN:   ${{ secrets.CANONICAL_IMPORT_TOKEN }}
+          CANONICAL_IMPORT_SESSION: ${{ secrets.CANONICAL_IMPORT_SESSION }}
+          CANARY_REPORT_PATH:       /tmp/perklocks-logs/r3_batch_layout_canary_report.json
+        run: |
+          python3 --version
+          echo "[canary] CANARY_ONLY=1 (ZERO-WRITE guaranteed)"
+          echo "[canary] launching r3_batch_layout_canary.py"
+          python3 -u reconcile_workspace/scripts/r3_batch_layout_canary.py
+
+      - name: Upload canary report + logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perklocks-r3-batch-layout-canary-${{ github.run_id }}
+          path: |
+            /tmp/perklocks-logs/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status
+        if: always()
+        run: |
+          echo "Canary job status: ${{ job.status }}"
+          echo "Zero POSTs to Production were issued (CANARY_ONLY=1)."
+          echo "If job.status == success → every planned batch's local"
+          echo "hash matched the server's stored content_hash."

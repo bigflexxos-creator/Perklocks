@@ -128,6 +128,73 @@ EXPECTED_SHA = {
 }
 
 
+# ─── Server-identical hashing (replicates services/canonical_cutover.py) ──
+# These helpers MUST remain byte-for-byte compatible with the server's
+# ``batch_content_hash`` + ``extract_logical_key`` + ``is_excluded``.
+# Any divergence here guarantees ALTERED_REPLAY_REJECTED on Prod.
+_QUARANTINE_STATUSES = {"UNRESOLVED_IMMUTABLE_CONFLICT"}
+_EXCLUSION_FIELD      = "excluded_from_canonical_runtime"
+
+
+def _logical_key_fields(coll: str) -> tuple[str, ...]:
+    return LOGICAL_KEYS.get(coll, ("_id",))
+
+
+def _extract_logical_key(coll: str, doc: dict) -> tuple:
+    return tuple(doc.get(f) for f in _logical_key_fields(coll))
+
+
+def _server_is_excluded(doc: dict) -> bool:
+    """Mirror of services.canonical_cutover.is_excluded (True side only)."""
+    if doc.get(_EXCLUSION_FIELD) is True:
+        return True
+    if doc.get("status") in _QUARANTINE_STATUSES:
+        return True
+    return False
+
+
+def _server_batch_content_hash(coll: str, accepted_batch: list[dict]) -> str:
+    """Byte-for-byte replica of
+    ``services.canonical_cutover.batch_content_hash``.
+
+    * Sorts rows by ``extract_logical_key`` (stringified tuple).
+    * Encodes each row as ``json.dumps([list(lk), doc],
+      default=str, sort_keys=True)``.
+    * SHA-256 hex digest of the concatenation.
+    """
+    rows = []
+    for doc in accepted_batch:
+        lk = _extract_logical_key(coll, doc)
+        rows.append((lk, doc))
+    rows.sort(key=lambda r: tuple(str(x) for x in r[0]))
+    h = hashlib.sha256()
+    for lk, doc in rows:
+        h.update(json.dumps([list(lk), doc], default=str, sort_keys=True).encode())
+    return h.hexdigest()
+
+
+# ─── Canary (zero-write) mode knobs ──────────────────────────────────
+# CANARY_ONLY=1 → fetch manifest, reconstruct layout, compute local
+# payload hashes, compare to server's stored content_hash, print a
+# ``collection | batch_id | expected_hash | computed_hash | MATCH``
+# table.  Issues ZERO POSTs under any circumstance.
+#
+# Canary batch_id filters: the standard R3 canary set is
+#   player_identities      → batch 0, 1
+#   prediction_snapshots   → batch 0, 1
+#   pregame_snapshots      → batch 0, 1
+#   publication_events     → batch 0, 1
+#   picks                  → first unfinished batch_no
+_CANARY_FIXED_BATCH_IDS = {
+    "player_identities":    [0, 1],
+    "prediction_snapshots": [0, 1],
+    "pregame_snapshots":    [0, 1],
+    "publication_events":   [0, 1],
+}
+_CANARY_FIRST_UNFINISHED = {"picks"}
+_CANARY_COLLECTIONS = set(_CANARY_FIXED_BATCH_IDS.keys()) | _CANARY_FIRST_UNFINISHED
+
+
 # ────────────────────────── utility helpers ──────────────────────────
 def _require(k: str) -> str:
     v = os.environ.get(k)
@@ -278,6 +345,15 @@ def main() -> int:
     wall_clock_budget = _env_int("WALL_CLOCK_BUDGET_MIN", 320, hard_max=350)
     stall_seconds     = _env_int("STALL_SECONDS", 600, hard_max=3600)
     filter_set = set((os.environ.get("COLLECTIONS_FILTER") or "").split(",")) - {""}
+    # ── R3 Resume #11 surgical fix: zero-write canary mode ───────────
+    # When ``CANARY_ONLY=1`` the driver DOES NOT issue any POST under
+    # any circumstance — it only reconstructs the authoritative batch
+    # layout, computes the local payload hash, and compares to the
+    # server's stored ``content_hash``.  Report format is machine- +
+    # human-readable so the operator can paste it directly into the
+    # Prod handoff.
+    canary_only = (os.environ.get("CANARY_ONLY") or "").strip() in {"1", "true", "yes"}
+    canary_report_path = os.environ.get("CANARY_REPORT_PATH") or ""
 
     headers_post = {
         "Authorization":            f"Bearer {admin_jwt}",
@@ -314,6 +390,59 @@ def main() -> int:
     total_pre_succ = sum(pre_succeeded.values())
     print(f"[3/6] authoritative pre-run succeeded batches: {total_pre_succ}")
 
+    # ── R3 Resume #11 surgical fix: fetch authoritative per-batch
+    # manifest for every collection in the session.  This is the
+    # ground truth for existing batch IDs and their stored
+    # content_hash.  Without this, the driver cannot deterministically
+    # reproduce prior batch payloads and will produce
+    # ALTERED_REPLAY_REJECTED 409s.
+    print("[3b/6] fetching authoritative per-collection batch manifests …")
+    #   batch_manifest[coll] = {
+    #     batch_no: {
+    #       "content_hash": "...",
+    #       "status": "succeeded"|"failed"|"in_progress"|"incomplete_write"|"unknown",
+    #       "doc_count": int,
+    #     }
+    #   }
+    batch_manifest: dict[str, dict[int, dict]] = {}
+    #   inferred_bsize[coll] = int   (original batch size inferred from server)
+    inferred_bsize: dict[str, int] = {}
+    for coll in RECONCILED_21:
+        if filter_set and coll not in filter_set: continue
+        code, bm = _get(
+            f"{api_base}/api/admin/canonical-import/batch-manifest"
+            f"?session_id={session}&collection={coll}",
+            headers_get, timeout_s=60)
+        if code != 200 or not isinstance(bm, dict):
+            print(f"ERROR: batch-manifest endpoint for {coll} failed "
+                  f"{code}: {str(bm)[:200]}", file=sys.stderr)
+            return 10
+        per_batch = {}
+        for b in bm.get("batches", []):
+            bno = b.get("batch_no")
+            if bno is None or bno < 0: continue
+            per_batch[int(bno)] = {
+                "content_hash": b.get("content_hash"),
+                "status":       b.get("status"),
+                "doc_count":    int(b.get("doc_count") or 0),
+            }
+        batch_manifest[coll] = per_batch
+        # Infer the ORIGINAL partition size.  The max doc_count seen in
+        # any existing batch is a safe lower bound on the original
+        # bsize (the last partial batch may be smaller but never
+        # larger than the intended bsize).  If no batches exist →
+        # genuinely new collection → caller decides new_batch_size.
+        max_dc = max((v["doc_count"] for v in per_batch.values()), default=0)
+        inferred_bsize[coll] = max_dc  # 0 means "no prior batches"
+        if per_batch:
+            succ = sum(1 for v in per_batch.values() if v["status"] == "succeeded")
+            fail = sum(1 for v in per_batch.values()
+                        if v["status"] in {"failed", "incomplete_write"})
+            inprog = sum(1 for v in per_batch.values() if v["status"] == "in_progress")
+            print(f"[3b/6]   {coll:<30} manifest batches={len(per_batch):<5} "
+                  f"succ={succ:<5} failed={fail:<5} in_prog={inprog:<3} "
+                  f"max_doc_count={max_dc}")
+
     # Reconstruct final canonical.
     print("[4/6] extracting checkpoints …")
     workdir = pathlib.Path(tempfile.mkdtemp(
@@ -330,7 +459,7 @@ def main() -> int:
     }
 
     # Plan per-collection work.
-    print("[5/6] planning work …")
+    print("[5/6] planning work (authoritative-manifest-driven) …")
 
     def _source_for(coll: str) -> pathlib.Path | None:
         p5f = canon5 / f"{coll}.ndjson"
@@ -340,9 +469,14 @@ def main() -> int:
         return None
 
     # First pass: count importable rows per collection to compute expected batches.
-    plan: list[tuple[str, int, list[dict]]] = []   # (coll, batch_no, docs)
+    plan: list[tuple[str, int, list[dict], str]] = []   # (coll, batch_no, docs, local_hash)
     plan_summary = []
-    skip_counts = {"done_collections": 0, "done_batches": 0}
+    skip_counts = {"done_collections": 0, "done_batches": 0,
+                    "succeeded_batch_local_skips": 0}
+    # Preflight hash-match guard results.  If ANY collection has a
+    # BATCH_LAYOUT_MISMATCH after planning, we STOP without any POST.
+    layout_mismatches: list[dict] = []
+
     for coll in RECONCILED_21:
         if filter_set and coll not in filter_set: continue
         src = _source_for(coll)
@@ -350,47 +484,257 @@ def main() -> int:
             plan_summary.append((coll, 0, 0, 0, "no-source")); continue
 
         pre_s = pre_succeeded.get(coll, 0)
-        # Batch size decision:
-        #   - partial-succeeded collection → preserve existing batch size
-        #   - zero-succeeded → use larger NEW_COLLECTION_BATCH_SIZE
-        bsize = max_batch_default if pre_s > 0 else new_batch_size
+        coll_manifest = batch_manifest.get(coll, {})
+        inferred_server_bsize = inferred_bsize.get(coll, 0)
+        has_prior_batches = inferred_server_bsize > 0
+
+        # ── Authoritative-manifest batch-size decision ───────────────
+        # If the server has ANY prior batch identity for this
+        # collection in the session, we MUST preserve the original
+        # layout.  Use the inferred original bsize.  Only a collection
+        # with ZERO prior batch records qualifies for the "truly new"
+        # NEW_COLLECTION_BATCH_SIZE path.
+        if has_prior_batches:
+            bsize = inferred_server_bsize
+        else:
+            bsize = new_batch_size
 
         # Materialize batches.
         docs_buffer: list[dict] = []
         batches_this_coll = 0
+        this_coll_mismatches: list[dict] = []
+
+        def _flush_batch(bno: int, buf: list[dict]) -> None:
+            # Compute server-identical hash on the accepted buffer.
+            local_hash = _server_batch_content_hash(coll, buf)
+            # Preflight hash-match guard: if this batch_no has an
+            # authoritative stored hash, require exact match.
+            stored = coll_manifest.get(bno)
+            if stored is not None:
+                stored_hash = stored.get("content_hash")
+                if stored_hash and local_hash != stored_hash:
+                    this_coll_mismatches.append({
+                        "collection":           coll,
+                        "batch_no":             bno,
+                        "expected_hash":        stored_hash,
+                        "computed_hash":        local_hash,
+                        "authoritative_count":  stored.get("doc_count"),
+                        "reconstructed_count":  len(buf),
+                        "inferred_bsize":       bsize,
+                        "authoritative_status": stored.get("status"),
+                    })
+                    return  # do NOT add to plan
+                # Fast-skip succeeded batches locally — no POST,
+                # relying on the authoritative stored hash match.
+                if stored.get("status") == "succeeded":
+                    skip_counts["succeeded_batch_local_skips"] += 1
+                    return
+            plan.append((coll, bno, list(buf), local_hash))
+
         for d in _ndjson(src):
             if _is_excluded(d): continue
             docs_buffer.append(d)
             if len(docs_buffer) >= bsize:
-                plan.append((coll, batches_this_coll, docs_buffer))
+                _flush_batch(batches_this_coll, docs_buffer)
                 batches_this_coll += 1
                 docs_buffer = []
         if docs_buffer:
-            plan.append((coll, batches_this_coll, docs_buffer))
+            _flush_batch(batches_this_coll, docs_buffer)
             batches_this_coll += 1
+
+        if this_coll_mismatches:
+            layout_mismatches.extend(this_coll_mismatches)
 
         # DONE fast-skip: if every batch of this collection is already
         # succeeded, remove them from the plan entirely.
-        if pre_s >= batches_this_coll and batches_this_coll > 0:
-            removed = [t for t in plan if t[0] == coll]
-            plan = [t for t in plan if t[0] != coll]
+        remaining_in_plan = [t for t in plan if t[0] == coll]
+        if pre_s >= batches_this_coll and batches_this_coll > 0 and not remaining_in_plan:
             skip_counts["done_collections"] += 1
-            skip_counts["done_batches"] += len(removed)
-            plan_summary.append((coll, batches_this_coll, pre_s, 0, f"DONE (skipped {len(removed)})"))
+            plan_summary.append((coll, batches_this_coll, pre_s, 0,
+                                  f"DONE (all {batches_this_coll} succeeded)"))
         else:
-            remaining = batches_this_coll - pre_s
-            plan_summary.append((coll, batches_this_coll, pre_s, max(remaining, 0),
-                                  f"queue bsize={bsize}"))
+            remaining = len(remaining_in_plan)
+            note = f"queue bsize={bsize}"
+            if has_prior_batches and bsize == inferred_server_bsize:
+                note += " [preserved layout]"
+            elif not has_prior_batches:
+                note += " [new collection]"
+            plan_summary.append((coll, batches_this_coll, pre_s, remaining, note))
 
     total_in_plan = len(plan)
     print(f"[5/6] plan: {total_in_plan} batch POSTs enqueued "
-          f"(skipped {skip_counts['done_batches']} already-done)")
+          f"(done-collections={skip_counts['done_collections']} "
+          f"succeeded-batch-local-skips={skip_counts['succeeded_batch_local_skips']} "
+          f"layout-mismatches={len(layout_mismatches)})")
     print()
     print(f"{'collection':<30}{'total':>7}{'succ':>7}{'queue':>7}  note")
-    print("-" * 90)
+    print("-" * 100)
     for coll, total, succ, q, note in plan_summary:
         print(f"{coll:<30}{total:>7}{succ:>7}{q:>7}  {note}")
     print()
+
+    # ── Preflight guard: any BATCH_LAYOUT_MISMATCH → STOP LOCALLY ────
+    # We refuse to send POSTs that are KNOWN to produce
+    # ALTERED_REPLAY_REJECTED on Prod.  The resume driver's job is to
+    # faithfully replay the original layout, not to spray known-bad
+    # altered replays and hope.
+    if layout_mismatches:
+        print(f"\n❌ BATCH_LAYOUT_MISMATCH on {len(layout_mismatches)} batch(es) — "
+              f"STOP LOCALLY, zero POSTs sent", file=sys.stderr)
+        print(f"\n{'collection':<30}{'batch_no':>10} {'expected_hash':<66} "
+              f"{'computed_hash':<66} {'exp_cnt':>8} {'rec_cnt':>8} "
+              f"{'bsize':>7} status", file=sys.stderr)
+        print("-" * 220, file=sys.stderr)
+        for m in layout_mismatches[:50]:
+            print(f"{m['collection']:<30}{m['batch_no']:>10} "
+                  f"{str(m['expected_hash']):<66} "
+                  f"{str(m['computed_hash']):<66} "
+                  f"{str(m['authoritative_count']):>8} "
+                  f"{str(m['reconstructed_count']):>8} "
+                  f"{str(m['inferred_bsize']):>7} "
+                  f"{m['authoritative_status']}", file=sys.stderr)
+        # Persist a machine-readable mismatch report alongside the
+        # (optional) canary report.
+        if canary_report_path:
+            try:
+                mm_path = canary_report_path + ".mismatches.json"
+                with open(mm_path, "w") as f:
+                    json.dump({"session_id": session,
+                                "layout_mismatches": layout_mismatches}, f, indent=2)
+                print(f"[mismatch] report written to {mm_path}", file=sys.stderr)
+            except Exception as _me:
+                print(f"[mismatch] write failed: {_me}", file=sys.stderr)
+        shutil.rmtree(workdir, ignore_errors=True)
+        return 44
+
+    # ── CANARY_ONLY mode: zero-write hash-match proof ────────────────
+    # When CANARY_ONLY=1, we have ALREADY proven every planned batch's
+    # local hash matches the server's stored hash (by virtue of
+    # getting past the preflight guard above).  Now produce the
+    # operator-facing MATCH table limited to the standard canary set.
+    if canary_only:
+        print("\n==================== CANARY_ONLY — ZERO-WRITE HASH PROOF ====================")
+        # Build canary candidates per collection.
+        canary_rows: list[dict] = []
+        for coll, candidates in _CANARY_FIXED_BATCH_IDS.items():
+            if filter_set and coll not in filter_set: continue
+            coll_manifest = batch_manifest.get(coll, {})
+            # Local plan rows for this coll keyed by bno.
+            plan_by_bno = {t[1]: t for t in plan if t[0] == coll}
+            for bno in candidates:
+                stored = coll_manifest.get(bno)
+                if stored is None:
+                    canary_rows.append({
+                        "collection": coll, "batch_no": bno,
+                        "expected_hash": None, "computed_hash": None,
+                        "match": None,  # not-yet-created server-side
+                        "note": "no server record for batch_no (not yet created)",
+                    })
+                    continue
+                if bno in plan_by_bno:
+                    local_hash = plan_by_bno[bno][3]
+                else:
+                    # Succeeded batch locally skipped — recompute to
+                    # produce the canary proof row.
+                    _tmp_buf: list[dict] = []
+                    src = _source_for(coll)
+                    if src is not None:
+                        bsize = inferred_bsize.get(coll) or 0
+                        if bsize <= 0:
+                            bsize = new_batch_size
+                        # Walk NDJSON to reproduce only the needed batch.
+                        _idx = 0
+                        _buf: list[dict] = []
+                        for d in _ndjson(src):
+                            if _is_excluded(d): continue
+                            _buf.append(d)
+                            if len(_buf) >= bsize:
+                                if _idx == bno:
+                                    _tmp_buf = list(_buf); break
+                                _idx += 1; _buf = []
+                        else:
+                            if _buf and _idx == bno:
+                                _tmp_buf = list(_buf)
+                    local_hash = _server_batch_content_hash(coll, _tmp_buf)
+                stored_hash = stored.get("content_hash")
+                match = (stored_hash is not None and local_hash == stored_hash)
+                canary_rows.append({
+                    "collection":     coll,
+                    "batch_no":       bno,
+                    "expected_hash":  stored_hash,
+                    "computed_hash":  local_hash,
+                    "match":          match,
+                    "status":         stored.get("status"),
+                })
+        # picks: first unfinished boundary.
+        for coll in _CANARY_FIRST_UNFINISHED:
+            if filter_set and coll not in filter_set: continue
+            coll_manifest = batch_manifest.get(coll, {})
+            # First batch_no with status != succeeded (ascending).
+            first_unfin = None
+            for bno in sorted(coll_manifest.keys()):
+                if coll_manifest[bno].get("status") != "succeeded":
+                    first_unfin = bno; break
+            if first_unfin is None:
+                canary_rows.append({"collection": coll, "batch_no": None,
+                                     "expected_hash": None, "computed_hash": None,
+                                     "match": True,
+                                     "note": "no unfinished batch (fully succeeded)"})
+                continue
+            stored = coll_manifest.get(first_unfin, {})
+            plan_by_bno = {t[1]: t for t in plan if t[0] == coll}
+            local_hash = None
+            if first_unfin in plan_by_bno:
+                local_hash = plan_by_bno[first_unfin][3]
+            canary_rows.append({
+                "collection":     coll,
+                "batch_no":       first_unfin,
+                "expected_hash":  stored.get("content_hash"),
+                "computed_hash":  local_hash,
+                "match":          (local_hash is not None and local_hash == stored.get("content_hash")),
+                "status":         stored.get("status"),
+                "note":           "first unfinished boundary",
+            })
+
+        # Pretty-print the operator table.
+        print(f"\n{'collection':<30}{'batch_id':>10} {'expected_hash':<66} "
+                f"{'computed_hash':<66} MATCH")
+        print("-" * 180)
+        all_match = True
+        for r in canary_rows:
+            m = r.get("match")
+            tag = "MATCH" if m is True else ("MISMATCH" if m is False else "N/A")
+            if m is False: all_match = False
+            print(f"{r['collection']:<30}"
+                  f"{str(r.get('batch_no') if r.get('batch_no') is not None else '-'):>10} "
+                  f"{str(r.get('expected_hash') or '-'):<66} "
+                  f"{str(r.get('computed_hash') or '-'):<66} {tag}"
+                  + (f"  ({r['note']})" if r.get("note") else ""))
+
+        canary_report = {
+            "schema":             "r3_batch_layout_canary_v1",
+            "generated_at_unix":  int(time.time()),
+            "session_id":         session,
+            "api_target_redacted": _redact(api_base),
+            "canary_rows":        canary_rows,
+            "all_match":          all_match,
+            "total_batches_planned": total_in_plan,
+            "layout_mismatches":  layout_mismatches,  # [] after preflight pass
+        }
+        if canary_report_path:
+            try:
+                with open(canary_report_path, "w") as f:
+                    json.dump(canary_report, f, indent=2)
+                print(f"\n[canary] report written to {canary_report_path}")
+            except Exception as _ce:
+                print(f"[canary] report write failed: {_ce}", file=sys.stderr)
+
+        shutil.rmtree(workdir, ignore_errors=True)
+        if not all_match:
+            print("\n❌ CANARY FAIL — at least one hash mismatch", file=sys.stderr)
+            return 45
+        print("\n✅ CANARY PASS — zero writes, all planned batches hash-verified")
+        return 0
 
     if not plan:
         print("[plan] nothing to do — all collections DONE.  Driver exits 0.")
@@ -437,7 +781,7 @@ def main() -> int:
         "http_http_errors": 0,
     }
     batch_latencies_ms: list[float] = []
-    failed_tasks: list[tuple[str, int, list[dict]]] = []
+    failed_tasks: list[tuple[str, int, list[dict], str]] = []
     last_success_ts = time.time()
     stop_requested = threading.Event()
     wall_deadline = t0 + wall_clock_budget * 60
@@ -519,8 +863,8 @@ def main() -> int:
         # Prime up to concurrency*2 (small buffer).
         for _ in range(concurrency * 2):
             try:
-                c, b, d = next(plan_iter)
-                pending_futs[pool.submit(_submit_one, c, b, d)] = (c, b, d)
+                c, b, d, _lh = next(plan_iter)
+                pending_futs[pool.submit(_submit_one, c, b, d)] = (c, b, d, _lh)
             except StopIteration:
                 break
 
@@ -539,8 +883,8 @@ def main() -> int:
             # Submit next unless stopped.
             if not stop_requested.is_set():
                 try:
-                    c, b, d = next(plan_iter)
-                    pending_futs[pool.submit(_submit_one, c, b, d)] = (c, b, d)
+                    c, b, d, _lh = next(plan_iter)
+                    pending_futs[pool.submit(_submit_one, c, b, d)] = (c, b, d, _lh)
                 except StopIteration:
                     pass
         # If we exited due to stop_requested, pool.__exit__ waits for
@@ -566,7 +910,8 @@ def main() -> int:
               f"bounded {request_retries}-attempt policy")
         still_failed: list[dict] = []
         with ThreadPoolExecutor(max_workers=max(2, concurrency // 2), thread_name_prefix="retryw") as pool:
-            futures = {pool.submit(_submit_one, c, b, d): (c, b, d) for c, b, d in failed_tasks}
+            futures = {pool.submit(_submit_one, c, b, d): (c, b, d, _lh)
+                        for c, b, d, _lh in failed_tasks}
             for fut in as_completed(futures):
                 out = fut.result()
                 if not _handle(out):
