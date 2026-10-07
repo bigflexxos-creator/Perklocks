@@ -1,0 +1,160 @@
+name: Perklocks R3 Indexes
+
+# ONE-SHOT index repair for Perklocks R3 session
+# ``perklocks-cutover-20261003-r3``.  Applies the three missing
+# Production unique indexes identified by Emergent Support:
+#
+#   prediction_snapshots   {prediction_id, snapshot_version}  unique
+#   publication_events     {payload_hash}                     unique
+#   settlement_events      {settlement_id}                    unique
+#
+# Hard safety invariants (enforced in reconcile_workspace/scripts/r3_indexes_apply.py):
+#   * READ-ONLY duplicate-key safety check runs FIRST.  Zero duplicates
+#     on all three target collections is required before any index
+#     creation.  Duplicates → STOP with exit 2 and NO index creation.
+#   * Uses the existing ``ensure_canonical_indexes`` implementation
+#     via POST /api/admin/canonical-cutover/create-indexes (same
+#     endpoint Phase-7 of Resume uses).
+#   * Does NOT reset the session, create a new session, delete data,
+#     replay batches, modify scoring/app logic, or change batch size
+#     / timeouts / content-hash protection.
+#   * No other work beyond the three indexes + optional measurement.
+#
+# Running this workflow WHILE Resume #7 is in progress is safe:
+#   * Index creation on a hot collection may briefly throttle writes
+#     to that collection while the index builds.  Any batch write
+#     that momentarily blocks is handled by the push driver's
+#     existing retry logic.
+#   * The write path (POST /api/admin/canonical-import) is not
+#     touched; only the schema layer is updated.
+#
+# Reuses the EXISTING GitHub Actions secrets.  No new secrets.  No
+# secret values ever written to logs (step env + ::add-mask::).
+
+on:
+  workflow_dispatch:
+    inputs:
+      measure_minutes:
+        description: 'Post-create measurement window in minutes (0 disables; default 10, hard cap 20)'
+        required: false
+        default: '10'
+      session_id:
+        description: 'R3 session (default = active cutover session)'
+        required: false
+        default: 'perklocks-cutover-20261003-r3'
+
+permissions:
+  contents: read
+
+jobs:
+  r3-indexes:
+    name: R3 Indexes (dup-safety + create + verify + 10-min delta)
+    runs-on: ubuntu-latest
+    # 10-min window + ~5 min wall-clock for auth/certification/
+    # create-indexes/verification/snapshot overhead + 5-min slack.
+    timeout-minutes: 25
+
+    env:
+      LOGS_DIR: /tmp/perklocks-logs
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare runner directory
+        run: |
+          mkdir -p "$LOGS_DIR"
+
+      - name: Validate inputs
+        env:
+          MEASURE_MINUTES: ${{ inputs.measure_minutes }}
+          SESSION_ID:      ${{ inputs.session_id }}
+        run: |
+          set -eu
+          if [ -z "${SESSION_ID}" ]; then
+            echo "session_id must not be empty" >&2; exit 1
+          fi
+          if [ "${MEASURE_MINUTES}" -lt 0 ] || [ "${MEASURE_MINUTES}" -gt 20 ]; then
+            echo "measure_minutes must be 0..20 (got ${MEASURE_MINUTES})" >&2
+            exit 1
+          fi
+          echo "inputs OK: session=${SESSION_ID} measure_minutes=${MEASURE_MINUTES}"
+
+      - name: Apply R3 indexes (dup-safe)
+        id: apply
+        env:
+          # Secrets passed via step env so GH masks any accidental echo.
+          # The create-indexes endpoint requires both admin JWT (minted
+          # from email+password) AND the X-Canonical-Import-Token.
+          PROD_API_BASE:          ${{ secrets.PROD_API_BASE }}
+          PROD_ADMIN_EMAIL:       ${{ secrets.PROD_ADMIN_EMAIL }}
+          PROD_ADMIN_PASSWORD:    ${{ secrets.PROD_ADMIN_PASSWORD }}
+          CANONICAL_IMPORT_TOKEN: ${{ secrets.CANONICAL_IMPORT_TOKEN }}
+          SESSION_ID:             ${{ inputs.session_id }}
+          MEASURE_MINUTES:        ${{ inputs.measure_minutes }}
+          REPORT_PATH:            /tmp/perklocks-logs/r3_indexes_report.json
+          # Belt-and-braces: migration download token is irrelevant to
+          # this flow and must not be present.
+          MIGRATION_DOWNLOAD_TOKEN: ''
+        run: |
+          python3 --version
+          echo "[workflow] launching Perklocks R3 Indexes repair"
+          echo "[workflow] session=${SESSION_ID}  measure_minutes=${MEASURE_MINUTES}"
+          python3 -u reconcile_workspace/scripts/r3_indexes_apply.py
+        # Exit code semantics:
+        #   0 → SUCCESS (indexes live + measurement complete)
+        #   1 → CANNOT VERIFY (auth / network error)
+        #   2 → STOP_DUPLICATES_FOUND (no indexes created)
+        #   3 → index creation returned a failure
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perklocks-r3-indexes-${{ github.run_id }}
+          path: |
+            /tmp/perklocks-logs/r3_indexes_report.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Print verdict
+        if: always()
+        run: |
+          echo "============================================================"
+          echo " Perklocks R3 Indexes — step outcome: ${{ steps.apply.outcome }}"
+          echo " Report: /tmp/perklocks-logs/r3_indexes_report.json"
+          echo "============================================================"
+          if [ -f /tmp/perklocks-logs/r3_indexes_report.json ]; then
+            python3 - <<'PY'
+          import json, pathlib
+          r = json.loads(pathlib.Path(
+              '/tmp/perklocks-logs/r3_indexes_report.json').read_text())
+          print('verdict           :', r.get('verdict'))
+          print('session_id        :', r.get('session_id'))
+          vr = r.get('step3_verify_rows') or []
+          for row in vr:
+              print(f"  {row.get('collection'):<28s}  index={row.get('index_name'):<34s}"
+                    f"  unique={row.get('unique')}  live/ready={row.get('live_ready')}")
+          m = r.get('step5_measurement')
+          if m:
+              overall = m.get('overall') or {}
+              print()
+              print('MEASUREMENT (overall session):')
+              print(f"  succeeded before : {overall.get('succeeded_before')}")
+              print(f"  succeeded after  : {overall.get('succeeded_after')}")
+              print(f"  failed before    : {overall.get('failed_before')}")
+              print(f"  failed after     : {overall.get('failed_after')}")
+              print(f"  succ_batches/hr  : {overall.get('succ_batches_per_hour')}")
+              print(f"  fail_batches/hr  : {overall.get('fail_batches_per_hour')}")
+              print()
+              print('MEASUREMENT (per target collection):')
+              pt = m.get('per_target') or {}
+              for c, row in pt.items():
+                  print(f"  {c:<28s}  Δsucc={row.get('delta_succeeded'):+d}  "
+                        f"Δfail={row.get('delta_failed'):+d}  "
+                        f"succ/hr={row.get('succ_batches_per_hour')}  "
+                        f"fail/hr={row.get('fail_batches_per_hour')}")
+          PY
+          fi
