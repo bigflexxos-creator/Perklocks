@@ -491,6 +491,258 @@ async def canonical_create_indexes(
             "all_ok": all(r.get("ok", False) for r in results)}
 
 
+# ─── Temporary NON-UNIQUE performance indexes (2026-10-06 directive) ─
+#
+# While Perklocks R3 is still migrating forward and duplicate logical
+# keys exist on three collections (49 + 66 + 9 groups), we cannot
+# force the final unique indexes without data loss / rejection.  But
+# every write to these three collections is COLLSCANning the lookup
+# path which has blown out the request budget and is now producing
+# more failures than successes.
+#
+# This endpoint creates the SAME key patterns the final unique
+# indexes will use, but with:
+#   * ``unique=False``
+#   * distinct index names (ix_*_r3) so they do NOT collide with the
+#     intended unique indexes (ux_*) in services.canonical_cutover._INDEX_SPECS
+#   * create_indexes([IndexModel(...)]) — the authoritative MongoDB
+#     path.  Hybrid builds; writes continue during build.
+#
+# Hard-coded index list — no caller-controlled schema.  Admin AND
+# X-Canonical-Import-Token gated identically to create-indexes.
+# Idempotent: if the ix_*_r3 index already exists with the same spec,
+# Mongo returns success without rebuilding.
+_PERFORMANCE_INDEXES_R3: list[dict[str, Any]] = [
+    {
+        "collection": "prediction_snapshots",
+        "name":       "ix_prediction_snapshot_version_r3",
+        "keys":       [("prediction_id", 1), ("snapshot_version", 1)],
+    },
+    {
+        "collection": "publication_events",
+        "name":       "ix_payload_hash_r3",
+        "keys":       [("payload_hash", 1)],
+    },
+    {
+        "collection": "settlement_events",
+        "name":       "ix_settlement_id_r3",
+        "keys":       [("settlement_id", 1)],
+    },
+]
+
+
+@router.post("/canonical-cutover/create-performance-indexes")
+async def canonical_create_performance_indexes(
+    admin: Annotated[UserPublic, Depends(_require_admin)],
+    x_canonical_import_token: Annotated[Optional[str], Header()] = None,
+):
+    """Create the three NON-UNIQUE performance indexes on the exact
+    same key patterns the final unique indexes will use, with
+    distinct ``ix_*_r3`` names so they don't collide with the
+    intended ``ux_*`` unique indexes.  Temporary — Phase-8 cert
+    will replace them once duplicates are cleaned.
+
+    Response:
+        {
+          "results": [
+            { "collection":   "<name>",
+              "index_name":   "ix_*_r3",
+              "key_pattern":  [["field", 1], ...],
+              "unique":       false,
+              "action":       "created" | "existed",
+              "live_ready":   true/false,
+              "elapsed_ms":   <int>
+            }, ...
+          ],
+          "all_ok": <bool>,
+          "note":   "TEMPORARY non-unique performance indexes — unique indexes will replace them in Phase 8 after duplicates are reconciled."
+        }
+    """
+    if not _import_enabled():
+        raise HTTPException(status_code=403, detail="CANONICAL_IMPORT_ENABLED=false")
+    _verify_import_token(x_canonical_import_token)
+
+    from pymongo import IndexModel  # local import; pymongo already pulled by motor
+
+    canon_db = get_canonical_database()
+    results: list[dict] = []
+    for spec in _PERFORMANCE_INDEXES_R3:
+        coll = spec["collection"]
+        name = spec["name"]
+        keys = spec["keys"]
+        _t0 = time.perf_counter()
+
+        # 1. List current indexes to decide create-vs-existed cleanly.
+        existing_names: set[str] = set()
+        existing_matching_name: Optional[dict] = None
+        try:
+            async for idx in canon_db[coll].list_indexes():
+                nm = idx.get("name") or ""
+                existing_names.add(nm)
+                if nm == name:
+                    existing_matching_name = idx
+        except Exception as e:
+            results.append({
+                "collection": coll, "index_name": name,
+                "key_pattern": [[k, v] for k, v in keys],
+                "unique": False, "action": "error",
+                "error": f"list_indexes failed: {type(e).__name__}: {str(e)[:200]}",
+                "live_ready": False,
+                "elapsed_ms": int((time.perf_counter() - _t0) * 1000.0),
+            })
+            continue
+
+        # 2. If an index with the same name already exists, verify its
+        #    key pattern + unique flag match.  Different spec with same
+        #    name → fail loudly rather than silently diverging.
+        if existing_matching_name is not None:
+            got_key = [[k, int(v)] for k, v in existing_matching_name.get("key", {}).items()]
+            want_key = [[k, int(v)] for k, v in keys]
+            got_unique = bool(existing_matching_name.get("unique", False))
+            if got_key == want_key and got_unique is False:
+                results.append({
+                    "collection": coll, "index_name": name,
+                    "key_pattern": want_key, "unique": False,
+                    "action": "existed", "live_ready": True,
+                    "elapsed_ms": int((time.perf_counter() - _t0) * 1000.0),
+                })
+                continue
+            # Same name, different spec — surface the conflict.
+            results.append({
+                "collection": coll, "index_name": name,
+                "key_pattern": want_key, "unique": False,
+                "action": "error",
+                "error": (f"existing index '{name}' has conflicting spec "
+                           f"keys={got_key} unique={got_unique}; refusing "
+                           f"to drop/rebuild automatically"),
+                "live_ready": False,
+                "elapsed_ms": int((time.perf_counter() - _t0) * 1000.0),
+            })
+            continue
+
+        # 3. Create.  pymongo's create_indexes([IndexModel]) ack returns
+        #    only after the index is built (hybrid build on primary;
+        #    writes continue during build).
+        try:
+            await canon_db[coll].create_indexes([
+                IndexModel(keys, name=name, unique=False)
+            ])
+            action = "created"
+            live = True
+        except Exception as e:
+            results.append({
+                "collection": coll, "index_name": name,
+                "key_pattern": [[k, v] for k, v in keys],
+                "unique": False, "action": "error",
+                "error": f"create_indexes failed: {type(e).__name__}: {str(e)[:200]}",
+                "live_ready": False,
+                "elapsed_ms": int((time.perf_counter() - _t0) * 1000.0),
+            })
+            continue
+
+        results.append({
+            "collection": coll, "index_name": name,
+            "key_pattern": [[k, v] for k, v in keys],
+            "unique": False, "action": action,
+            "live_ready": live,
+            "elapsed_ms": int((time.perf_counter() - _t0) * 1000.0),
+        })
+
+    all_ok = all(r.get("live_ready") for r in results)
+    return {
+        "results": results,
+        "all_ok":  all_ok,
+        "note": ("TEMPORARY non-unique performance indexes — the final "
+                  "unique indexes (ux_*) will replace them in Phase 8 "
+                  "after duplicate logical keys are reconciled."),
+    }
+
+
+@router.get("/canonical-cutover/explain-logical-key-lookup")
+async def canonical_explain_logical_key_lookup(
+    admin: Annotated[UserPublic, Depends(_require_admin)],
+    collection: str,
+):
+    """READ-ONLY ``explain()`` of a find() keyed by the collection's
+    canonical logical key.  Used to prove that upsert lookups now
+    use an IXSCAN rather than a COLLSCAN after the performance
+    indexes are live.  No writes.  No mutation.
+
+    Returns:
+        {
+          "collection":          <str>,
+          "logical_key_fields":  [...],
+          "winning_plan_stage":  "IXSCAN" | "COLLSCAN" | "FETCH" | ...
+          "index_name_used":     "<index>" | null,
+          "uses_index":          <bool>,
+          "explain_raw":         <trimmed winning plan dict>,
+        }
+    """
+    if collection not in RECONCILIATION_COLLECTIONS:
+        raise HTTPException(status_code=400,
+                            detail=f"collection '{collection}' not in RECONCILIATION_COLLECTIONS")
+
+    from services.canonical_cutover import logical_key_fields as _lkf
+
+    canon_db = get_canonical_database()
+    key_fields = list(_lkf(collection))
+    if not key_fields:
+        raise HTTPException(status_code=400,
+                            detail=f"collection '{collection}' has no logical_key_fields")
+
+    # Query shape mirrors how the import batch upsert actually looks
+    # up docs: equality on every logical-key field.  A string sentinel
+    # value is irrelevant for the planner — explain() returns the plan
+    # chosen for the query shape, not for the specific value.
+    query = {f: "__explain_probe__" for f in key_fields}
+
+    def _walk(node, out):
+        """Collect every stage name + the first index name seen."""
+        if not isinstance(node, dict):
+            return
+        s = node.get("stage")
+        if s:
+            out["stages"].append(s)
+        if node.get("indexName") and not out.get("index_name"):
+            out["index_name"] = node["indexName"]
+        for v in node.values():
+            if isinstance(v, dict):
+                _walk(v, out)
+            elif isinstance(v, list):
+                for it in v:
+                    if isinstance(it, dict):
+                        _walk(it, out)
+
+    try:
+        plan = await canon_db.command({
+            "explain": {
+                "find":   collection,
+                "filter": query,
+                "limit":  1,
+            },
+            "verbosity": "queryPlanner",
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500,
+                            detail=f"explain failed: {type(e).__name__}: {str(e)[:200]}")
+
+    walked = {"stages": [], "index_name": None}
+    winning = (plan.get("queryPlanner") or {}).get("winningPlan") or {}
+    _walk(winning, walked)
+    winning_stage = walked["stages"][0] if walked["stages"] else "UNKNOWN"
+    uses_index = any(s == "IXSCAN" for s in walked["stages"])
+
+    return {
+        "collection":         collection,
+        "logical_key_fields": key_fields,
+        "winning_plan_stage": winning_stage,
+        "all_stages":         walked["stages"],
+        "index_name_used":    walked["index_name"],
+        "uses_index":         uses_index,
+        "explain_raw":        winning,
+    }
+
+
 # ─── Phase-5-R3: scoped canonical-dataset reset ─────────────────────
 @router.post("/canonical-cutover/reset-canonical-dataset")
 async def canonical_reset_canonical_dataset(
