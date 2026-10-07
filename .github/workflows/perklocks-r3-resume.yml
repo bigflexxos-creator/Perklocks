@@ -83,7 +83,7 @@ jobs:
           fallback_filename: phase5_20261003_190628Z.tar.gz
           fallback_bytes:    "337143523"
           fallback_sha:      4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
-          max_attempts:      "6"
+          max_attempts:      "10"
           curl_max_time_seconds: "1800"
 
       - name: Download + verify phase6 checkpoint (shared composite action)
@@ -96,7 +96,7 @@ jobs:
           fallback_filename: phase6_20261003_192150Z.tar.gz
           fallback_bytes:    "1606247"
           fallback_sha:      327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22
-          max_attempts:      "6"
+          max_attempts:      "10"
           curl_max_time_seconds: "600"
 
       - name: Resume R3 (Phase 5 → 7 → 8, STOP at Phase 9)
