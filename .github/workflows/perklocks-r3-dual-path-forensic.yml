@@ -1,0 +1,112 @@
+name: Perklocks R3 Dual-Path Forensic (ZERO-WRITE)
+
+# ──────────────────────────────────────────────────────────────────────
+# R3 Resume #14 forensic — two-driver byte-level diff for one batch.
+#
+# Forensic #1 narrowed the mismatch to exact payload construction
+# (A/C/D).  This workflow dispatches the dual-path forensic that
+# executes BOTH drivers' real code paths and reports:
+#   • original_driver_hash    (push_canonical_to_production.py @ 250)
+#   • accelerated_driver_hash (push_canonical_accelerated.py per-batch)
+#   • server_expected_hash    (from batch-manifest)
+#   • membership diff, order diff, serialization probe
+#   • ordering candidate sweep (hypothesis C)
+#
+# Zero writes.  Admin-JWT GET only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      collection:
+        description: 'Collection to forensically inspect'
+        required: true
+        default: 'settlement_events'
+      batch_no:
+        description: 'Batch number (0..N) to forensically inspect'
+        required: true
+        default: '5'
+      original_batch_size:
+        description: 'Fixed batch_size the ORIGINAL driver would have used'
+        required: true
+        default: '250'
+
+permissions:
+  contents: read
+
+jobs:
+  dual_forensic:
+    name: R3 Dual-Path Forensic (ZERO-WRITE)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      CHKP_DIR:                        /tmp/perklocks-checkpoints
+      LOGS_DIR:                        /tmp/perklocks-logs
+      FORENSIC_COLLECTION:             ${{ github.event.inputs.collection }}
+      FORENSIC_BATCH_NO:               ${{ github.event.inputs.batch_no }}
+      FORENSIC_ORIGINAL_BATCH_SIZE:    ${{ github.event.inputs.original_batch_size }}
+      FORENSIC_REPORT_PATH:            /tmp/perklocks-logs/r3_dual_path_forensic.json
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare runner directories
+        run: mkdir -p "$CHKP_DIR" "$LOGS_DIR"
+
+      - name: Download + verify phase5 checkpoint
+        uses: ./.github/actions/perklocks-checkpoint-download
+        with:
+          phase:             phase5
+          preview_base_url:  ${{ secrets.PREVIEW_BASE_URL }}
+          download_token:    ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+          checkpoint_dir:    ${{ env.CHKP_DIR }}
+          fallback_filename: phase5_20261003_190628Z.tar.gz
+          fallback_bytes:    "337143523"
+          fallback_sha:      4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
+          max_attempts:      "10"
+          curl_max_time_seconds: "1800"
+
+      - name: Download + verify phase6 checkpoint
+        uses: ./.github/actions/perklocks-checkpoint-download
+        with:
+          phase:             phase6
+          preview_base_url:  ${{ secrets.PREVIEW_BASE_URL }}
+          download_token:    ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+          checkpoint_dir:    ${{ env.CHKP_DIR }}
+          fallback_filename: phase6_20261003_192150Z.tar.gz
+          fallback_bytes:    "1606247"
+          fallback_sha:      327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22
+          max_attempts:      "10"
+          curl_max_time_seconds: "600"
+
+      - name: Run dual-path forensic
+        env:
+          PROD_API_BASE:            ${{ secrets.PROD_API_BASE }}
+          PROD_ADMIN_EMAIL:         ${{ secrets.PROD_ADMIN_EMAIL }}
+          PROD_ADMIN_PASSWORD:      ${{ secrets.PROD_ADMIN_PASSWORD }}
+          CANONICAL_IMPORT_TOKEN:   ${{ secrets.CANONICAL_IMPORT_TOKEN }}
+          CANONICAL_IMPORT_SESSION: ${{ secrets.CANONICAL_IMPORT_SESSION }}
+        run: |
+          python3 --version
+          echo "[dual] collection=$FORENSIC_COLLECTION batch_no=$FORENSIC_BATCH_NO orig_bsize=$FORENSIC_ORIGINAL_BATCH_SIZE"
+          echo "[dual] ZERO POSTs guaranteed (admin-JWT GET only)"
+          python3 -u reconcile_workspace/scripts/r3_dual_path_forensic.py
+
+      - name: Upload dual-forensic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perklocks-r3-dual-path-forensic-${{ github.run_id }}
+          path: |
+            /tmp/perklocks-logs/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status
+        if: always()
+        run: |
+          echo "Dual-forensic job status: ${{ job.status }}"
+          echo "Zero POSTs to Production were issued."
