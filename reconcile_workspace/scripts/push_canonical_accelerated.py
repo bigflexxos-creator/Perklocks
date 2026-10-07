@@ -491,32 +491,41 @@ def main() -> int:
                                                     # failed, in_progress,
                                                     # incomplete_write)
 
-        # ── Authoritative-manifest reconstruction (R3 Resume #12 fix) ──
+        # ── FIXED-SIZE batching from succeeded batches (R3 Resume #14 fix) ──
         #
-        # Canary #2 proved that a single collection-level ``bsize`` is
-        # fundamentally wrong for returning collections: the server's
-        # manifest for ``settlement_events`` contains BOTH
-        # ``batch_no=5, doc_count=250, status=succeeded`` (original run
-        # size) AND ``batch_no>=N, doc_count=1000, status=failed``
-        # (run #10 altered-replay rejects).  Picking ``max()`` over
-        # that mixed population produced bsize=1000 and mismatched
-        # every historical batch.
+        # Dual-path forensic #1 proved (settlement_events batch 5):
+        #   PATH A — ORIGINAL driver @ fixed batch_size=250: hash MATCHES server
+        #   PATH B — ACCELERATED per-batch target walker:    hash DIFFERS from server
+        #   same_membership(A, B) = false, first_order_diff_idx = 0
         #
-        # Correct contract: every historical ``batch_no`` has its OWN
-        # authoritative ``doc_count``.  The driver must reconstruct
-        # each batch independently using its stored doc_count, in
-        # ascending batch_no order.
+        # Root cause: using ``historical_counts[bno]`` for each batch
+        # honors doc_counts of FAILED altered-replay records (e.g.
+        # ``batch_no=N, doc_count=1000, status=failed``), which shift
+        # NDJSON cutpoints for later batches.  The ORIGINAL driver
+        # used ONE fixed batch_size for the entire collection and is
+        # immune to this.
         #
-        #   historical_counts[bno] = authoritative doc_count
+        # Correct contract (what we do now):
         #
-        # For "tail" batches beyond the max historical batch_no
-        # (e.g. when the original run never partitioned the full
-        # NDJSON): prefer the SIZE of the succeeded batches (that was
-        # the original run's partition size).  If no succeeded batches
-        # exist for the collection, fall back to the max historical
-        # doc_count (safest lower-bound on the original intent).  If
-        # the collection has ZERO historical batch records at all,
-        # use NEW_COLLECTION_BATCH_SIZE.
+        #   For returning collections (any existing batch identity):
+        #     fixed_bsize = max(doc_count across SUCCEEDED batches only)
+        #     — this is the ORIGINAL run's authoritative partition
+        #     size.  Failed/in-progress/incomplete_write records are
+        #     IGNORED for cutpoint derivation (but their stored
+        #     content_hashes are still checked by the preflight
+        #     hash-match guard).
+        #
+        #   For truly-new collections (zero manifest entries):
+        #     fixed_bsize = NEW_COLLECTION_BATCH_SIZE (default 1000).
+        #
+        #   For returning collections that have NO succeeded batches
+        #     (unusual edge case — e.g. a collection where every
+        #     prior attempt failed): fall back to the smallest
+        #     recorded doc_count as a conservative lower bound; the
+        #     preflight hash guard remains the final arbiter.
+        #
+        # The fixed_bsize is then used for EVERY batch of this
+        # collection — ``_target_for(bno)`` is a constant function.
         historical_counts: dict[int, int] = {
             bno: v["doc_count"] for bno, v in coll_manifest.items()
             if v.get("doc_count", 0) > 0
@@ -528,17 +537,21 @@ def main() -> int:
                             if v.get("status") == "succeeded"
                             and v.get("doc_count", 0) > 0]
         if succeeded_sizes:
-            # Original run's authoritative partition size.
-            tail_bsize = max(succeeded_sizes)
+            fixed_bsize    = max(succeeded_sizes)   # ORIGINAL run's size
+            bsize_rationale = (f"max(succeeded doc_counts)={fixed_bsize} "
+                                f"from {len(succeeded_sizes)} succeeded batch(es)")
         elif historical_counts:
-            # No succeeded batches but we have failed/in-progress
-            # historical identities — use the max historical count
-            # as the tail bsize.  Any new tail batch beyond
-            # max_hist_bno is a new identity so this is safe.
-            tail_bsize = max(historical_counts.values())
+            # Returning collection but zero succeeded batches — use
+            # the smallest recorded doc_count as a safe lower bound.
+            # The preflight hash guard will catch any mismatch and
+            # STOP LOCALLY before any POST.
+            fixed_bsize    = min(historical_counts.values())
+            bsize_rationale = (f"min(historical doc_counts)={fixed_bsize} "
+                                "(no succeeded batches — conservative)")
         else:
             # Truly new collection (zero manifest entries).
-            tail_bsize = new_batch_size
+            fixed_bsize    = new_batch_size
+            bsize_rationale = f"new_collection_bsize={fixed_bsize}"
 
         # Materialize batches.
         docs_buffer: list[dict] = []
@@ -561,7 +574,8 @@ def main() -> int:
                         "computed_hash":        local_hash,
                         "authoritative_count":  stored.get("doc_count"),
                         "reconstructed_count":  len(buf),
-                        "target_bsize_used":    historical_counts.get(bno, tail_bsize),
+                        "target_bsize_used":    fixed_bsize,
+                        "bsize_rationale":      bsize_rationale,
                         "authoritative_status": stored.get("status"),
                     })
                     return  # do NOT add to plan
@@ -572,27 +586,17 @@ def main() -> int:
                     return
             plan.append((coll, bno, list(buf), local_hash))
 
-        # ── Per-batch authoritative partitioning ─────────────────────
-        # For every record pulled from NDJSON, the current batch's
-        # TARGET size is:
-        #   - historical_counts[cur_bno]  if cur_bno ≤ max_hist_bno
-        #   - tail_bsize                  otherwise
-        # We NEVER mix a "new 1000-record partition" into an
-        # already-established historical batch namespace.
-        def _target_for(bno: int) -> int:
-            if bno <= max_hist_bno:
-                return historical_counts.get(bno, tail_bsize)
-            return tail_bsize
-
-        cur_target = _target_for(batches_this_coll)
+        # ── FIXED-size partitioning (same contract as original driver) ──
+        # Every batch of this collection consumes exactly
+        # ``fixed_bsize`` accepted (post-filter) docs in NDJSON file
+        # order.  The final (tail) batch may be smaller.
         for d in _ndjson(src):
             if _is_excluded(d): continue
             docs_buffer.append(d)
-            if len(docs_buffer) >= cur_target:
+            if len(docs_buffer) >= fixed_bsize:
                 _flush_batch(batches_this_coll, docs_buffer)
                 batches_this_coll += 1
                 docs_buffer = []
-                cur_target = _target_for(batches_this_coll)
         if docs_buffer:
             _flush_batch(batches_this_coll, docs_buffer)
             batches_this_coll += 1
@@ -610,16 +614,11 @@ def main() -> int:
         else:
             remaining = len(remaining_in_plan)
             if has_prior_batches:
-                # Per-batch authoritative reconstruction.  The whole
-                # historical range uses stored doc_counts; only
-                # batch_no > max_hist_bno uses tail_bsize.
-                note = (f"per-batch authoritative "
-                        f"(hist bnos 0..{max_hist_bno}, "
-                        f"tail bsize={tail_bsize})")
-                if tail_bsize == new_batch_size and len(historical_counts) == 0:
-                    note += " [edge: no doc_counts]"
+                note = (f"fixed bsize={fixed_bsize}  "
+                        f"[hist bnos 0..{max_hist_bno}  "
+                        f"rationale: {bsize_rationale}]")
             else:
-                note = f"new collection bsize={new_batch_size}"
+                note = f"new collection bsize={fixed_bsize}"
             plan_summary.append((coll, batches_this_coll, pre_s, remaining, note))
 
     total_in_plan = len(plan)
@@ -696,45 +695,35 @@ def main() -> int:
                     local_hash = plan_by_bno[bno][3]
                 else:
                     # Succeeded batch locally skipped — recompute to
-                    # produce the canary proof row.  Use PER-BATCH
-                    # authoritative doc_count (R3 Resume #12 fix): we
-                    # walk NDJSON summing EACH prior batch's
-                    # authoritative doc_count in order, so cutpoints
-                    # for batches [0..bno-1] match the server's and
-                    # the slice for bno is exactly the next
-                    # historical_counts[bno] accepted docs.
+                    # produce the canary proof row.  Use the SAME
+                    # fixed-bsize contract as the main planner
+                    # (R3 Resume #14 fix): derive bsize from
+                    # succeeded batches only; failed records never
+                    # influence cutpoints.
                     _tmp_buf: list[dict] = []
                     src = _source_for(coll)
                     if src is not None:
                         coll_mf = batch_manifest.get(coll, {})
-                        _hist = {b: v["doc_count"] for b, v in coll_mf.items()
-                                 if v.get("doc_count", 0) > 0}
                         _succ_sizes = [v["doc_count"] for v in coll_mf.values()
                                        if v.get("status") == "succeeded"
                                        and v.get("doc_count", 0) > 0]
+                        _hist_counts = [v["doc_count"] for v in coll_mf.values()
+                                         if v.get("doc_count", 0) > 0]
                         if _succ_sizes:
-                            _tail_bsize = max(_succ_sizes)
-                        elif _hist:
-                            _tail_bsize = max(_hist.values())
+                            _fixed_bsize = max(_succ_sizes)
+                        elif _hist_counts:
+                            _fixed_bsize = min(_hist_counts)
                         else:
-                            _tail_bsize = new_batch_size
-                        _max_hb = max(_hist.keys(), default=-1)
-
-                        def _tgt(b):
-                            return _hist.get(b, _tail_bsize) if b <= _max_hb else _tail_bsize
-
+                            _fixed_bsize = new_batch_size
                         _idx = 0
                         _buf: list[dict] = []
-                        _cur_t = _tgt(_idx)
                         for d in _ndjson(src):
                             if _is_excluded(d): continue
                             _buf.append(d)
-                            if len(_buf) >= _cur_t:
+                            if len(_buf) >= _fixed_bsize:
                                 if _idx == bno:
                                     _tmp_buf = list(_buf); break
-                                _idx += 1
-                                _buf = []
-                                _cur_t = _tgt(_idx)
+                                _idx += 1; _buf = []
                         else:
                             if _buf and _idx == bno:
                                 _tmp_buf = list(_buf)
