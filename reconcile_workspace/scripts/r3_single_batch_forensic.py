@@ -69,7 +69,20 @@ import urllib.request
 
 
 # ─── Driver module (hash function, LOGICAL_KEYS, _ndjson) ────────────
-_driver_path = pathlib.Path("/app/reconcile_workspace/scripts/push_canonical_accelerated.py")
+# Resolve ``push_canonical_accelerated.py`` RELATIVE to this script's
+# location so the forensic works both inside the Emergent container
+# (``/app/reconcile_workspace/scripts/``) and on a GitHub Actions
+# runner (``/home/runner/work/<repo>/<repo>/reconcile_workspace/
+# scripts/``).  NEVER hardcode ``/app`` or any environment-specific
+# absolute path here.
+_SCRIPT_DIR  = pathlib.Path(__file__).resolve().parent
+_driver_path = _SCRIPT_DIR / "push_canonical_accelerated.py"
+if not _driver_path.exists():
+    raise FileNotFoundError(
+        f"push_canonical_accelerated.py not found next to this forensic "
+        f"script.  Expected at: {_driver_path}.  Resolve this by placing "
+        f"both scripts under reconcile_workspace/scripts/ in the same "
+        f"repo checkout.")
 _spec = importlib.util.spec_from_file_location("push_canonical_accelerated", _driver_path)
 _mod  = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
