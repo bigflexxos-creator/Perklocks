@@ -4085,3 +4085,37 @@ reception cross-family bleed on the filter chips.
      rollover applies the new pipeline from scratch.
 - ⚠️  Publish still blocked pending user review of live slate rollover.
 
+
+## R3 Resume #11 — Surgical Batch-Layout Fix (2026-10-07)
+
+**Root cause**: R3 Resume #10 failed in Phase 5 because the accelerated resume driver
+repartitioned existing session batches with a fresh 250-record slicing plan, producing
+different payload hashes for already-known batch_no values. Production correctly rejected
+them with HTTP 409 ALTERED_REPLAY_REJECTED. Server replay-safety contract is correct;
+driver's batch-layout reconstruction was wrong.
+
+**Files changed (commit 0f2586284caba347813ce4e6c66876421fa1c1a0)**:
+- `backend/routes/canonical_cutover_routes.py` — new read-only
+  `GET /api/admin/canonical-import/batch-manifest` endpoint
+- `reconcile_workspace/scripts/push_canonical_accelerated.py` — authoritative-manifest-driven
+  batch layout + preflight BATCH_LAYOUT_MISMATCH guard + CANARY_ONLY zero-write mode +
+  local fast-skip for succeeded batches
+- `reconcile_workspace/scripts/r3_batch_layout_canary.py` — new canary wrapper (ZERO writes)
+- `.github/workflows/perklocks-r3-batch-layout-canary.yml` — new dispatchable canary workflow
+- `tests/test_push_driver_batch_content_hash.py` — server↔driver hash parity (21 collections, 5 tests)
+- `backend/tests/test_canonical_cutover_batch_manifest.py` — manifest endpoint invariants (2 tests)
+
+**Preserved invariants**:
+- CANONICAL_IMPORT_SESSION=perklocks-cutover-20261003-r3 (unchanged)
+- No session reset / new session / bookkeeping deletes
+- No weakening of ALTERED_REPLAY_REJECTED
+- No bypass of payload-hash verification
+- Already-succeeded batches remain skip-only
+- Server replay-safety contract untouched
+
+**Tests**: 18/18 pass. Zero regressions.
+
+**Status**: Awaiting user dispatch of the new
+`Perklocks R3 Batch-Layout Canary (ZERO-WRITE)` GitHub Actions workflow to produce the
+`collection | batch_id | expected_hash | computed_hash | MATCH` proof table against Prod.
+Phase-5 full resume MUST NOT be dispatched until the canary passes.
