@@ -43,9 +43,9 @@ inputs:
     description: 'Expected SHA-256 if the manifest is unreachable'
     required: true
   max_attempts:
-    description: 'Max outer download attempts (default 6)'
+    description: 'Max outer download attempts (default 10 — spans ~3-5 min of recycle)'
     required: false
-    default: '6'
+    default: '10'
   curl_max_time_seconds:
     description: 'Per-attempt curl --max-time (default 1800)'
     required: false
@@ -116,6 +116,7 @@ runs:
         FILE:                     ${{ steps.resolve.outputs.filename }}
         EXPECTED_BYTES:           ${{ steps.resolve.outputs.bytes }}
         EXPECTED_SHA:             ${{ steps.resolve.outputs.sha }}
+        PHASE:                    ${{ inputs.phase }}
         MAX_ATTEMPTS:             ${{ inputs.max_attempts }}
         CURL_MAX_TIME:            ${{ inputs.curl_max_time_seconds }}
       run: |
@@ -123,16 +124,49 @@ runs:
         mkdir -p "${CHKP_DIR}"
         TARGET="${CHKP_DIR}/${FILE}"
         URL="${PREVIEW_BASE_URL}/api/_migration_download/${FILE}"
+        HEALTH_URL="${PREVIEW_BASE_URL}/api/health"
+        MANIFEST_URL="${PREVIEW_BASE_URL}/api/_migration_manifest"
+
+        # Classify a 404 after the fact:
+        #   fatal   — Preview is responding (health 200) AND manifest
+        #             reports present=false  → file is genuinely gone.
+        #             Fail immediately with a clear error.
+        #   transient — anything else (health down, manifest 503,
+        #             manifest present=true but download 404).  Keep
+        #             retrying with longer backoff; Preview is likely
+        #             mid-recycle.
+        classify_404() {
+          HSTATUS=$(curl --silent --show-error --max-time 10 \
+                        -o /dev/null -w "%{http_code}" "${HEALTH_URL}" || echo "000")
+          MSTATUS_BODY=$(mktemp)
+          MSTATUS=$(curl --silent --show-error --max-time 15 \
+                         -H "X-Download-Token: ${MIGRATION_DOWNLOAD_TOKEN}" \
+                         -o "${MSTATUS_BODY}" -w "%{http_code}" \
+                         "${MANIFEST_URL}" || echo "000")
+          MPRESENT="unknown"
+          if [ "${MSTATUS}" = "200" ]; then
+            MPRESENT=$(jq -r --arg p "${PHASE}" '.[$p].present // "unknown"' "${MSTATUS_BODY}" 2>/dev/null || echo "unknown")
+          fi
+          rm -f "${MSTATUS_BODY}"
+          echo "    classify_404: health=${HSTATUS}  manifest=${MSTATUS}  ${PHASE}.present=${MPRESENT}"
+          if [ "${HSTATUS}" = "200" ] && [ "${MPRESENT}" = "false" ]; then
+            return 1   # fatal — file is genuinely gone
+          fi
+          return 0     # transient — keep retrying
+        }
+
         for ATTEMPT in $(seq 1 "${MAX_ATTEMPTS}"); do
           echo "--- ${FILE} attempt ${ATTEMPT}/${MAX_ATTEMPTS} ---"
           CURRENT_SIZE=$(stat -c%s "${TARGET}" 2>/dev/null || echo 0)
 
+          # Discard anything larger than expected (corruption / stale).
           if [ "${CURRENT_SIZE}" -gt "${EXPECTED_BYTES}" ]; then
             echo "  oversized local copy (${CURRENT_SIZE} > ${EXPECTED_BYTES}) — discarding"
             rm -f "${TARGET}"
             CURRENT_SIZE=0
           fi
 
+          # Download/resume when local file is smaller than expected.
           if [ "${CURRENT_SIZE}" -lt "${EXPECTED_BYTES}" ]; then
             if [ "${CURRENT_SIZE}" -gt 0 ]; then
               echo "  partial local copy (${CURRENT_SIZE}/${EXPECTED_BYTES}) — resuming via HTTP Range"
@@ -140,22 +174,60 @@ runs:
             else
               CURL_CONTINUE=""
             fi
+
+            # Capture HTTP code so we can distinguish 404 from network
+            # errors.  --fail-with-body preserves exit code AND response
+            # body on 4xx/5xx, letting us classify.
             # shellcheck disable=SC2086
-            if ! curl --fail --silent --show-error --location \
-                     --retry 3 --retry-all-errors --retry-delay 5 \
-                     --max-time "${CURL_MAX_TIME}" \
-                     ${CURL_CONTINUE} \
-                     -H "X-Download-Token: ${MIGRATION_DOWNLOAD_TOKEN}" \
-                     -o "${TARGET}" "${URL}"; then
-              echo "  curl failed on attempt ${ATTEMPT}; backing off"
-              sleep 8
-              continue
-            fi
+            HTTP_CODE=$(curl --silent --show-error --location \
+                             --retry 3 --retry-all-errors --retry-delay 5 \
+                             --max-time "${CURL_MAX_TIME}" \
+                             ${CURL_CONTINUE} \
+                             -H "X-Download-Token: ${MIGRATION_DOWNLOAD_TOKEN}" \
+                             -o "${TARGET}" -w "%{http_code}" \
+                             "${URL}" 2>&1 || echo "")
+
+            case "${HTTP_CODE}" in
+              200|206)
+                echo "  download HTTP ${HTTP_CODE}"
+                ;;
+              404)
+                # Could be transient (pod mid-recycle) or fatal (file
+                # genuinely missing).  classify_404 distinguishes.
+                echo "  download HTTP 404 — classifying…"
+                if ! classify_404; then
+                  echo "FATAL: Preview is responding and manifest reports ${PHASE}.present=false — file is genuinely gone." >&2
+                  exit 1
+                fi
+                echo "  → transient (Preview likely mid-recycle); backing off"
+                # Longer backoff on 404 since restarts can take 30-90s.
+                BACKOFF=$((15 + ATTEMPT * 10))
+                [ "${BACKOFF}" -gt 60 ] && BACKOFF=60
+                sleep "${BACKOFF}"
+                # Discard any partial body curl wrote on the 404 so the
+                # next iteration starts clean.
+                CSZ=$(stat -c%s "${TARGET}" 2>/dev/null || echo 0)
+                if [ "${CSZ}" -lt "${EXPECTED_BYTES}" ] && [ "${CSZ}" -lt 4096 ]; then
+                  rm -f "${TARGET}"
+                fi
+                continue
+                ;;
+              000|"")
+                echo "  curl network error (no HTTP code); backing off"
+                sleep 10
+                continue
+                ;;
+              *)
+                echo "  download HTTP ${HTTP_CODE}; backing off"
+                sleep 8
+                continue
+                ;;
+            esac
             CURRENT_SIZE=$(stat -c%s "${TARGET}" 2>/dev/null || echo 0)
           fi
 
           if [ "${CURRENT_SIZE}" -ne "${EXPECTED_BYTES}" ]; then
-            echo "  size mismatch (got ${CURRENT_SIZE}, expected ${EXPECTED_BYTES}) — retrying"
+            echo "  size mismatch after download (got ${CURRENT_SIZE}, expected ${EXPECTED_BYTES}) — retrying"
             sleep 5
             continue
           fi
