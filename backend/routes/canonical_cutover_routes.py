@@ -367,6 +367,13 @@ async def canonical_import_batch_manifest(
             "attempt_count":   int(b.get("attempt_count")  or 0),
             "first_seen_at":   str(b.get("first_seen_at") or ""),
             "last_attempt_at": str(b.get("last_attempt_at") or b.get("recorded_at") or ""),
+            # R3 Resume #13 diagnostic — expose the source_checkpoints
+            # that the ORIGINAL successful import used, so an external
+            # canary can detect checkpoint drift between the original
+            # NDJSON and the currently-pinned checkpoint SHAs (one of
+            # the top candidate root causes for a per-batch hash
+            # mismatch when batch size + membership count are correct).
+            "source_checkpoints": b.get("source_checkpoints") or {},
         })
 
     doc_counts = sorted({b["doc_count"] for b in batches if b["doc_count"] > 0})

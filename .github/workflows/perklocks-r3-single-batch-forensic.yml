@@ -1,0 +1,114 @@
+name: Perklocks R3 Single-Batch Forensic (ZERO-WRITE)
+
+# ──────────────────────────────────────────────────────────────────────
+# R3 Resume #13 forensic — one-batch deep diagnostic.
+#
+# Canary #3 proved the batch-size fix: for settlement_events batch 5
+# the reconstructed count is now 250 (matches authoritative stored
+# doc_count=250) but the hash STILL mismatches.
+#
+# This workflow runs r3_single_batch_forensic.py against Prod for a
+# single (collection, batch_no) pair and produces a byte-level
+# diagnostic that isolates the remaining defect among:
+#   A. source NDJSON order differs from original import order
+#   B. filtering/exclusions shift boundaries
+#   C. original importer sorted before batching
+#   D. serializer/hash algorithm input differs
+#   E. checkpoint SHA drift — the ORIGINAL successful import used a
+#      DIFFERENT phase5/phase6 file than currently pinned
+#
+# Zero writes — only admin-JWT GET requests to the batch-manifest
+# endpoint.  No /canonical-import POSTs under any circumstance.
+
+on:
+  workflow_dispatch:
+    inputs:
+      collection:
+        description: 'Collection to forensically inspect'
+        required: true
+        default: 'settlement_events'
+      batch_no:
+        description: 'Batch number (0..N) to forensically inspect'
+        required: true
+        default: '5'
+
+permissions:
+  contents: read
+
+jobs:
+  forensic:
+    name: R3 Single-Batch Forensic (ZERO-WRITE)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      CHKP_DIR:              /tmp/perklocks-checkpoints
+      RECONCILE_TMP:         /tmp/perklocks-reconcile
+      LOGS_DIR:              /tmp/perklocks-logs
+      FORENSIC_COLLECTION:   ${{ github.event.inputs.collection }}
+      FORENSIC_BATCH_NO:     ${{ github.event.inputs.batch_no }}
+      FORENSIC_REPORT_PATH:  /tmp/perklocks-logs/r3_single_batch_forensic.json
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare runner directories
+        run: mkdir -p "$CHKP_DIR" "$RECONCILE_TMP" "$LOGS_DIR"
+
+      - name: Download + verify phase5 checkpoint
+        uses: ./.github/actions/perklocks-checkpoint-download
+        with:
+          phase:             phase5
+          preview_base_url:  ${{ secrets.PREVIEW_BASE_URL }}
+          download_token:    ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+          checkpoint_dir:    ${{ env.CHKP_DIR }}
+          fallback_filename: phase5_20261003_190628Z.tar.gz
+          fallback_bytes:    "337143523"
+          fallback_sha:      4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
+          max_attempts:      "10"
+          curl_max_time_seconds: "1800"
+
+      - name: Download + verify phase6 checkpoint
+        uses: ./.github/actions/perklocks-checkpoint-download
+        with:
+          phase:             phase6
+          preview_base_url:  ${{ secrets.PREVIEW_BASE_URL }}
+          download_token:    ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+          checkpoint_dir:    ${{ env.CHKP_DIR }}
+          fallback_filename: phase6_20261003_192150Z.tar.gz
+          fallback_bytes:    "1606247"
+          fallback_sha:      327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22
+          max_attempts:      "10"
+          curl_max_time_seconds: "600"
+
+      - name: Run single-batch forensic
+        env:
+          PROD_API_BASE:            ${{ secrets.PROD_API_BASE }}
+          PROD_ADMIN_EMAIL:         ${{ secrets.PROD_ADMIN_EMAIL }}
+          PROD_ADMIN_PASSWORD:      ${{ secrets.PROD_ADMIN_PASSWORD }}
+          CANONICAL_IMPORT_TOKEN:   ${{ secrets.CANONICAL_IMPORT_TOKEN }}
+          CANONICAL_IMPORT_SESSION: ${{ secrets.CANONICAL_IMPORT_SESSION }}
+        run: |
+          python3 --version
+          echo "[forensic] collection=$FORENSIC_COLLECTION batch_no=$FORENSIC_BATCH_NO"
+          echo "[forensic] ZERO POSTs guaranteed (read-only GETs only)"
+          python3 -u reconcile_workspace/scripts/r3_single_batch_forensic.py
+
+      - name: Upload forensic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perklocks-r3-single-batch-forensic-${{ github.run_id }}
+          path: |
+            /tmp/perklocks-logs/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final status
+        if: always()
+        run: |
+          echo "Forensic job status: ${{ job.status }}"
+          echo "Zero POSTs to Production were issued."
