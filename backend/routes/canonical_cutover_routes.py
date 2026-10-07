@@ -40,6 +40,7 @@ import hmac
 import logging
 import os
 import secrets
+import time
 from datetime import datetime, timezone
 from typing import Annotated, Any, Optional
 
@@ -380,6 +381,92 @@ async def canonical_import_forensic_audit(
         },
         "first_10_batches":  batches[:10],
         "last_10_batches":   batches[-10:],
+    }
+
+
+
+# ─── Scoped duplicate-key check (surgical replacement for the broad
+# certification scan when applying indexes is the goal) ──────────────
+#
+# Context (2026-10-06): the broad GET /canonical-cutover/certification
+# iterates all 21 RECONCILIATION_COLLECTIONS, each requiring a full-
+# collection $group aggregation (no unique index exists yet on the
+# three target collections, so this is a COLLSCAN per collection).
+# On a hot Production dataset this exceeds the 85 s middleware
+# timeout and returns 504, blocking the index-repair workflow BEFORE
+# it can even check the three target collections.
+#
+# This endpoint computes the duplicate-key count for ONE collection
+# at a time, bounded by the collection's logical_key_fields.  Paired
+# with the 300 s route-timeout override installed in
+# backend/middleware/resilience.py, this allows the index-repair
+# workflow to run three cheap, independent checks instead of one
+# all-collections scan.  No index creation here — read-only.
+@router.get("/canonical-cutover/dup-check")
+async def canonical_dup_check(
+    admin: Annotated[UserPublic, Depends(_require_admin)],
+    collection: str,
+):
+    """READ-ONLY duplicate-logical-key count for a single canonical
+    collection.  Takes ``collection`` from the request allowlist
+    (RECONCILIATION_COLLECTIONS).  Returns:
+
+        {
+          "collection":          "<name>",
+          "logical_key_fields":  [...],
+          "canonical_count":     <int>,
+          "duplicate_logical_identities": <int>,
+          "no_duplicates":       <bool>,
+          "elapsed_ms":          <int>
+        }
+
+    Never writes.  Never activates.  Never touches other collections.
+    """
+    if collection not in RECONCILIATION_COLLECTIONS:
+        raise HTTPException(status_code=400,
+                            detail=f"collection '{collection}' not in RECONCILIATION_COLLECTIONS")
+
+    from services.canonical_cutover import logical_key_fields as _lkf
+
+    canon_db = get_canonical_database()
+    key_fields = list(_lkf(collection))
+    if not key_fields:
+        raise HTTPException(status_code=400,
+                            detail=f"collection '{collection}' has no logical_key_fields")
+
+    _t0 = time.perf_counter()
+
+    try:
+        canonical_count = await canon_db[collection].count_documents({})
+    except Exception as e:
+        raise HTTPException(status_code=500,
+                            detail=f"count_documents failed: {type(e).__name__}: {str(e)[:200]}")
+
+    # Aggregate duplicate groups.  allowDiskUse keeps the server
+    # resident set bounded for large collections.
+    pipeline = [
+        {"$group": {"_id": {f: f"${f}" for f in key_fields},
+                     "n":   {"$sum": 1}}},
+        {"$match": {"n": {"$gt": 1}}},
+        {"$count": "dup_count"},
+    ]
+    dup_count = 0
+    try:
+        cur = canon_db[collection].aggregate(pipeline, allowDiskUse=True)
+        async for d in cur:
+            dup_count = int(d.get("dup_count", 0) or 0)
+    except Exception as e:
+        raise HTTPException(status_code=500,
+                            detail=f"dup aggregation failed: {type(e).__name__}: {str(e)[:200]}")
+
+    elapsed_ms = int((time.perf_counter() - _t0) * 1000.0)
+    return {
+        "collection":                   collection,
+        "logical_key_fields":           key_fields,
+        "canonical_count":              canonical_count,
+        "duplicate_logical_identities": dup_count,
+        "no_duplicates":                dup_count == 0,
+        "elapsed_ms":                   elapsed_ms,
     }
 
 
