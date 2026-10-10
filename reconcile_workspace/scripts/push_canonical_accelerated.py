@@ -176,163 +176,305 @@ def _resolve_existing_batches(
     coll_manifest: dict[int, dict],
     new_batch_size: int,
 ) -> tuple[list[dict], list[dict], dict]:
-    """Single-pass cumulative-offset resolver (Support-confirmed).
+    """R3 Resume #18 — cumulative-offset resolver + per-batch fixed-era
+    fallback (Support-confirmed, hash-equality authority).
 
-    Walks ``src_path`` NDJSON in file order, applies ``_is_excluded``,
-    and partitions the accepted-doc stream into batches at the exact
-    cumulative offsets implied by the authoritative manifest's
-    per-batch ``doc_count`` values.  No fixed-bsize derivation, no
-    inference — the manifest is the authority.
+    The pre-#18 resolver summed stored ``doc_count`` from batch 0 for
+    every batch, assuming a single pinned partition run.  That is
+    correct for the 1000-era and leftover batches of all 21
+    collections, but WRONG for four collections where batches came
+    from independent historical partition runs with overlapping
+    batch_no namespaces:
 
-    Returns:
-        (resolved, mismatches, summary)
-        - resolved[i]  : one dict per batch (``_RESOLVED_FIELDS``)
-        - mismatches[i]: subset of resolved where ``match=False``,
-                         enriched with layout-mismatch fields for the
-                         operator-facing report.
-        - summary      : {total_batches, succeeded_batches,
-                          failed_batches, in_progress_batches,
-                          new_tail_batches, cumulative_total,
-                          first_5_batches:[(bno, doc_count, status)]}
+        settlement_events          batches 5..1973 are 250-era whose
+                                   content_hash was computed from
+                                   offsets ``bno*250`` even though
+                                   earlier batches were 1000-era.
+        soccer_player_game_logs    batches 29..313 (same pattern)
+        team_game_actuals          batches 29..153 (same pattern)
+        tennis_matches_history     batches 29..66 (same pattern)
+
+    Algorithm (per existing batch, independent resolution):
+
+        A.  Compute the cumulative-manifest candidate at
+            ``start = sum(doc_count of every earlier batch_no)``.
+        B.  If its hash matches the authoritative ``content_hash``
+            → accept.
+        C.  Else, if the stored ``doc_count`` is a historical fixed-era
+            size (``250`` or ``1000``), compute a fixed-era candidate
+            at ``start = batch_no * doc_count``.  If its hash matches
+            → accept.
+        D.  If ``doc_count`` is an odd-size leftover (not 250 and not
+            1000), do NOT guess via multiplication; cumulative is the
+            only candidate.
+        E.  Hash equality against the stored ``content_hash`` is the
+            SOLE acceptance authority.  Collection names are never
+            used as the primary resolver rule.
+        F.  If no candidate matches → ``BATCH_LAYOUT_MISMATCH`` fail
+            closed (the entry stays in ``resolved`` with
+            ``match=False`` and is also appended to ``mismatches``).
+        G.  If more than one candidate matches, we keep the
+            cumulative one but set ``ambiguous=True`` for operator
+            visibility; stored ``doc_count`` + exact hash remain
+            authority.
+
+    Determinism: accepted-doc stream is pinned by walking
+    ``src_path`` NDJSON in file order and applying ``_is_excluded``
+    exactly once; both cumulative and fixed-era candidates slice the
+    same in-memory list, so the SAME resolved batch object is used
+    by CANARY_ONLY and the live Resume planner (R3 Resume #16
+    guarantee preserved).
+
+    New tail batches (beyond the historical range) are chunked at
+    ``new_batch_size`` starting at
+    ``max_hist_offset_used = max(start+size for every resolved
+    historical batch)``.  Not derived from cumulative state so a
+    fixed-era resolution of a late batch cannot bleed into tail
+    offsets.
+
+    Added fields in each resolved entry (backward-compatible —
+    pre-#18 fields untouched):
+
+        resolver_strategy  :  ``"cumulative" | "fixed-era-250" |
+                                "fixed-era-1000" | "cumulative-no-hash"
+                                | "new-tail" | "none"``
+        candidates_tried   :  list[str] — strategies evaluated
+        ambiguous          :  bool — >1 candidate matched
+
+    Added summary fields: ``strategy_counts``, ``max_end_offset``,
+    ``total_accepted``.
     """
     # Sort manifest batches by batch_no — cumulative offsets require
-    # strict ascending order.  Gaps are tolerated (we fail-closed
-    # separately via hash guard).
+    # strict ascending order.  Gaps are tolerated (fail-closed guard
+    # at hash-equality step).
     sorted_entries = sorted(coll_manifest.items(), key=lambda kv: kv[0])
-    # Build authoritative boundary table: [(batch_no, start, size, stored_hash, status), ...]
     boundaries: list[tuple[int, int, int, str, str]] = []
-    cur_start = 0
+    cum = 0
     for bno, meta in sorted_entries:
         size = int(meta.get("doc_count") or 0)
         if size <= 0:
-            # Manifest entry with zero doc_count — skip from boundary
-            # table but keep it visible in summary.
             continue
         stored_hash   = meta.get("content_hash") or ""
         stored_status = meta.get("status") or "unknown"
-        boundaries.append((int(bno), cur_start, size, stored_hash, stored_status))
-        cur_start += size
-    cumulative_total = cur_start
+        boundaries.append((int(bno), cum, size, stored_hash, stored_status))
+        cum += size
+    cumulative_total = cum
     max_hist_bno = max((b[0] for b in boundaries), default=-1)
 
-    # Single-pass walk through the accepted-doc stream.
+    # Load accepted-doc stream into memory ONCE for random-access
+    # slicing.  Random access is required because fixed-era fallback
+    # may need slice ``bno*size`` which is upstream of the cumulative
+    # pointer.  Memory bound: ~500 B/doc × ~2 M docs/coll ≈ 1 GB
+    # worst-case on GH Actions runners (7 GB available).
+    accepted_docs: list[dict] = []
+    for d in _ndjson(src_path):
+        if _is_excluded(d):
+            continue
+        accepted_docs.append(d)
+    total_accepted = len(accepted_docs)
+
     resolved:   list[dict] = []
     mismatches: list[dict] = []
+    strategy_counts = {
+        "cumulative":          0,
+        "fixed-era-250":       0,
+        "fixed-era-1000":      0,
+        "cumulative-no-hash":  0,  # legacy manifest entry w/o content_hash
+        "new-tail":            0,
+        "none":                0,  # mismatch (no candidate accepted)
+    }
+    max_end_offset = 0
 
-    cur_boundary_idx = 0
-    buf: list[dict]  = []
-    pos              = 0  # position in the accepted (post-filter) stream
+    _FIXED_ERA_SIZES = (250, 1000)
 
-    def _flush(bno: int, start: int, buf_: list[dict],
-                stored_hash: str, stored_status: str) -> None:
-        computed_hash = _server_batch_content_hash(coll, buf_)
-        match = (not stored_hash) or (computed_hash == stored_hash)
-        reason = None
-        if stored_hash and computed_hash != stored_hash:
-            reason = (f"computed_hash != stored_hash "
-                      f"(expected={stored_hash[:12]}… got={computed_hash[:12]}…)")
-        entry = {
-            "collection":      coll,
-            "batch_no":        bno,
-            "start_offset":    start,
-            "doc_count":       len(buf_),
-            "buf":             list(buf_),
-            "computed_hash":   computed_hash,
-            "stored_hash":     stored_hash or None,
-            "stored_status":   stored_status,
-            "match":           match,
-            "mismatch_reason": reason,
-        }
-        resolved.append(entry)
-        if stored_hash and not match:
+    for bno, cum_start, size, stored_hash, stored_status in boundaries:
+        # ── Build candidates: strategy_name, start, computed_hash, buf ──
+        candidates: list[tuple[str, int, str, list[dict]]] = []
+
+        # A. Cumulative candidate (always tried if slice is fully in range)
+        cum_buf = accepted_docs[cum_start:cum_start + size]
+        if len(cum_buf) == size:
+            cum_hash = _server_batch_content_hash(coll, cum_buf)
+            candidates.append(("cumulative", cum_start, cum_hash, cum_buf))
+
+        # C. Fixed-era candidate (only for canonical era sizes)
+        if size in _FIXED_ERA_SIZES:
+            fixed_start = bno * size
+            # Avoid duplicate work if cumulative == fixed-era for this batch
+            if fixed_start != cum_start:
+                fixed_buf = accepted_docs[fixed_start:fixed_start + size]
+                if len(fixed_buf) == size:
+                    fixed_hash = _server_batch_content_hash(coll, fixed_buf)
+                    candidates.append(
+                        (f"fixed-era-{size}", fixed_start, fixed_hash, fixed_buf))
+
+        tried_strategies = [c[0] for c in candidates]
+
+        # ── E. Hash-equality selection ───────────────────────────────
+        if not stored_hash:
+            # Legacy entry without content_hash — fall back to
+            # cumulative without hash verification.  Advance pointer
+            # by stored size.
+            if cum_buf and len(cum_buf) == size:
+                computed_hash = _server_batch_content_hash(coll, cum_buf)
+                entry = {
+                    "collection":        coll,
+                    "batch_no":          bno,
+                    "start_offset":      cum_start,
+                    "doc_count":         size,
+                    "buf":               list(cum_buf),
+                    "computed_hash":     computed_hash,
+                    "stored_hash":       None,
+                    "stored_status":     stored_status,
+                    "match":             True,  # no hash to disprove
+                    "mismatch_reason":   None,
+                    "resolver_strategy": "cumulative-no-hash",
+                    "candidates_tried":  ["cumulative"],
+                    "ambiguous":         False,
+                }
+                resolved.append(entry)
+                strategy_counts["cumulative-no-hash"] += 1
+                max_end_offset = max(max_end_offset, cum_start + size)
+            else:
+                # Under-reach: NDJSON too short for this cumulative slice.
+                mm = {
+                    "collection":           coll,
+                    "batch_no":             bno,
+                    "start_offset":         cum_start,
+                    "expected_hash":        None,
+                    "computed_hash":        None,
+                    "authoritative_count":  size,
+                    "reconstructed_count":  len(cum_buf),
+                    "authoritative_status": stored_status,
+                    "mismatch_reason": (
+                        f"NDJSON_UNDER_REACH: cumulative slice "
+                        f"[{cum_start}:{cum_start+size}] exceeds accepted "
+                        f"stream length {total_accepted}"),
+                    "tried_strategies":     ["cumulative"],
+                }
+                mismatches.append(mm)
+                resolved.append({
+                    "collection":        coll,
+                    "batch_no":          bno,
+                    "start_offset":      cum_start,
+                    "doc_count":         size,
+                    "buf":               [],
+                    "computed_hash":     None,
+                    "stored_hash":       None,
+                    "stored_status":     stored_status,
+                    "match":             False,
+                    "mismatch_reason":   mm["mismatch_reason"],
+                    "resolver_strategy": "none",
+                    "candidates_tried":  ["cumulative"],
+                    "ambiguous":         False,
+                })
+                strategy_counts["none"] += 1
+            continue
+
+        matching = [c for c in candidates if c[2] == stored_hash]
+
+        if matching:
+            # F. Prefer cumulative if it matched (dense interpretation);
+            # otherwise take the first (and only) fixed-era match.
+            chosen = next((c for c in matching if c[0] == "cumulative"),
+                          matching[0])
+            strat, start, computed_hash, buf = chosen
+            resolved.append({
+                "collection":        coll,
+                "batch_no":          bno,
+                "start_offset":      start,
+                "doc_count":         size,
+                "buf":               list(buf),
+                "computed_hash":     computed_hash,
+                "stored_hash":       stored_hash,
+                "stored_status":     stored_status,
+                "match":             True,
+                "mismatch_reason":   None,
+                "resolver_strategy": strat,
+                "candidates_tried":  tried_strategies,
+                "ambiguous":         len(matching) > 1,
+            })
+            strategy_counts[strat] = strategy_counts.get(strat, 0) + 1
+            max_end_offset = max(max_end_offset, start + size)
+        else:
+            # G. No candidate matched → BATCH_LAYOUT_MISMATCH.  Report
+            # the cumulative candidate's hash for operator visibility
+            # (it's the one that would have been POSTed under the
+            # pre-#18 resolver).
+            cum_cand = next((c for c in candidates if c[0] == "cumulative"), None)
+            if cum_cand is not None:
+                _s, start, computed_hash, buf = cum_cand
+            else:
+                start, computed_hash, buf = cum_start, None, []
+            reason = (f"no candidate hash matched stored_hash "
+                      f"(tried={tried_strategies} "
+                      f"expected={stored_hash[:12]}…)")
+            resolved.append({
+                "collection":        coll,
+                "batch_no":          bno,
+                "start_offset":      start,
+                "doc_count":         size,
+                "buf":               list(buf),
+                "computed_hash":     computed_hash,
+                "stored_hash":       stored_hash,
+                "stored_status":     stored_status,
+                "match":             False,
+                "mismatch_reason":   reason,
+                "resolver_strategy": "none",
+                "candidates_tried":  tried_strategies,
+                "ambiguous":         False,
+            })
             mismatches.append({
                 "collection":           coll,
                 "batch_no":             bno,
                 "start_offset":         start,
                 "expected_hash":        stored_hash,
                 "computed_hash":        computed_hash,
-                "authoritative_count":  len(buf_),  # same by construction
-                "reconstructed_count":  len(buf_),
+                "authoritative_count":  size,
+                "reconstructed_count":  len(buf),
                 "authoritative_status": stored_status,
                 "mismatch_reason":      reason,
+                "tried_strategies":     tried_strategies,
             })
+            strategy_counts["none"] += 1
+            # Pre-#18 legacy mismatch_reason wording kept for the
+            # single-candidate cumulative case so existing operator
+            # dashboards / tests continue to render the familiar
+            # "computed_hash != stored_hash" prefix.
+            if tried_strategies == ["cumulative"] and computed_hash:
+                mismatches[-1]["mismatch_reason"] = (
+                    f"computed_hash != stored_hash "
+                    f"(expected={stored_hash[:12]}… got={computed_hash[:12]}…)")
+                resolved[-1]["mismatch_reason"] = mismatches[-1]["mismatch_reason"]
 
-    for d in _ndjson(src_path):
-        if _is_excluded(d):
-            continue
-        if cur_boundary_idx < len(boundaries):
-            bno, start, size, stored_hash, stored_status = boundaries[cur_boundary_idx]
-            # Guard: if cumulative offsets have holes (which happens
-            # when boundaries are not strictly consecutive starting at 0),
-            # we skip docs between the previous end and `start`.  This
-            # is defensive — Support states the manifest is dense.
-            if pos < start:
-                # Advance by discarding — but discarding changes
-                # downstream positions. To be safe, treat holes as
-                # a hard error: FAIL CLOSED.
-                mismatches.append({
-                    "collection":           coll,
-                    "batch_no":             bno,
-                    "start_offset":         start,
-                    "expected_hash":        stored_hash,
-                    "computed_hash":        None,
-                    "authoritative_count":  size,
-                    "reconstructed_count":  0,
-                    "authoritative_status": stored_status,
-                    "mismatch_reason": (
-                        f"MANIFEST_OFFSET_HOLE: boundary start={start} "
-                        f"but prev end={pos}; batch_no sequence is not "
-                        f"dense from offset 0"),
-                })
-                # Still consume to advance pos.
-            buf.append(d)
-            pos += 1
-            if len(buf) >= size:
-                _flush(bno, start, buf, stored_hash, stored_status)
-                buf = []
-                cur_boundary_idx += 1
-        else:
-            # Beyond the historical range — new tail batches at
-            # NEW_COLLECTION_BATCH_SIZE.
-            buf.append(d)
-            pos += 1
-            if len(buf) >= new_batch_size:
-                _flush(max_hist_bno + 1 + (cur_boundary_idx - len(boundaries)),
-                        pos - len(buf), buf, "", "new")
-                buf = []
-                cur_boundary_idx += 1
+    # ── New tail batches (beyond max historical offset actually used) ─
+    tail_start = max_end_offset
+    tail_bno = max_hist_bno + 1
+    tail_docs = accepted_docs[tail_start:]
+    for i in range(0, len(tail_docs), new_batch_size):
+        chunk = tail_docs[i:i + new_batch_size]
+        chunk_hash = _server_batch_content_hash(coll, chunk)
+        resolved.append({
+            "collection":        coll,
+            "batch_no":          tail_bno,
+            "start_offset":      tail_start + i,
+            "doc_count":         len(chunk),
+            "buf":               list(chunk),
+            "computed_hash":     chunk_hash,
+            "stored_hash":       None,
+            "stored_status":     "new",
+            "match":             True,
+            "mismatch_reason":   None,
+            "resolver_strategy": "new-tail",
+            "candidates_tried":  ["new-tail"],
+            "ambiguous":         False,
+        })
+        strategy_counts["new-tail"] += 1
+        tail_bno += 1
 
-    # Partial final batch.
-    if buf:
-        if cur_boundary_idx < len(boundaries):
-            bno, start, size, stored_hash, stored_status = boundaries[cur_boundary_idx]
-            # The final historical batch may legitimately be a partial
-            # tail (size < historical count) — that's a MISMATCH if the
-            # stored size says otherwise.
-            if len(buf) < size:
-                mismatches.append({
-                    "collection":           coll,
-                    "batch_no":             bno,
-                    "start_offset":         start,
-                    "expected_hash":        stored_hash,
-                    "computed_hash":        None,
-                    "authoritative_count":  size,
-                    "reconstructed_count":  len(buf),
-                    "authoritative_status": stored_status,
-                    "mismatch_reason": (
-                        f"NDJSON_UNDER_REACH: historical batch expected "
-                        f"{size} docs starting at {start} but NDJSON ran "
-                        f"out at {len(buf)}"),
-                })
-            else:
-                _flush(bno, start, buf, stored_hash, stored_status)
-        else:
-            _flush(max_hist_bno + 1 + (cur_boundary_idx - len(boundaries)),
-                    pos - len(buf), buf, "", "new")
-
-    # Summary stats.
+    # Summary stats
     status_counts = {"succeeded": 0, "failed": 0, "in_progress": 0,
-                      "incomplete_write": 0, "unknown": 0, "new": 0}
+                     "incomplete_write": 0, "unknown": 0, "new": 0}
     for r in resolved:
         s = r["stored_status"]
         if s in status_counts: status_counts[s] += 1
@@ -343,10 +485,13 @@ def _resolve_existing_batches(
         "total_batches":       len(resolved),
         "cumulative_total":    cumulative_total,
         "max_hist_bno":        max_hist_bno,
+        "max_end_offset":      max_end_offset,
+        "total_accepted":      total_accepted,
         "new_tail_batches":    status_counts["new"],
         "succeeded_batches":   status_counts["succeeded"],
         "failed_batches":      status_counts["failed"],
         "in_progress_batches": status_counts["in_progress"] + status_counts["incomplete_write"],
+        "strategy_counts":     dict(strategy_counts),
         "first_5_batches":     first_5,
     }
     return resolved, mismatches, summary
