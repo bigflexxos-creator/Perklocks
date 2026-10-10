@@ -42,6 +42,9 @@ name: Perklocks R3 Phase-7 Dedupe & Finalize
 #   PROD_ADMIN_EMAIL
 #   PROD_ADMIN_PASSWORD
 #   CANONICAL_IMPORT_TOKEN
+#   PREVIEW_BASE_URL           (used by the shared checkpoint-download
+#                                composite action — same URL every R3
+#                                workflow uses)
 #   MIGRATION_DOWNLOAD_TOKEN   (used to fetch pinned source tarball)
 
 on:
@@ -86,6 +89,9 @@ jobs:
     # per-group deletes individually; Phase-8 cert fingerprints every
     # collection.  Hard cap 90 min.
     timeout-minutes: 90
+    env:
+      CHKP_DIR:    /tmp/perklocks-checkpoints
+      EXTRACT_DIR: /tmp/perklocks-pinned
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -106,35 +112,93 @@ jobs:
           fi
           echo "::add-mask::$CP"
 
-      - name: Fetch pinned v2_phase5 canonical NDJSONs
-        if: ${{ inputs.mode == 'APPLY' }}
+      # ── Pinned Phase-5 checkpoint — ALWAYS fetched ─────────────────
+      # Required for BOTH CANARY_ONLY (to flag authoritative-winner
+      # blockers) and APPLY (to drive survivor selection).  Uses the
+      # SAME shared composite action every other R3 workflow uses, so
+      # the download URL / SHA verification / retry policy are
+      # identical across the fleet.
+      - name: Download + verify phase5 checkpoint (shared composite action)
+        uses: ./.github/actions/perklocks-checkpoint-download
+        with:
+          phase:             phase5
+          preview_base_url:  ${{ secrets.PREVIEW_BASE_URL }}
+          download_token:    ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+          checkpoint_dir:    ${{ env.CHKP_DIR }}
+          fallback_filename: phase5_20261003_190628Z.tar.gz
+          fallback_bytes:    "337143523"
+          fallback_sha:      4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
+          max_attempts:      "10"
+          curl_max_time_seconds: "1800"
+
+      - name: Extract pinned v2_phase5/canonical NDJSONs
         env:
-          PROD_API_BASE:            ${{ secrets.PROD_API_BASE }}
-          MIGRATION_DOWNLOAD_TOKEN: ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+          EXPECTED_SHA: 4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
+          TARBALL_NAME: phase5_20261003_190628Z.tar.gz
         run: |
-          # Download the pinned phase5 tarball through the existing
-          # read-only migration-download endpoint and extract ONLY the
-          # 8 scope collections' canonical NDJSON files.
-          mkdir -p /tmp/perklocks-pinned
-          echo "::add-mask::$MIGRATION_DOWNLOAD_TOKEN"
-          # Use the same download pattern as earlier R3 workflows.
-          curl -sS -f -L \
-            -H "Authorization: Bearer $MIGRATION_DOWNLOAD_TOKEN" \
-            -o /tmp/perklocks-pinned/phase5.tar.gz \
-            "$PROD_API_BASE/api/admin/migration-download/phase5-canonical" \
-            || { echo "::error::pinned source download failed"; exit 1; }
-          tar -xzf /tmp/perklocks-pinned/phase5.tar.gz \
-            -C /tmp/perklocks-pinned \
-            v2_phase5/canonical/picks.ndjson \
-            v2_phase5/canonical/player_game_actuals.ndjson \
-            v2_phase5/canonical/player_game_logs.ndjson \
-            v2_phase5/canonical/player_identities.ndjson \
-            v2_phase5/canonical/prediction_snapshots.ndjson \
-            v2_phase5/canonical/pregame_snapshots.ndjson \
-            v2_phase5/canonical/publication_events.ndjson \
-            v2_phase5/canonical/settlement_events.ndjson
-          ls -lh /tmp/perklocks-pinned/v2_phase5/canonical/
-          rm -f /tmp/perklocks-pinned/phase5.tar.gz
+          set -euo pipefail
+          mkdir -p "${EXTRACT_DIR}"
+          TAR="${CHKP_DIR}/${TARBALL_NAME}"
+
+          # Second-line SHA verification — belt + braces with the
+          # composite action, keeps the fail-closed behaviour local
+          # to this workflow so a mis-matched tarball never reaches
+          # the Python driver.
+          ACTUAL_SHA=$(sha256sum "${TAR}" | awk '{print $1}')
+          if [ "${ACTUAL_SHA}" != "${EXPECTED_SHA}" ]; then
+            echo "::error::phase5 tarball SHA mismatch — expected=${EXPECTED_SHA} actual=${ACTUAL_SHA}"
+            exit 1
+          fi
+          echo "phase5 tarball SHA verified: ${ACTUAL_SHA}"
+
+          tar -xzf "${TAR}" -C "${EXTRACT_DIR}"
+          echo "extracted into ${EXTRACT_DIR}:"
+          ls -1 "${EXTRACT_DIR}" || true
+          # Archive layout is always v2_phase5/canonical/*.ndjson
+          if [ ! -d "${EXTRACT_DIR}/v2_phase5/canonical" ]; then
+            echo "::error::expected directory ${EXTRACT_DIR}/v2_phase5/canonical missing after extract"
+            exit 1
+          fi
+
+      - name: Preflight — verify all 21 pinned canonical NDJSONs
+        env:
+          EXPECTED_SHA: 4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
+          PINNED_SOURCE_DIR: ${{ env.EXTRACT_DIR }}/v2_phase5/canonical
+        run: |
+          set -euo pipefail
+          REQUIRED=(
+            games historical_ingestion_state nfl_ingest_meta
+            nfl_player_weekly parlay_history picks
+            player_game_actuals player_game_logs player_identities
+            prediction_snapshots pregame_snapshots publication_events
+            rollover_slate_events rollover_slates settlement_events
+            soccer_matches soccer_player_game_logs team_game_actuals
+            tennis_matches_history user_bets users
+          )
+          echo "pinned_source_dir: ${PINNED_SOURCE_DIR}"
+          echo "checkpoint_sha:    ${EXPECTED_SHA}"
+          MISSING=()
+          FOUND=0
+          for name in "${REQUIRED[@]}"; do
+            f="${PINNED_SOURCE_DIR}/${name}.ndjson"
+            if [ ! -f "$f" ]; then
+              MISSING+=("${name}.ndjson")
+              continue
+            fi
+            # Line count only — never doc contents
+            lc=$(wc -l < "$f")
+            printf "  %-32s  %10s lines\n" "${name}.ndjson" "$lc"
+            FOUND=$((FOUND + 1))
+          done
+          echo "pinned_canonical_files_found: ${FOUND} / 21"
+          if [ ${#MISSING[@]} -gt 0 ]; then
+            echo "::error::pinned canonical files missing: ${MISSING[*]}"
+            exit 1
+          fi
+          if [ "${FOUND}" -ne 21 ]; then
+            echo "::error::expected 21 pinned canonical files, found ${FOUND}"
+            exit 1
+          fi
 
       - name: Run Phase-7 dedupe driver
         id: driver
@@ -146,7 +210,7 @@ jobs:
           SESSION_ID:            ${{ inputs.session_id }}
           PHASE7_MODE:           ${{ inputs.mode }}
           PHASE7_CONFIRM_PHRASE: ${{ inputs.confirm_phrase }}
-          PINNED_SOURCE_DIR:     /tmp/perklocks-pinned/v2_phase5/canonical
+          PINNED_SOURCE_DIR:     ${{ env.EXTRACT_DIR }}/v2_phase5/canonical
           REPORT_PATH:           /tmp/perklocks-logs/r3_phase7_dedupe_report.json
           APPLY_BATCH_SIZE:      ${{ inputs.apply_batch_size }}
         run: |
