@@ -86,6 +86,66 @@ APPLY_DEDUPE_SCOPE: frozenset[str] = frozenset({
 # Audit collection — durable record of every dedupe mutation.
 DEDUPE_AUDIT_COLLECTION: str = "canonical_dedupe_audit"
 
+# ─── ObjectId ⇄ string normalization (JSON round-trip support) ──────
+# Phase-7 Support fix (2026-10-10):
+# FastAPI JSON-serialises the census response AFTER the handler returns.
+# Raw ``bson.ObjectId`` instances in ``groups[*]._ids`` cause a late
+# serialization failure that is converted by ``_ReliabilityMiddleware``
+# into the generic "Something went wrong — please retry." 500. The
+# response therefore represents every ``_id`` as a JSON-safe string
+# (``_jsonable_id``) and the APPLY path re-hydrates 24-char hex
+# ObjectId strings back into ``bson.ObjectId`` instances before any
+# Mongo find/delete op (``_normalize_mongo_id``).  Non-ObjectId ``_id``
+# values (UUID strings, numeric scalars) are preserved byte-identical.
+# This change is strictly a transport-level serialization fix: no
+# fingerprinting, logical-key, authority, or dedupe-rule behaviour is
+# modified.
+def _is_valid_objectid_str(x: Any) -> bool:
+    """True iff ``x`` is a 24-char hex string that parses as a Mongo
+    ObjectId. Non-strings and strings of any other length return False.
+    """
+    if not isinstance(x, str) or len(x) != 24:
+        return False
+    try:
+        from bson import ObjectId
+        return bool(ObjectId.is_valid(x))
+    except Exception:
+        return False
+
+
+def _normalize_mongo_id(x: Any) -> Any:
+    """Re-hydrate a transport-serialised Mongo ``_id`` for use in find/
+    delete operations.
+
+    * 24-char hex string that is a valid ``bson.ObjectId``  →  ObjectId
+    * every other value                                     →  unchanged
+
+    This mirrors the census round-trip exactly: ``_jsonable_id`` emits
+    a JSON-safe string on the way out, and this helper rebuilds the
+    native Mongo type on the way back in for the APPLY call. For
+    collections whose documents use string/UUID/scalar ``_id`` values
+    the input is preserved byte-identical.
+    """
+    if _is_valid_objectid_str(x):
+        from bson import ObjectId
+        return ObjectId(x)
+    return x
+
+
+def _jsonable_id(x: Any) -> Any:
+    """Return a JSON-serialisable representation of a Mongo ``_id``:
+    ``bson.ObjectId`` → its 24-char hex string; every other type is
+    returned unchanged.
+    """
+    try:
+        from bson import ObjectId
+        if isinstance(x, ObjectId):
+            return str(x)
+    except Exception:  # pragma: no cover - defensive
+        pass
+    return x
+
+
 # Fingerprint config — exclude Mongo _id + any underscore-prefixed
 # bookkeeping (``_canonical_*``, ``_import_*``, ``_resolution_*``,
 # ``_reconciled_at``, etc.).  Business fields never start with "_" in
@@ -304,7 +364,10 @@ async def scan_duplicates(
             dup_count = int(k["count"])
             lk_tuple = tuple(lk_dict.get(f) for f in key_fields)
             docs = collected.get(lk_tuple, [])
-            ids = [d["_id"] for d in docs]
+            # Phase-7 Support fix: serialise ObjectId _ids to strings so
+            # FastAPI JSON serialisation succeeds. See ``_jsonable_id``
+            # docstring above for the full round-trip contract.
+            ids = [_jsonable_id(d["_id"]) for d in docs]
             fps = [canonical_doc_fingerprint(d) for d in docs]
             cls = classify_group(fps) if fps else "UNKNOWN"
             if cls == EXACT_DUPLICATE:
@@ -456,16 +519,28 @@ async def apply_dedupe_group(
     if classification not in _CLASSIFICATIONS:
         raise ValueError(f"BAD_CLASSIFICATION: {classification!r}")
 
+    # ── Normalize transport-serialised ids back to native Mongo type ─
+    # The census JSON response represents ObjectId ``_id`` values as
+    # 24-char hex strings. On the APPLY call we re-hydrate those back
+    # to ``bson.ObjectId`` so Mongo find/delete predicates match the
+    # original stored documents. Non-ObjectId ``_id`` values (UUID or
+    # scalar strings) pass through unchanged. See ``_normalize_mongo_id``
+    # above for the full contract. This normalization is transport-only
+    # and never touches logical keys, fingerprints, authority, or any
+    # dedupe/business rule.
+    normalized_all_ids = [_normalize_mongo_id(i) for i in all_ids]
+
     # ── Load current docs for the group (hash-authoritative) ────────
     docs: list[dict] = []
-    async for d in db[collection].find({"_id": {"$in": list(all_ids)}}):
+    async for d in db[collection].find({"_id": {"$in": list(normalized_all_ids)}}):
         docs.append(d)
     found_ids = {d["_id"] for d in docs}
-    missing   = [i for i in all_ids if i not in found_ids]
+    missing   = [i for i in normalized_all_ids if i not in found_ids]
     if missing:
         raise ValueError(
             f"GROUP_IDS_MISSING_FROM_DB: {collection} "
-            f"logical_key={logical_key_values} missing={missing[:10]}"
+            f"logical_key={logical_key_values} "
+            f"missing={[_jsonable_id(i) for i in missing[:10]]}"
         )
     # Shape sanity: every doc actually belongs to this logical key.
     for d in docs:
@@ -473,7 +548,8 @@ async def apply_dedupe_group(
         key_expected = {f: logical_key_values[f] for f in sorted(expected_fields)}
         if key_from_doc != key_expected:
             raise ValueError(
-                f"DOC_LOGICAL_KEY_MISMATCH: {collection} _id={d['_id']} "
+                f"DOC_LOGICAL_KEY_MISMATCH: {collection} "
+                f"_id={_jsonable_id(d['_id'])} "
                 f"got={key_from_doc} expected={key_expected}"
             )
 
@@ -514,7 +590,12 @@ async def apply_dedupe_group(
                 f"{collection} key={logical_key_values}"
             )
         if survivor_hint_order:
-            ordered = [i for i in survivor_hint_order if i in matching_source]
+            # Re-hydrate transport-serialised ids in the hint order
+            # using the same contract as ``normalized_all_ids`` above
+            # so string ObjectIds compare equal to native ObjectId
+            # entries in ``matching_source``.
+            normalized_hint = [_normalize_mongo_id(i) for i in survivor_hint_order]
+            ordered = [i for i in normalized_hint if i in matching_source]
             if ordered:
                 survivor_id = ordered[0]
                 survivor_reason = REASON_EARLIEST_CANONICAL
@@ -553,7 +634,7 @@ async def apply_dedupe_group(
             f"({collection} key={logical_key_values})"
         )
 
-    deleted_ids = [i for i in all_ids if i != survivor_id]
+    deleted_ids = [i for i in normalized_all_ids if i != survivor_id]
 
     # Idempotent fast path: nothing to delete.
     if not deleted_ids:
@@ -561,7 +642,7 @@ async def apply_dedupe_group(
             "collection":             collection,
             "logical_key_values":     logical_key_values,
             "classification":         classification,
-            "survivor_id":            survivor_id,
+            "survivor_id":            _jsonable_id(survivor_id),
             "deleted_ids":            [],
             "deleted_count":          0,
             "survivor_reason":        survivor_reason,
@@ -571,16 +652,19 @@ async def apply_dedupe_group(
         }
 
     # ── Persist audit BEFORE delete ─────────────────────────────────
+    # Audit ``_id`` fields are stored as JSON-safe strings so the audit
+    # document can be re-serialised unchanged into deploy-log mirrors,
+    # workflow summaries, and the GH-Actions run artefacts.
     await _persist_audit(
         db,
         collection=collection,
         logical_key_values=logical_key_values,
-        all_ids=list(all_ids),
-        survivor_id=survivor_id,
-        deleted_ids=deleted_ids,
+        all_ids=[_jsonable_id(i) for i in normalized_all_ids],
+        survivor_id=_jsonable_id(survivor_id),
+        deleted_ids=[_jsonable_id(i) for i in deleted_ids],
         survivor_reason=survivor_reason,
         source_fingerprint=authoritative_fingerprint,
-        doc_fingerprints={str(k): v for k, v in doc_fps.items()},
+        doc_fingerprints={_jsonable_id(k): v for k, v in doc_fps.items()},
         workflow_run_id=workflow_run_id,
         session_id=session_id,
         classification=classification,
@@ -608,8 +692,8 @@ async def apply_dedupe_group(
         "collection":             collection,
         "logical_key_values":     logical_key_values,
         "classification":         classification,
-        "survivor_id":            survivor_id,
-        "deleted_ids":            deleted_ids,
+        "survivor_id":            _jsonable_id(survivor_id),
+        "deleted_ids":            [_jsonable_id(i) for i in deleted_ids],
         "deleted_count":          len(deleted_ids),
         "survivor_reason":        survivor_reason,
         "pre_delete_guard":       "pass",
