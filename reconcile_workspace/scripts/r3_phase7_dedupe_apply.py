@@ -120,6 +120,45 @@ RECONCILIATION_COLLECTIONS_LOCAL: tuple[str, ...] = (
 # Must mirror backend/services/canonical_dedupe.APPLY_DEDUPE_CONFIRM_PHRASE
 APPLY_CONFIRM_PHRASE: str = "APPLY_PERKLOCKS_DEDUPE_R3_PHASE7_V1"
 
+# Must mirror backend/routes/canonical_cutover_routes.PATCH_DIVERGENT_CONFIRM_PHRASE.
+# Narrow one-off endpoint that patches ``shots: null → 0`` for exactly
+# the two Phase-7 NHL ``player_game_logs`` divergence groups confirmed
+# by Perklocks Support.  The backend endpoint also enforces its own
+# hard-coded allowlist, so this driver cannot patch anything else even
+# if the operator edits these constants.
+PATCH_DIVERGENT_CONFIRM_PHRASE: str = "PATCH_PERKLOCKS_DIVERGENT_NHL_SHOTS_V1"
+_NHL_SHOTS_PATCHABLE_GROUPS: tuple[dict, ...] = (
+    {
+        "collection": "player_game_logs",
+        "logical_key_values": {
+            "sport": "nhl", "game_id": "nhl_2025020042",
+            "player_id": "nhl_8480113",
+        },
+        "authoritative_fingerprint":
+            "14492740b54d0a86d682b4dc624ba08d6e23efa17dc057a9a9ff44e9c55def98",
+    },
+    {
+        "collection": "player_game_logs",
+        "logical_key_values": {
+            "sport": "nhl", "game_id": "nhl_2025020055",
+            "player_id": "nhl_8480798",
+        },
+        "authoritative_fingerprint":
+            "641515526acaf694a4e788260e1de4da5cac52d7d7e8629ecb2874c9f9318d92",
+    },
+)
+
+
+def _is_nhl_shots_patchable(coll: str, lk: dict) -> dict | None:
+    """Return the whitelist entry for the (collection, logical-key)
+    pair if the driver is permitted to request a divergence patch for
+    it; otherwise ``None``.
+    """
+    for g in _NHL_SHOTS_PATCHABLE_GROUPS:
+        if g["collection"] == coll and g["logical_key_values"] == lk:
+            return g
+    return None
+
 # Must mirror backend/services/canonical_cutover._LOGICAL_KEYS for the 8.
 _LOGICAL_KEYS_PHASE7: dict[str, tuple[str, ...]] = {
     "picks":                ("id",),
@@ -513,6 +552,17 @@ def main() -> int:
     plans:                list[dict] = []
     blockers_conflicting: list[dict] = []
     blockers_exact_div:   list[dict] = []
+    # ``patchable_divergent`` collects the subset of exact-divergence
+    # groups whose (collection, logical-key, authoritative-fingerprint)
+    # tuple matches the hard-coded NHL-shots whitelist above AND the
+    # authoritative fingerprint from the pinned source agrees with the
+    # one bake-in constant. The driver will POST
+    # ``/canonical-cutover/patch-divergent-group`` for each of these
+    # BEFORE dispatching APPLY. Any divergent group not in the
+    # whitelist (or whose authoritative fingerprint does not match
+    # the hard-coded constant) still goes to ``blockers_exact_div``
+    # and halts APPLY, preserving fail-closed authority.
+    patchable_divergent:  list[dict] = []
     for coll in APPLY_SCOPE_COLLS:
         entry = apply_scope_summary.get(coll)
         if not entry:
@@ -548,15 +598,47 @@ def main() -> int:
                         "all_ids":              grp["_ids"],
                     })
                 else:
-                    blockers_exact_div.append({
-                        "collection":           coll,
-                        "logical_key_values":   lk_dict,
-                        "classification":       grp["classification"],
-                        "reason":               "EXACT_GROUP_DIVERGES_FROM_SOURCE",
-                        "authoritative_fp":     auth_fp,
-                        "all_docs_fp":          grp["fingerprints"][0],
-                        "all_ids":              grp["_ids"],
-                    })
+                    # Phase-7 R3 Support-approved auto-patch: the two
+                    # NHL ``player_game_logs`` shots:null→0 groups
+                    # diverge from the pinned source on a single
+                    # business field. If this group matches the
+                    # hard-coded whitelist AND the pinned
+                    # authoritative fingerprint equals the whitelist
+                    # constant, record it for patch+plan generation
+                    # below. Otherwise it remains an APPLY-blocker.
+                    patchable = _is_nhl_shots_patchable(coll, lk_dict)
+                    if (patchable is not None
+                            and patchable["authoritative_fingerprint"] == auth_fp):
+                        patchable_divergent.append({
+                            "collection":              coll,
+                            "logical_key_values":      lk_dict,
+                            "authoritative_fingerprint": auth_fp,
+                            "all_ids":                 grp["_ids"],
+                            "dup_count":               grp["dup_count"],
+                            "before_fingerprint":      grp["fingerprints"][0],
+                        })
+                        # Build a plan now: after the patch the
+                        # group will be EXACT_DUPLICATE with all docs
+                        # matching the pinned authoritative
+                        # fingerprint. The dedupe engine will keep
+                        # one and delete the other normally.
+                        plans.append({
+                            "collection":                coll,
+                            "logical_key_values":        lk_dict,
+                            "classification":            "EXACT_DUPLICATE",
+                            "all_ids":                   grp["_ids"],
+                            "authoritative_fingerprint": auth_fp,
+                        })
+                    else:
+                        blockers_exact_div.append({
+                            "collection":           coll,
+                            "logical_key_values":   lk_dict,
+                            "classification":       grp["classification"],
+                            "reason":               "EXACT_GROUP_DIVERGES_FROM_SOURCE",
+                            "authoritative_fp":     auth_fp,
+                            "all_docs_fp":          grp["fingerprints"][0],
+                            "all_ids":              grp["_ids"],
+                        })
                 continue
             # Plan: use truncated id list from census (max_docs_per_group
             # default 50).  For a group with >50 ids, caller must raise
@@ -580,7 +662,8 @@ def main() -> int:
 
     print(f"\n[step2] built plans={len(plans)}  "
           f"blockers_conflicting={len(blockers_conflicting)}  "
-          f"blockers_exact_div={len(blockers_exact_div)}")
+          f"blockers_exact_div={len(blockers_exact_div)}  "
+          f"patchable_divergent={len(patchable_divergent)}")
 
     canary_report = {
         "generated_at":            census.get("generated_at"),
@@ -597,6 +680,7 @@ def main() -> int:
         "apply_plan_count":        len(plans),
         "blockers_conflicting":    blockers_conflicting,
         "blockers_exact_div":      blockers_exact_div,
+        "patchable_divergent":     patchable_divergent,
     }
 
     # ── STEP 1 EXIT: CANARY_ONLY ────────────────────────────────────
@@ -627,6 +711,58 @@ def main() -> int:
         _write_report(report_path,
                         {**canary_report, "verdict": "APPLY_BLOCKED"})
         return 3
+
+    # ── Phase-7 R3 divergence pre-patch (NHL shots:null→0) ─────────
+    # Executed only in APPLY mode after confirm_phrase check, before
+    # the generic apply-dedupe dispatch. Each entry hits the hard-
+    # coded ``patch-divergent-group`` endpoint which enforces its own
+    # allowlist, field whitelist, old/new-value constraints, duplicate
+    # count, _id set, and post-patch fingerprint verification. If any
+    # patch call fails, APPLY is aborted — the audit trail
+    # (DIVERGENCE_PATCH + UPDATE_RESULT) remains in canonical_dedupe_
+    # audit for operator review.
+    divergence_patch_results: list[dict] = []
+    if patchable_divergent:
+        print(f"\n[step2.5] POST /patch-divergent-group ({len(patchable_divergent)} "
+              f"group(s), concurrency=1)")
+        for entry in patchable_divergent:
+            code, body = _http(
+                f"{api_base}/api/admin/canonical-cutover/patch-divergent-group",
+                headers=hdr_tok,
+                body={
+                    "session_id":                session_id,
+                    "workflow_run_id":           workflow_run_id,
+                    "confirm_phrase":            PATCH_DIVERGENT_CONFIRM_PHRASE,
+                    "collection":                entry["collection"],
+                    "logical_key_values":        entry["logical_key_values"],
+                    "field":                     "shots",
+                    "old_value_sentinel":        None,
+                    "new_value":                 0,
+                    "authoritative_fingerprint": entry["authoritative_fingerprint"],
+                },
+                method="POST", timeout_s=120,
+            )
+            divergence_patch_results.append({
+                "collection":         entry["collection"],
+                "logical_key_values": entry["logical_key_values"],
+                "status":             code,
+                "response":           body,
+            })
+            if code != 200 or not (isinstance(body, dict) and body.get("ok")):
+                print(f"[r3-ph7] FATAL: divergence patch failed for "
+                      f"{entry['logical_key_values']} status={code} body={body}",
+                      file=sys.stderr)
+                _write_report(report_path, {
+                    **canary_report,
+                    "verdict":                   "APPLY_ABORTED_PATCH_FAILED",
+                    "divergence_patch_results":  divergence_patch_results,
+                })
+                return 2
+            print(f"[step2.5] patched {entry['logical_key_values']} "
+                  f"matched={body.get('matched_count')} "
+                  f"modified={body.get('modified_count')} "
+                  f"tx={body.get('transactional')} "
+                  f"after_fp={body.get('after_fingerprint','')[:16]}…")
 
     # ── POST /apply-dedupe (batched) ────────────────────────────────
     print(f"\n[step3] POST /apply-dedupe ({len(plans)} plans in batches "
@@ -756,6 +892,7 @@ def main() -> int:
         "post_apply_dup_groups": post_scope,
         "indexes_response":     idx_resp,
         "phase8_cert":          cert,
+        "divergence_patch_results": divergence_patch_results,
     }
     _write_report(report_path, final)
     return 0 if cert_pass else 6

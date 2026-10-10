@@ -1533,3 +1533,438 @@ async def canonical_cutover_apply_dedupe(
         "results":          results,
         "ok":               halted_at is None,
     }
+
+
+# ────────────────────────────────────────────────────────────────────
+#   POST /canonical-cutover/patch-divergent-group
+# ────────────────────────────────────────────────────────────────────
+#
+# TEMPORARY, HARD-CODED surgical endpoint created on 2026-10-10 to
+# unblock the Phase-7 APPLY for exactly two ``player_game_logs``
+# EXACT-divergence groups confirmed by Perklocks Support. Both groups
+# diverge from the pinned ``v2_phase5/canonical/player_game_logs.ndjson``
+# authority on a single business field (``shots``): Production stores
+# ``null``/missing, the pinned authoritative source stores ``0``.
+#
+# This endpoint:
+#   * mutates ONLY those two logical keys (hard-coded allowlist below),
+#   * mutates ONLY the single field ``shots``,
+#   * accepts ONLY the transition ``null|missing → 0``,
+#   * requires the current duplicate count to be EXACTLY 2,
+#   * requires the current ``_id`` set to equal the two canary-proven
+#     ObjectId strings per group,
+#   * requires EVERY doc in the group to have ``shots`` null/missing
+#     before mutation,
+#   * writes a ``DIVERGENCE_PATCH`` audit record BEFORE mutate and an
+#     ``UPDATE_RESULT`` audit record AFTER mutate,
+#   * verifies the post-patch fingerprint of EACH surviving doc
+#     independently matches the pinned authoritative fingerprint,
+#   * fails closed on any precondition miss with zero mutation,
+#   * runs transactionally when Production Mongo supports transactions
+#     (replica-set); otherwise enforces matched_count=2 /
+#     modified_count=2 and immediately re-reads both exact IDs.
+#
+# No other logical key, field, old-value, or new-value is reachable
+# through this endpoint. The allowlist is byte-literal and cannot be
+# bypassed by the request body.
+PATCH_DIVERGENT_CONFIRM_PHRASE: str = "PATCH_PERKLOCKS_DIVERGENT_NHL_SHOTS_V1"
+_PATCH_DIVERGENT_AUDIT_EVENT:     str = "DIVERGENCE_PATCH"
+_PATCH_DIVERGENT_RESULT_EVENT:    str = "UPDATE_RESULT"
+
+
+# Hard-coded allowlist of the EXACTLY TWO groups eligible for patch.
+# Any request whose (collection, logical_key_values) tuple is not in
+# this table is refused.
+_PATCH_DIVERGENT_ALLOWED_GROUPS: tuple[dict, ...] = (
+    {
+        "collection":                 "player_game_logs",
+        "logical_key_values":         {
+            "sport":     "nhl",
+            "game_id":   "nhl_2025020042",
+            "player_id": "nhl_8480113",
+        },
+        "expected_before_fingerprint": "c348e4ee99c2e5848b1ae5562483a93426e7c447b4a379167a74e981d3c160a4",
+        "expected_authoritative_fingerprint": "14492740b54d0a86d682b4dc624ba08d6e23efa17dc057a9a9ff44e9c55def98",
+        "expected_doc_ids":           (
+            "6ac449987944462a0d2a4278",
+            "6ac449987944462a0d2a4279",
+        ),
+    },
+    {
+        "collection":                 "player_game_logs",
+        "logical_key_values":         {
+            "sport":     "nhl",
+            "game_id":   "nhl_2025020055",
+            "player_id": "nhl_8480798",
+        },
+        "expected_before_fingerprint": "56c611c24137eeccef810887246d64c10c6ae3d29bb0da9e210cd36be2204e58",
+        "expected_authoritative_fingerprint": "641515526acaf694a4e788260e1de4da5cac52d7d7e8629ecb2874c9f9318d92",
+        "expected_doc_ids":           (
+            "6ac449bf7944462a0d2a5328",
+            "6ac449bf7944462a0d2a532d",
+        ),
+    },
+)
+
+# The ONLY field this endpoint will ever write.
+_PATCH_DIVERGENT_FIELD:      str = "shots"
+_PATCH_DIVERGENT_OLD_ALLOWED: tuple = (None,)   # also matches "missing"
+_PATCH_DIVERGENT_NEW_VALUE:    int = 0
+
+
+def _match_allowed_group(collection: str,
+                         logical_key_values: dict) -> Optional[dict]:
+    """Return the allowlist entry for the (collection, key) tuple, or
+    ``None`` if the pair is not whitelisted."""
+    for g in _PATCH_DIVERGENT_ALLOWED_GROUPS:
+        if g["collection"] != collection:
+            continue
+        if g["logical_key_values"] == logical_key_values:
+            return g
+    return None
+
+
+class _PatchDivergentBody(BaseModel):
+    session_id:                 str = Field(..., min_length=8, max_length=128)
+    workflow_run_id:            str = Field(..., min_length=1, max_length=128)
+    confirm_phrase:             str
+    collection:                 str
+    logical_key_values:         dict
+    field:                      str
+    old_value_sentinel:         Optional[Any] = None  # must be null
+    new_value:                  Any
+    authoritative_fingerprint:  str
+
+
+@router.post("/canonical-cutover/patch-divergent-group")
+async def canonical_cutover_patch_divergent_group(
+    body:                     _PatchDivergentBody,
+    admin:                    Annotated[UserPublic, Depends(_require_admin)],
+    x_canonical_import_token: Annotated[Optional[str],
+                              Header(convert_underscores=True)] = None,
+):
+    """Narrow hard-coded patch endpoint — see module docstring above.
+
+    Fail-closed contract: on ANY precondition miss (unknown group,
+    wrong field, wrong old/new value, wrong duplicate count, wrong
+    document ids, wrong current fingerprint, wrong post-patch
+    fingerprint, missing audit write) this endpoint raises
+    ``HTTPException`` and performs ZERO intentional mutation. If the
+    deployment target supports transactions the entire patch is
+    executed inside a transaction and aborted on any verification
+    failure; otherwise the endpoint enforces strict
+    ``matched_count=2`` / ``modified_count=2`` and re-reads both
+    exact IDs for post-verification.
+    """
+    # ── Security envelope (same as apply-dedupe) ────────────────────
+    if not _import_enabled():
+        raise HTTPException(status_code=403, detail="CANONICAL_IMPORT_ENABLED=false")
+    _verify_import_token(x_canonical_import_token)
+    if body.confirm_phrase != PATCH_DIVERGENT_CONFIRM_PHRASE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"BAD_CONFIRM_PHRASE: expected='{PATCH_DIVERGENT_CONFIRM_PHRASE}'")
+
+    # ── Hard-coded allowlist check ──────────────────────────────────
+    group = _match_allowed_group(body.collection, body.logical_key_values)
+    if group is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "GROUP_NOT_IN_ALLOWLIST: this endpoint only patches the "
+                "two Phase-7 NHL divergence groups confirmed by Support "
+                f"(got collection={body.collection!r} key={body.logical_key_values})"
+            ),
+        )
+    if body.field != _PATCH_DIVERGENT_FIELD:
+        raise HTTPException(
+            status_code=400,
+            detail=f"FIELD_NOT_ALLOWED: only field '{_PATCH_DIVERGENT_FIELD}' may be patched (got {body.field!r})")
+    if body.old_value_sentinel not in _PATCH_DIVERGENT_OLD_ALLOWED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"OLD_VALUE_NOT_ALLOWED: only null→0 transitions are permitted (got old={body.old_value_sentinel!r})")
+    if body.new_value != _PATCH_DIVERGENT_NEW_VALUE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"NEW_VALUE_NOT_ALLOWED: only {_PATCH_DIVERGENT_NEW_VALUE} is permitted (got {body.new_value!r})")
+    if body.authoritative_fingerprint != group["expected_authoritative_fingerprint"]:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "AUTHORITATIVE_FINGERPRINT_MISMATCH: "
+                f"caller={body.authoritative_fingerprint[:16]}… "
+                f"expected={group['expected_authoritative_fingerprint'][:16]}…"
+            ),
+        )
+
+    # ── Normalize expected object ids ──────────────────────────────
+    from bson import ObjectId
+    try:
+        expected_oids = tuple(ObjectId(h) for h in group["expected_doc_ids"])
+    except Exception as e:  # pragma: no cover - defensive
+        raise HTTPException(status_code=500, detail=f"INTERNAL_BAD_ALLOWLIST: {e}")
+
+    canon_db = get_canonical_database()
+    coll     = canon_db[body.collection]
+
+    # ── Precondition 1: logical-key count == exactly 2 ──────────────
+    lk_count = await coll.count_documents(body.logical_key_values)
+    if lk_count != 2:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"LOGICAL_KEY_COUNT_UNEXPECTED: "
+                f"collection={body.collection} key={body.logical_key_values} "
+                f"actual_count={lk_count} expected=2"
+            ),
+        )
+
+    # ── Precondition 2: _id set equals the two whitelisted _ids ─────
+    docs: list[dict] = []
+    async for d in coll.find(body.logical_key_values).sort("_id", 1):
+        docs.append(d)
+    found_oids = {d["_id"] for d in docs}
+    if found_oids != set(expected_oids):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "DOC_IDS_UNEXPECTED: "
+                f"found={[str(x) for x in sorted(found_oids, key=str)]} "
+                f"expected={list(group['expected_doc_ids'])}"
+            ),
+        )
+
+    # ── Precondition 3: BOTH docs currently have shots null/missing ─
+    for d in docs:
+        current = d.get(_PATCH_DIVERGENT_FIELD, None)
+        if current is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"CURRENT_VALUE_NOT_NULL: _id={str(d['_id'])} "
+                    f"{_PATCH_DIVERGENT_FIELD}={current!r} (expected null/missing)"
+                ),
+            )
+
+    # ── Precondition 4: before-fingerprints match the one proven by
+    #     the successful CANARY_ONLY run ────────────────────────────
+    from services.canonical_dedupe import canonical_doc_fingerprint
+    before_fps = {str(d["_id"]): canonical_doc_fingerprint(d) for d in docs}
+    for _id, fp in before_fps.items():
+        if fp != group["expected_before_fingerprint"]:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"BEFORE_FINGERPRINT_MISMATCH: _id={_id} "
+                    f"actual={fp[:16]}… "
+                    f"expected={group['expected_before_fingerprint'][:16]}…"
+                ),
+            )
+
+    # ── Pre-mutate audit (DIVERGENCE_PATCH) ─────────────────────────
+    patch_audit_meta = {
+        "event":                     _PATCH_DIVERGENT_AUDIT_EVENT,
+        "collection":                body.collection,
+        "logical_key_values":        body.logical_key_values,
+        "doc_ids":                   list(group["expected_doc_ids"]),
+        "field":                     body.field,
+        "old_value":                 body.old_value_sentinel,
+        "new_value":                 body.new_value,
+        "before_fingerprint":        group["expected_before_fingerprint"],
+        "expected_after_fingerprint": group["expected_authoritative_fingerprint"],
+        "workflow_run_id":           body.workflow_run_id,
+        "session_id":                body.session_id,
+        "created_at":                datetime.now(timezone.utc),
+    }
+    try:
+        await canon_db[DEDUPE_AUDIT_COLLECTION].insert_one(dict(patch_audit_meta))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AUDIT_WRITE_FAILED: {type(e).__name__}: {e}")
+
+    # ── Perform the patch, transactionally if supported ─────────────
+    # Transaction support requires a replica-set / sharded cluster;
+    # Mongo standalone raises ``OperationFailure(code=20, …)``
+    # ("Transaction numbers are only allowed on a replica set member
+    # or mongos") on the first operation inside the transaction. We
+    # catch that specific error and fall through to the non-tx path.
+    # Any other failure during the transaction (count mismatch,
+    # fingerprint mismatch) causes the tx to abort and the handler
+    # to fail closed.
+    update_filter = {
+        "_id":            {"$in": list(expected_oids)},
+        **body.logical_key_values,
+        # Only update docs that are still null/missing — belt-and-braces
+        # guard against a race between the preflight read and the write.
+        "$or": [
+            {_PATCH_DIVERGENT_FIELD: None},
+            {_PATCH_DIVERGENT_FIELD: {"$exists": False}},
+        ],
+    }
+    update_doc  = {"$set": {_PATCH_DIVERGENT_FIELD: _PATCH_DIVERGENT_NEW_VALUE}}
+
+    from pymongo.errors import OperationFailure
+
+    async def _patch_in_tx() -> dict:
+        client = canon_db.client
+        async with await client.start_session() as sess:
+            async with sess.start_transaction():
+                r = await coll.update_many(update_filter, update_doc, session=sess)
+                if r.matched_count != 2 or r.modified_count != 2:
+                    raise RuntimeError(
+                        f"UPDATE_COUNTS_UNEXPECTED: "
+                        f"matched={r.matched_count} modified={r.modified_count} (expected 2/2)"
+                    )
+                post_docs: list[dict] = []
+                async for d in coll.find(
+                    {"_id": {"$in": list(expected_oids)}},
+                    session=sess,
+                ):
+                    post_docs.append(d)
+                if len(post_docs) != 2:
+                    raise RuntimeError(
+                        f"POST_READ_COUNT_UNEXPECTED: n={len(post_docs)} expected=2"
+                    )
+                for d in post_docs:
+                    fp = canonical_doc_fingerprint(d)
+                    if fp != group["expected_authoritative_fingerprint"]:
+                        raise RuntimeError(
+                            f"POST_FINGERPRINT_MISMATCH: _id={str(d['_id'])} "
+                            f"got={fp[:16]}… "
+                            f"expected={group['expected_authoritative_fingerprint'][:16]}…"
+                        )
+                return {"matched_count":  r.matched_count,
+                         "modified_count": r.modified_count,
+                         "tx":             True}
+
+    tx_supported   = False
+    update_result  = None
+    try:
+        update_result = await _patch_in_tx()
+        tx_supported  = True
+    except OperationFailure as e:
+        # Standalone Mongo cannot start a transaction. Any other
+        # OperationFailure during the tx is a real failure.
+        if int(getattr(e, "code", 0) or 0) == 20 or "replica set" in str(e).lower():
+            tx_supported = False
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail=f"TX_PATCH_FAILED: {type(e).__name__}: {e}",
+            )
+    except Exception as e:
+        # Transaction aborted — DB is at its original state.
+        raise HTTPException(
+            status_code=409,
+            detail=f"TX_PATCH_FAILED: {type(e).__name__}: {e}",
+        )
+
+    if not tx_supported:
+        # Non-transactional path for standalone Mongo deployments.
+        r = await coll.update_many(update_filter, update_doc)
+        update_result = {"matched_count": r.matched_count,
+                          "modified_count": r.modified_count,
+                          "tx": False}
+        if r.matched_count != 2 or r.modified_count != 2:
+            # Audit the failure and refuse to proceed with next steps.
+            await canon_db[DEDUPE_AUDIT_COLLECTION].insert_one({
+                "event":              _PATCH_DIVERGENT_RESULT_EVENT,
+                "collection":         body.collection,
+                "logical_key_values": body.logical_key_values,
+                "doc_ids":            list(group["expected_doc_ids"]),
+                "field":              body.field,
+                "old_value":          body.old_value_sentinel,
+                "new_value":          body.new_value,
+                "matched_count":      r.matched_count,
+                "modified_count":     r.modified_count,
+                "post_verification":  "FAILED_COUNTS",
+                "workflow_run_id":    body.workflow_run_id,
+                "session_id":         body.session_id,
+                "created_at":         datetime.now(timezone.utc),
+            })
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"UPDATE_COUNTS_UNEXPECTED: "
+                    f"matched={r.matched_count} modified={r.modified_count} (expected 2/2)"
+                ),
+            )
+        # Immediate post-read + per-doc fingerprint re-verification.
+        post_docs = []
+        async for d in coll.find({"_id": {"$in": list(expected_oids)}}):
+            post_docs.append(d)
+        if len(post_docs) != 2:
+            await canon_db[DEDUPE_AUDIT_COLLECTION].insert_one({
+                "event":              _PATCH_DIVERGENT_RESULT_EVENT,
+                "collection":         body.collection,
+                "logical_key_values": body.logical_key_values,
+                "post_verification":  "FAILED_POST_READ",
+                "post_read_count":    len(post_docs),
+                "workflow_run_id":    body.workflow_run_id,
+                "session_id":         body.session_id,
+                "created_at":         datetime.now(timezone.utc),
+            })
+            raise HTTPException(
+                status_code=409,
+                detail=f"POST_READ_COUNT_UNEXPECTED: n={len(post_docs)} expected=2",
+            )
+        for d in post_docs:
+            fp = canonical_doc_fingerprint(d)
+            if fp != group["expected_authoritative_fingerprint"]:
+                await canon_db[DEDUPE_AUDIT_COLLECTION].insert_one({
+                    "event":              _PATCH_DIVERGENT_RESULT_EVENT,
+                    "collection":         body.collection,
+                    "logical_key_values": body.logical_key_values,
+                    "post_verification":  "FAILED_FINGERPRINT",
+                    "offending_id":       str(d["_id"]),
+                    "post_fingerprint":   fp,
+                    "expected_after_fingerprint": group["expected_authoritative_fingerprint"],
+                    "workflow_run_id":    body.workflow_run_id,
+                    "session_id":         body.session_id,
+                    "created_at":         datetime.now(timezone.utc),
+                })
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"POST_FINGERPRINT_MISMATCH: _id={str(d['_id'])} "
+                        f"got={fp[:16]}… "
+                        f"expected={group['expected_authoritative_fingerprint'][:16]}…"
+                    ),
+                )
+
+    # ── Post-mutate audit (UPDATE_RESULT, success) ──────────────────
+    await canon_db[DEDUPE_AUDIT_COLLECTION].insert_one({
+        "event":                _PATCH_DIVERGENT_RESULT_EVENT,
+        "collection":           body.collection,
+        "logical_key_values":   body.logical_key_values,
+        "doc_ids":              list(group["expected_doc_ids"]),
+        "field":                body.field,
+        "old_value":            body.old_value_sentinel,
+        "new_value":            body.new_value,
+        "matched_count":        update_result["matched_count"],
+        "modified_count":       update_result["modified_count"],
+        "transactional":        update_result["tx"],
+        "before_fingerprint":   group["expected_before_fingerprint"],
+        "after_fingerprint":    group["expected_authoritative_fingerprint"],
+        "post_verification":    "OK",
+        "workflow_run_id":      body.workflow_run_id,
+        "session_id":           body.session_id,
+        "created_at":           datetime.now(timezone.utc),
+    })
+
+    return {
+        "ok":                   True,
+        "collection":           body.collection,
+        "logical_key_values":   body.logical_key_values,
+        "doc_ids":              list(group["expected_doc_ids"]),
+        "field":                body.field,
+        "old_value":            body.old_value_sentinel,
+        "new_value":            body.new_value,
+        "matched_count":        update_result["matched_count"],
+        "modified_count":       update_result["modified_count"],
+        "transactional":        update_result["tx"],
+        "before_fingerprint":   group["expected_before_fingerprint"],
+        "after_fingerprint":    group["expected_authoritative_fingerprint"],
+        "generated_at":         datetime.now(timezone.utc).isoformat(),
+    }
+
