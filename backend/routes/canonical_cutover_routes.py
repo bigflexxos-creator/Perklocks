@@ -656,6 +656,44 @@ _PERFORMANCE_INDEXES_R3: list[dict[str, Any]] = [
         "name":       "ix_settlement_id_r3",
         "keys":       [("settlement_id", 1)],
     },
+    # ── R3 Resume #16 — Support-confirmed import-lookup indexes ──
+    # These three collections were observed by Emergent Support to
+    # have only ``_id`` indexed in Production and the canonical
+    # import's bulk_write upsert ops filter by the collection's
+    # logical-key fields (services.canonical_cutover.import_batch
+    # line 536-546: ``key = {f: doc.get(f) for f in key_fields}``).
+    # Without these indexes, every upsert does a COLLSCAN on
+    # 13K-306K-doc collections, which is why 136 picks timeouts
+    # happened at Prod scale.
+    #
+    # Lookup filter traced from services/canonical_cutover.py:
+    #   canonical_picks:
+    #       filter = {"id": doc.get("id")}
+    #       logical_key_fields("picks") = ("id",)
+    #   canonical_player_identities:
+    #       filter = {"canonical_player_id": doc.get("canonical_player_id")}
+    #       logical_key_fields("player_identities") = ("canonical_player_id",)
+    #   canonical_pregame_snapshots:
+    #       filter = {"snapshot_hash": doc.get("snapshot_hash")}
+    #       logical_key_fields("pregame_snapshots") = ("snapshot_hash",)
+    #
+    # Indexes are NON-UNIQUE (per user directive — uniqueness is
+    # enforced in a later phase after duplicate reconciliation).
+    {
+        "collection": "picks",
+        "name":       "ix_picks_id_r3",
+        "keys":       [("id", 1)],
+    },
+    {
+        "collection": "player_identities",
+        "name":       "ix_player_identities_canonical_player_id_r3",
+        "keys":       [("canonical_player_id", 1)],
+    },
+    {
+        "collection": "pregame_snapshots",
+        "name":       "ix_pregame_snapshots_snapshot_hash_r3",
+        "keys":       [("snapshot_hash", 1)],
+    },
 ]
 
 

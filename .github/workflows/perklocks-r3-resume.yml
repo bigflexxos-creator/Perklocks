@@ -41,7 +41,7 @@ jobs:
       # unchanged — only transport is accelerated.
       USE_ACCELERATED_PUSH:       "1"
       NEW_COLLECTION_BATCH_SIZE:  "1000"
-      CONCURRENCY:                "8"
+      CONCURRENCY:                "1"
 
       # Pinned SHA-256s.  The job aborts hard if the downloaded bytes
       # do not match EXACTLY.  Hardcoded here (not a secret) so the
