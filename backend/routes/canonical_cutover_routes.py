@@ -862,6 +862,33 @@ async def canonical_explain_logical_key_lookup(
     # chosen for the query shape, not for the specific value.
     query = {f: "__explain_probe__" for f in key_fields}
 
+    # ── R3 Resume #17 — resolve physical collection name via the
+    # canonical-DB proxy BEFORE issuing the raw ``explain`` command.
+    #
+    # Why: in canonical-fallback mode (CANONICAL_FALLBACK_MODE=true,
+    # active in Production), ``canon_db[coll]`` goes through
+    # ``_PrefixedDatabase.__getitem__`` which rewrites ``pregame_snapshots``
+    # → ``canonical_pregame_snapshots`` (the real physical collection in
+    # the legacy DB).  BUT ``canon_db.command(...)`` is a pass-through
+    # attribute (see services/database.py `_PrefixedDatabase.__getattr__`
+    # whitelist including "command") — it hits the underlying DB
+    # with the literal name string and does NOT get rewritten.
+    #
+    # Without this fix the explain probe for ``pregame_snapshots``
+    # queried the LEGACY unprefixed collection (empty or without the
+    # new r3 index) and reported COLLSCAN even though
+    # ``ix_pregame_snapshots_snapshot_hash_r3`` was correctly built on
+    # ``canonical_pregame_snapshots`` by create-performance-indexes.
+    # For ``picks`` / ``player_identities``, legacy pre-canonical copies
+    # existed with same-named incidental indexes (``id_1``,
+    # ``canonical_player_id_uniq``), which falsely masked the bug.
+    #
+    # Motor Collection objects expose ``.name`` as the physical name;
+    # in fallback mode that returns ``canonical_<coll>``, in normal
+    # mode it returns ``<coll>`` unchanged — same code path, both
+    # correct.
+    physical_name = getattr(canon_db[collection], "name", collection)
+
     def _walk(node, out):
         """Collect every stage name + the first index name seen."""
         if not isinstance(node, dict):
@@ -882,7 +909,7 @@ async def canonical_explain_logical_key_lookup(
     try:
         plan = await canon_db.command({
             "explain": {
-                "find":   collection,
+                "find":   physical_name,
                 "filter": query,
                 "limit":  1,
             },
@@ -896,10 +923,21 @@ async def canonical_explain_logical_key_lookup(
     winning = (plan.get("queryPlanner") or {}).get("winningPlan") or {}
     _walk(winning, walked)
     winning_stage = walked["stages"][0] if walked["stages"] else "UNKNOWN"
-    uses_index = any(s == "IXSCAN" for s in walked["stages"])
+    # ── R3 Resume #17 — accept both standard IXSCAN and modern
+    # EXPRESS_IXSCAN (and any future ``*IXSCAN`` planner variant) as
+    # indexed execution.  COLLSCAN explicitly fails this check because
+    # it does not end in ``IXSCAN``.  We deliberately do NOT trust
+    # ``index_name_used`` alone — the stage name is the authoritative
+    # proof of indexed execution; the index name is reported for
+    # operator visibility only.
+    uses_index = any(
+        isinstance(s, str) and s.endswith("IXSCAN")
+        for s in walked["stages"]
+    )
 
     return {
         "collection":         collection,
+        "physical_collection": physical_name,
         "logical_key_fields": key_fields,
         "winning_plan_stage": winning_stage,
         "all_stages":         walked["stages"],
