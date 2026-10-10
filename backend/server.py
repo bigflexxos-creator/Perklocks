@@ -3850,6 +3850,33 @@ class _ReliabilityMiddleware(BaseHTTPMiddleware):
                 "UNHANDLED %s %s rid=%s\n%s\n%s",
                 request.method, request.url.path, rid, exc, tb,
             )
+            # ─── R3 Phase-7 production-only diagnostic (logging-only) ──
+            # Emits a single structured JSON log line with the real
+            # exception type, message, and traceback so operators can
+            # grep the deployed-app logs by request_id. Zero behavior
+            # change when the flag is unset or "0" — the existing
+            # unstructured ``UNHANDLED`` log above is preserved, and the
+            # HTTP response below is byte-identical in both modes. The
+            # traceback is NEVER returned to the HTTP client.
+            if os.environ.get("RELIABILITY_VERBOSE_500", "0") == "1":
+                try:
+                    import json as _json
+                    _verbose_payload = {
+                        "evt":        "RELIABILITY_VERBOSE_500",
+                        "request_id": rid,
+                        "method":     request.method,
+                        "path":       request.url.path,
+                        "exc_type":   type(exc).__name__,
+                        "exc_msg":    str(exc),
+                        "traceback":  tb,
+                    }
+                    logger.error(
+                        "RELIABILITY_VERBOSE_500 %s",
+                        _json.dumps(_verbose_payload, default=str),
+                    )
+                except Exception:  # pragma: no cover
+                    # Instrumentation must never affect the response path.
+                    pass
             return JSONResponse(
                 status_code=500,
                 content={
