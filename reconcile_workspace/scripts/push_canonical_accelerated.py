@@ -176,47 +176,44 @@ def _resolve_existing_batches(
     coll_manifest: dict[int, dict],
     new_batch_size: int,
 ) -> tuple[list[dict], list[dict], dict]:
-    """R3 Resume #18 — cumulative-offset resolver + per-batch fixed-era
-    fallback (Support-confirmed, hash-equality authority).
+    """R3 Resume #19 — cumulative-offset resolver + per-batch
+    historical-era-width fallback (Support-confirmed, hash-equality
+    authority).  Generalises #18 to also recover odd-size LEFTOVER
+    batches whose stored content_hash was computed from
+    ``accepted_docs[bno*era : bno*era + size]`` where ``era`` is 250
+    or 1000 but ``size`` is an odd remainder (47, 69, 83, 89, 101,
+    103, 130, 206, 235, 25, …).
 
-    The pre-#18 resolver summed stored ``doc_count`` from batch 0 for
-    every batch, assuming a single pinned partition run.  That is
-    correct for the 1000-era and leftover batches of all 21
-    collections, but WRONG for four collections where batches came
-    from independent historical partition runs with overlapping
-    batch_no namespaces:
+    #18 handled 250/1000-size batches via a fixed-era candidate but
+    SKIPPED fixed-era for odd sizes — leaving the 10 leftovers
+    reported in canary #18 (``settlement_events batch 1988 doc_count
+    47``, ``player_identities batch 251 doc_count 235``, etc.) with
+    ``tried_strategies=[]`` and no candidate at all.
 
-        settlement_events          batches 5..1973 are 250-era whose
-                                   content_hash was computed from
-                                   offsets ``bno*250`` even though
-                                   earlier batches were 1000-era.
-        soccer_player_game_logs    batches 29..313 (same pattern)
-        team_game_actuals          batches 29..153 (same pattern)
-        tennis_matches_history     batches 29..66 (same pattern)
+    Algorithm (per existing batch, independent resolution, generic —
+    collection names are NEVER used as a resolver rule):
 
-    Algorithm (per existing batch, independent resolution):
-
-        A.  Compute the cumulative-manifest candidate at
-            ``start = sum(doc_count of every earlier batch_no)``.
-        B.  If its hash matches the authoritative ``content_hash``
-            → accept.
-        C.  Else, if the stored ``doc_count`` is a historical fixed-era
-            size (``250`` or ``1000``), compute a fixed-era candidate
-            at ``start = batch_no * doc_count``.  If its hash matches
-            → accept.
-        D.  If ``doc_count`` is an odd-size leftover (not 250 and not
-            1000), do NOT guess via multiplication; cumulative is the
-            only candidate.
-        E.  Hash equality against the stored ``content_hash`` is the
-            SOLE acceptance authority.  Collection names are never
-            used as the primary resolver rule.
-        F.  If no candidate matches → ``BATCH_LAYOUT_MISMATCH`` fail
-            closed (the entry stays in ``resolved`` with
-            ``match=False`` and is also appended to ``mismatches``).
-        G.  If more than one candidate matches, we keep the
-            cumulative one but set ``ambiguous=True`` for operator
-            visibility; stored ``doc_count`` + exact hash remain
-            authority.
+        A.  Try the cumulative candidate at
+            ``start = Σ doc_count of earlier batches``,
+            ``length = size`` (authoritative stored doc_count).
+        B.  Also try the 250-era candidate at ``start = batch_no*250``,
+            ``length = size``.
+        C.  Also try the 1000-era candidate at ``start = batch_no*1000``,
+            ``length = size``.
+        D.  SLICE LENGTH is ALWAYS the authoritative stored
+            ``doc_count``.  We never multiply by stored doc_count
+            (never ``bno*size`` for an odd size) — only canonical
+            historical era widths 250 and 1000.
+        E.  Deduplicate candidates that resolve to the same start
+            offset (dense cumulative often coincides with an era
+            width at batch 0, early batches, etc.).
+        F.  Hash equality against the stored ``content_hash`` is the
+            SOLE acceptance authority.
+        G.  0 matches → ``BATCH_LAYOUT_MISMATCH`` fail closed.
+            1 match  → accept.
+            ≥2 matches → accept ONLY if byte-identical payloads;
+                         otherwise fail closed as
+                         ``AMBIGUOUS_HASH_COLLISION``.
 
     Determinism: accepted-doc stream is pinned by walking
     ``src_path`` NDJSON in file order and applying ``_is_excluded``
@@ -232,16 +229,15 @@ def _resolve_existing_batches(
     fixed-era resolution of a late batch cannot bleed into tail
     offsets.
 
-    Added fields in each resolved entry (backward-compatible —
-    pre-#18 fields untouched):
+    Resolved-entry schema (backward-compatible):
 
         resolver_strategy  :  ``"cumulative" | "fixed-era-250" |
                                 "fixed-era-1000" | "cumulative-no-hash"
                                 | "new-tail" | "none"``
-        candidates_tried   :  list[str] — strategies evaluated
+        candidates_tried   :  list[str] — strategies evaluated after dedup
         ambiguous          :  bool — >1 candidate matched
 
-    Added summary fields: ``strategy_counts``, ``max_end_offset``,
+    Summary includes ``strategy_counts``, ``max_end_offset``,
     ``total_accepted``.
     """
     # Sort manifest batches by batch_no — cumulative offsets require
@@ -285,44 +281,71 @@ def _resolve_existing_batches(
     }
     max_end_offset = 0
 
-    _FIXED_ERA_SIZES = (250, 1000)
+    _FIXED_ERA_WIDTHS = (250, 1000)
 
     for bno, cum_start, size, stored_hash, stored_status in boundaries:
-        # ── Build candidates: strategy_name, start, computed_hash, buf ──
-        candidates: list[tuple[str, int, str, list[dict]]] = []
+        # ── Build RAW candidates: (strategy_name, start, buf) ────────
+        #
+        # R3 Resume #19 — era-width START offsets are tried for EVERY
+        # batch, regardless of stored doc_count.  The SLICE LENGTH is
+        # ALWAYS the authoritative stored ``doc_count`` (``size``);
+        # only the START offset varies between strategies.  This
+        # covers odd-size LEFTOVER batches that are the final partial
+        # batch of a prior 250- or 1000-sized partition run, whose
+        # authoritative ``content_hash`` was computed from
+        # ``accepted_docs[bno*era : bno*era + size]`` where ``era`` is
+        # 250 or 1000 but ``size`` is an odd remainder (e.g. 47, 103,
+        # 206).  Pre-#19 these leftovers only had the cumulative
+        # candidate and all 10 reported in canary #18 fell through
+        # with ``tried_strategies=[]``.
+        #
+        # Strategies evaluated:
+        #   cumulative      start = Σ doc_count of earlier batches
+        #   fixed-era-250   start = batch_no * 250
+        #   fixed-era-1000  start = batch_no * 1000
+        #
+        # We never multiply by stored ``doc_count`` (never ``bno*size``
+        # for an odd size) — only canonical historical era widths.
+        raw_candidates: list[tuple[str, int, list[dict]]] = []
 
-        # A. Cumulative candidate (always tried if slice is fully in range)
         cum_buf = accepted_docs[cum_start:cum_start + size]
         if len(cum_buf) == size:
-            cum_hash = _server_batch_content_hash(coll, cum_buf)
-            candidates.append(("cumulative", cum_start, cum_hash, cum_buf))
+            raw_candidates.append(("cumulative", cum_start, cum_buf))
 
-        # C. Fixed-era candidate (only for canonical era sizes)
-        if size in _FIXED_ERA_SIZES:
-            fixed_start = bno * size
-            # Avoid duplicate work if cumulative == fixed-era for this batch
-            if fixed_start != cum_start:
-                fixed_buf = accepted_docs[fixed_start:fixed_start + size]
-                if len(fixed_buf) == size:
-                    fixed_hash = _server_batch_content_hash(coll, fixed_buf)
-                    candidates.append(
-                        (f"fixed-era-{size}", fixed_start, fixed_hash, fixed_buf))
+        for era in _FIXED_ERA_WIDTHS:
+            era_start = bno * era
+            era_buf = accepted_docs[era_start:era_start + size]
+            if len(era_buf) == size:
+                raw_candidates.append((f"fixed-era-{era}", era_start, era_buf))
+
+        # Dedupe by start offset — if cumulative and a fixed-era point
+        # to the same start, they slice the same bytes.  Keep the
+        # FIRST occurrence (preserves ``cumulative`` priority at tie).
+        seen_starts: set[int] = set()
+        candidates: list[tuple[str, int, str, list[dict]]] = []
+        for strat, start, buf in raw_candidates:
+            if start in seen_starts:
+                continue
+            seen_starts.add(start)
+            computed_hash = _server_batch_content_hash(coll, buf)
+            candidates.append((strat, start, computed_hash, buf))
 
         tried_strategies = [c[0] for c in candidates]
 
-        # ── E. Hash-equality selection ───────────────────────────────
+        # ── Hash-equality selection ─────────────────────────────────
         if not stored_hash:
             # Legacy entry without content_hash — fall back to
             # cumulative without hash verification.  Advance pointer
             # by stored size.
-            if cum_buf and len(cum_buf) == size:
-                computed_hash = _server_batch_content_hash(coll, cum_buf)
+            cum_only = next((c for c in candidates if c[0] == "cumulative"), None)
+            if cum_only is not None:
+                _s, start, computed_hash, buf = cum_only
                 entry = {
                     "collection":        coll,
                     "batch_no":          bno,
-                    "start_offset":      cum_start,
+                    "start_offset":      start,
                     "doc_count":         size,
-                    "buf":               list(cum_buf),
+                    "buf":               list(buf),
                     "computed_hash":     computed_hash,
                     "stored_hash":       None,
                     "stored_status":     stored_status,
@@ -334,7 +357,7 @@ def _resolve_existing_batches(
                 }
                 resolved.append(entry)
                 strategy_counts["cumulative-no-hash"] += 1
-                max_end_offset = max(max_end_offset, cum_start + size)
+                max_end_offset = max(max_end_offset, start + size)
             else:
                 # Under-reach: NDJSON too short for this cumulative slice.
                 mm = {
@@ -344,13 +367,13 @@ def _resolve_existing_batches(
                     "expected_hash":        None,
                     "computed_hash":        None,
                     "authoritative_count":  size,
-                    "reconstructed_count":  len(cum_buf),
+                    "reconstructed_count":  0,
                     "authoritative_status": stored_status,
                     "mismatch_reason": (
                         f"NDJSON_UNDER_REACH: cumulative slice "
                         f"[{cum_start}:{cum_start+size}] exceeds accepted "
                         f"stream length {total_accepted}"),
-                    "tried_strategies":     ["cumulative"],
+                    "tried_strategies":     tried_strategies,
                 }
                 mismatches.append(mm)
                 resolved.append({
@@ -365,7 +388,7 @@ def _resolve_existing_batches(
                     "match":             False,
                     "mismatch_reason":   mm["mismatch_reason"],
                     "resolver_strategy": "none",
-                    "candidates_tried":  ["cumulative"],
+                    "candidates_tried":  tried_strategies,
                     "ambiguous":         False,
                 })
                 strategy_counts["none"] += 1
@@ -373,37 +396,13 @@ def _resolve_existing_batches(
 
         matching = [c for c in candidates if c[2] == stored_hash]
 
-        if matching:
-            # F. Prefer cumulative if it matched (dense interpretation);
-            # otherwise take the first (and only) fixed-era match.
-            chosen = next((c for c in matching if c[0] == "cumulative"),
-                          matching[0])
-            strat, start, computed_hash, buf = chosen
-            resolved.append({
-                "collection":        coll,
-                "batch_no":          bno,
-                "start_offset":      start,
-                "doc_count":         size,
-                "buf":               list(buf),
-                "computed_hash":     computed_hash,
-                "stored_hash":       stored_hash,
-                "stored_status":     stored_status,
-                "match":             True,
-                "mismatch_reason":   None,
-                "resolver_strategy": strat,
-                "candidates_tried":  tried_strategies,
-                "ambiguous":         len(matching) > 1,
-            })
-            strategy_counts[strat] = strategy_counts.get(strat, 0) + 1
-            max_end_offset = max(max_end_offset, start + size)
-        else:
-            # G. No candidate matched → BATCH_LAYOUT_MISMATCH.  Report
-            # the cumulative candidate's hash for operator visibility
-            # (it's the one that would have been POSTed under the
-            # pre-#18 resolver).
+        if len(matching) == 0:
+            # ── Fail closed: no candidate hash matched stored_hash ──
             cum_cand = next((c for c in candidates if c[0] == "cumulative"), None)
             if cum_cand is not None:
                 _s, start, computed_hash, buf = cum_cand
+            elif candidates:
+                _s, start, computed_hash, buf = candidates[0]
             else:
                 start, computed_hash, buf = cum_start, None, []
             reason = (f"no candidate hash matched stored_hash "
@@ -437,15 +436,105 @@ def _resolve_existing_batches(
                 "tried_strategies":     tried_strategies,
             })
             strategy_counts["none"] += 1
-            # Pre-#18 legacy mismatch_reason wording kept for the
-            # single-candidate cumulative case so existing operator
-            # dashboards / tests continue to render the familiar
-            # "computed_hash != stored_hash" prefix.
+            # Pre-#18 legacy wording when ONLY cumulative was tried
+            # (keeps downstream dashboards/tests that look for the
+            # "computed_hash != stored_hash" prefix rendering).
             if tried_strategies == ["cumulative"] and computed_hash:
                 mismatches[-1]["mismatch_reason"] = (
                     f"computed_hash != stored_hash "
                     f"(expected={stored_hash[:12]}… got={computed_hash[:12]}…)")
                 resolved[-1]["mismatch_reason"] = mismatches[-1]["mismatch_reason"]
+
+        elif len(matching) == 1:
+            # ── Unique match: accept ────────────────────────────────
+            strat, start, computed_hash, buf = matching[0]
+            resolved.append({
+                "collection":        coll,
+                "batch_no":          bno,
+                "start_offset":      start,
+                "doc_count":         size,
+                "buf":               list(buf),
+                "computed_hash":     computed_hash,
+                "stored_hash":       stored_hash,
+                "stored_status":     stored_status,
+                "match":             True,
+                "mismatch_reason":   None,
+                "resolver_strategy": strat,
+                "candidates_tried":  tried_strategies,
+                "ambiguous":         False,
+            })
+            strategy_counts[strat] = strategy_counts.get(strat, 0) + 1
+            max_end_offset = max(max_end_offset, start + size)
+
+        else:
+            # ── Multiple hash matches ──────────────────────────────
+            # Rule: accept ONLY if all matching payloads are
+            # byte-identical; otherwise fail closed with ambiguity.
+            # Byte-identical multi-match arises only when identical
+            # doc sequences appear at different offsets in the
+            # accepted-doc stream (semantically safe for upsert).
+            first_buf = matching[0][3]
+            all_identical = all(c[3] == first_buf for c in matching[1:])
+            if all_identical:
+                chosen = next((c for c in matching if c[0] == "cumulative"),
+                              matching[0])
+                strat, start, computed_hash, buf = chosen
+                resolved.append({
+                    "collection":        coll,
+                    "batch_no":          bno,
+                    "start_offset":      start,
+                    "doc_count":         size,
+                    "buf":               list(buf),
+                    "computed_hash":     computed_hash,
+                    "stored_hash":       stored_hash,
+                    "stored_status":     stored_status,
+                    "match":             True,
+                    "mismatch_reason":   None,
+                    "resolver_strategy": strat,
+                    "candidates_tried":  tried_strategies,
+                    "ambiguous":         True,
+                })
+                strategy_counts[strat] = strategy_counts.get(strat, 0) + 1
+                max_end_offset = max(max_end_offset, start + size)
+            else:
+                # Hash collision with differing payloads — astronomical
+                # under SHA-256, but we fail closed defensively.
+                reason = (f"AMBIGUOUS_HASH_COLLISION: {len(matching)} "
+                          f"candidates hash to stored_hash but their "
+                          f"payloads differ "
+                          f"(tried={tried_strategies} "
+                          f"starts={[c[1] for c in matching]})")
+                cum_cand = next((c for c in matching if c[0] == "cumulative"),
+                                matching[0])
+                _s, start, computed_hash, buf = cum_cand
+                resolved.append({
+                    "collection":        coll,
+                    "batch_no":          bno,
+                    "start_offset":      start,
+                    "doc_count":         size,
+                    "buf":               list(buf),
+                    "computed_hash":     computed_hash,
+                    "stored_hash":       stored_hash,
+                    "stored_status":     stored_status,
+                    "match":             False,
+                    "mismatch_reason":   reason,
+                    "resolver_strategy": "none",
+                    "candidates_tried":  tried_strategies,
+                    "ambiguous":         True,
+                })
+                mismatches.append({
+                    "collection":           coll,
+                    "batch_no":             bno,
+                    "start_offset":         start,
+                    "expected_hash":        stored_hash,
+                    "computed_hash":        computed_hash,
+                    "authoritative_count":  size,
+                    "reconstructed_count":  len(buf),
+                    "authoritative_status": stored_status,
+                    "mismatch_reason":      reason,
+                    "tried_strategies":     tried_strategies,
+                })
+                strategy_counts["none"] += 1
 
     # ── New tail batches (beyond max historical offset actually used) ─
     tail_start = max_end_offset
