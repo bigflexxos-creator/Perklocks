@@ -1,16 +1,16 @@
-"""r3_perf_indexes_apply — TEMPORARY non-unique performance indexes
-for Perklocks R3 session ``perklocks-cutover-20261003-r3``.
+"""r3_perf_indexes_apply — Support-required NON-UNIQUE performance
+indexes for Perklocks R3 session ``perklocks-cutover-20261003-r3``.
 
 Why
 ───
-49 + 66 + 9 duplicate logical-key groups exist on
-prediction_snapshots / publication_events / settlement_events.
-The intended UNIQUE indexes cannot be forced over duplicates
-without data loss, but every upsert's logical-key lookup is
-COLLSCANning, driving failure counts above successes.
+Support identified three canonical lookup paths that currently
+COLLSCAN on every logical-key lookup:
+  picks               → id
+  player_identities   → canonical_player_id
+  pregame_snapshots   → snapshot_hash
 
-This script creates the SAME key patterns the final unique
-indexes will use, but with:
+This script asks the server to materialize the SAME key patterns
+the final unique indexes will use, but with:
   * unique = False
   * distinct names (``ix_*_r3``) so they do not collide with the
     intended ``ux_*`` unique indexes that live in
@@ -36,12 +36,15 @@ Steps
 ─────
     1. mint JWT
     2. POST /create-performance-indexes
-       → server creates ix_prediction_snapshot_version_r3,
-         ix_payload_hash_r3, ix_settlement_id_r3 (all unique=False)
+       → server creates ix_picks_id_r3,
+         ix_player_identities_canonical_player_id_r3,
+         ix_pregame_snapshots_snapshot_hash_r3 (all unique=False)
     3. verify every result row has live_ready=True
     4. GET /explain-logical-key-lookup for each of the three
        collections → proves lookup now uses IXSCAN (not COLLSCAN)
-    5. optional 10-min delta measurement via /canonical-import/status
+    5. optional delta measurement via /canonical-import/status
+       (default disabled; this is a one-time materialization and
+        should not idle for 10 minutes watching an inactive migration)
 
 Environment contract (via GH Actions secrets, never printed):
     PROD_API_BASE
@@ -51,7 +54,7 @@ Environment contract (via GH Actions secrets, never printed):
 
 Optional:
     SESSION_ID           default perklocks-cutover-20261003-r3
-    MEASURE_MINUTES      default 10, hard cap 20
+    MEASURE_MINUTES      default 0 (disabled); hard cap 20
     REPORT_PATH          default /tmp/perklocks-logs/r3_perf_indexes_report.json
 
 Exit codes:
@@ -72,15 +75,15 @@ from urllib.parse import urlparse
 
 
 TARGETS: list[str] = [
-    "prediction_snapshots",
-    "publication_events",
-    "settlement_events",
+    "picks",
+    "player_identities",
+    "pregame_snapshots",
 ]
 
 EXPECTED_INDEX_NAMES: dict[str, str] = {
-    "prediction_snapshots": "ix_prediction_snapshot_version_r3",
-    "publication_events":   "ix_payload_hash_r3",
-    "settlement_events":    "ix_settlement_id_r3",
+    "picks":             "ix_picks_id_r3",
+    "player_identities": "ix_player_identities_canonical_player_id_r3",
+    "pregame_snapshots": "ix_pregame_snapshots_snapshot_hash_r3",
 }
 
 
@@ -186,9 +189,9 @@ def main() -> int:
     session_id  = (os.environ.get("SESSION_ID") or
                     "perklocks-cutover-20261003-r3").strip()
     try:
-        measure_minutes = max(0, int(os.environ.get("MEASURE_MINUTES") or 10))
+        measure_minutes = max(0, int(os.environ.get("MEASURE_MINUTES") or 0))
     except ValueError:
-        measure_minutes = 10
+        measure_minutes = 0
     measure_minutes = min(measure_minutes, 20)
 
     report_path = pathlib.Path(
@@ -197,7 +200,7 @@ def main() -> int:
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"[r3-perf-idx] target={_redact(api_base)}  session={session_id}")
-    print(f"[r3-perf-idx] creating TEMPORARY non-unique indexes:")
+    print(f"[r3-perf-idx] creating Support-required NON-UNIQUE indexes:")
     for c, name in EXPECTED_INDEX_NAMES.items():
         print(f"             {c:<28s} → {name}  (unique=False)")
 
@@ -298,7 +301,7 @@ def main() -> int:
     # ── Step 4: 10-min delta measurement ──────────────────────────
     measurement = None
     if measure_minutes > 0:
-        print(f"\n[step4] 10-minute delta measurement "
+        print(f"\n[step4] delta measurement "
               f"(interval={measure_minutes}min)")
         status_url = (f"{api_base}/api/admin/canonical-import/status"
                        f"?session_id={session_id}")

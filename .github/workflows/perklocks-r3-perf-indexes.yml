@@ -1,15 +1,15 @@
 name: Perklocks R3 Performance Indexes
 
-# TEMPORARY NON-UNIQUE performance indexes for the three canonical
-# collections that currently COLLSCAN on every upsert's logical-key
-# lookup, driving R3 failures above successes.
+# Support-required NON-UNIQUE performance indexes for the three
+# canonical collections that currently COLLSCAN on every upsert's
+# logical-key lookup, driving R3 failures above successes.
 #
 # Target indexes (unique=False, distinct names so they don't collide
 # with the intended ux_* unique indexes that will be applied in
 # Phase-8 cert AFTER duplicate reconciliation):
-#   prediction_snapshots  {prediction_id, snapshot_version}  → ix_prediction_snapshot_version_r3
-#   publication_events    {payload_hash}                      → ix_payload_hash_r3
-#   settlement_events     {settlement_id}                     → ix_settlement_id_r3
+#   picks                 {id}                  → ix_picks_id_r3
+#   player_identities     {canonical_player_id} → ix_player_identities_canonical_player_id_r3
+#   pregame_snapshots     {snapshot_hash}       → ix_pregame_snapshots_snapshot_hash_r3
 #
 # Hard safety invariants (enforced in the orchestrator + backend):
 #   * Never forces a unique index while duplicates exist.
@@ -35,9 +35,9 @@ on:
   workflow_dispatch:
     inputs:
       measure_minutes:
-        description: 'Post-create measurement window in minutes (0 disables; default 10, hard cap 20)'
+        description: 'Post-create measurement window in minutes (0 disables; default 0 for one-time materialization, hard cap 20)'
         required: false
-        default: '10'
+        default: '0'
       session_id:
         description: 'R3 session (default = active cutover session)'
         required: false
@@ -48,10 +48,10 @@ permissions:
 
 jobs:
   r3-perf-indexes:
-    name: R3 Perf Indexes (non-unique + explain-plan verify + 10-min delta)
+    name: R3 Perf Indexes (non-unique + explain-plan verify)
     runs-on: ubuntu-latest
-    # 10-min measurement window + ~5 min for create/verify/explain overhead
-    # + 5-min slack.
+    # One-time materialization: create + verify + explain overhead
+    # (measure_minutes defaults to 0; no idle measurement window).
     timeout-minutes: 25
 
     env:
@@ -120,7 +120,8 @@ jobs:
           echo "============================================================"
           echo " Perklocks R3 Perf Indexes — step outcome: ${{ steps.apply.outcome }}"
           echo " Report: /tmp/perklocks-logs/r3_perf_indexes_report.json"
-          echo " (TEMPORARY non-unique indexes; ux_* unique indexes to"
+          echo " Targets: picks, player_identities, pregame_snapshots"
+          echo " (NON-UNIQUE ix_*_r3 indexes; ux_* unique indexes to"
           echo "  follow in Phase 8 after duplicate reconciliation.)"
           echo "============================================================"
           if [ -f /tmp/perklocks-logs/r3_perf_indexes_report.json ]; then
