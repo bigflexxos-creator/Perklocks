@@ -1395,6 +1395,7 @@ async def canonical_cutover_dup_census(
         raise HTTPException(status_code=400,
             detail=f"UNKNOWN_COLLECTION: {collection}")
     canon_db = get_canonical_database()
+    import re as _re
     try:
         summary = await scan_duplicates(
             canon_db, collection,
@@ -1402,11 +1403,20 @@ async def canonical_cutover_dup_census(
             max_docs_per_group=max_docs_per_group,
         )
     except Exception as e:
+        # Parse the per-stage marker if the error came through
+        # scan_duplicates' structured RuntimeError.
+        emsg  = str(e)
+        stage = "scan_duplicates"
+        m = _re.search(r"CENSUS_STAGE_FAIL\s+stage=(\S+)", emsg)
+        if m:
+            stage = m.group(1)
         raise HTTPException(status_code=500, detail={
             "collection":     collection,
-            "stage":          "scan_duplicates",
+            "offset":         offset,
+            "limit":          limit,
+            "stage":          stage,
             "exception_type": type(e).__name__,
-            "error":          str(e)[:600],
+            "error":          emsg[:800],
         })
     return {
         "generated_at":         datetime.now(timezone.utc).isoformat(),

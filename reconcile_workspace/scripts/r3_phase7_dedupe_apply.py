@@ -297,25 +297,32 @@ def main() -> int:
     hdr_tok  = {**hdr, "X-Canonical-Import-Token": import_tok}
 
     # ── STEP 2: READ-ONLY CENSUS (per-collection, paged, sequential) ─
-    print("\n[step2] GET /dup-census per collection (concurrency=1)")
+    # FAIL-CLOSED CONTRACT (R3 Phase-7 census #22 regression fix):
+    #   * Any HTTP non-200 or malformed response marks the whole
+    #     collection as UNVERIFIED.
+    #   * UNVERIFIED collections DO NOT get synthetic zero counts —
+    #     total_docs / logical_key_count / duplicate_group_count /
+    #     exact / conflicting are None.
+    #   * The subsequent plan-generation + verdict logic treat
+    #     UNVERIFIED collections as blockers.  READY_FOR_APPLY is
+    #     impossible while any collection is UNVERIFIED.
+    print("\n[step2] GET /dup-census per collection (concurrency=1, "
+          "fail-closed on 500/malformed)")
 
     def _fetch_coll_census(coll: str) -> dict:
-        """Fetch all pages of dup-census for one collection and
-        return a consolidated per-collection summary with all groups
-        flattened and exact/conflicting counts summed.  Streams
-        pages so the runner never holds the whole response in one
-        memory block."""
         page_limit         = 100
         max_docs_per_group = 50
         offset             = 0
         all_groups:        list[dict] = []
-        total_docs         = 0
-        logical_key_count  = 0
-        dup_group_count    = 0
+        total_docs:        int | None = None
+        logical_key_count: int | None = None
+        dup_group_count:   int | None = None
         exact              = 0
         conflicting        = 0
         page_i             = 0
-        err_text           = None
+        pages_fetched: list[dict] = []
+        verified = True
+        failure: dict | None = None
         while True:
             page_i += 1
             qs = (f"collection={coll}&offset={offset}&limit={page_limit}"
@@ -324,18 +331,76 @@ def main() -> int:
                 f"{api_base}/api/admin/canonical-cutover/dup-census?{qs}",
                 headers=hdr, timeout_s=1800,
             )
-            if code != 200 or not isinstance(body, dict):
-                err_text = f"HTTP {code}: {str(body)[:500]}"
+            # Fail-closed branch 1 — non-200.
+            if code != 200:
+                verified = False
+                # Parse structured 500 detail if present.
+                detail = {}
+                if isinstance(body, dict):
+                    detail = body.get("detail") if isinstance(body.get("detail"), dict) else {}
+                failure = {
+                    "collection":     coll,
+                    "http_status":    code,
+                    "page_number":    page_i,
+                    "offset":         offset,
+                    "limit":          page_limit,
+                    "stage":          detail.get("stage"),
+                    "exception_type": detail.get("exception_type"),
+                    "error":          (detail.get("error")
+                                        if detail
+                                        else str(body)[:800]),
+                }
                 print(f"[step2] {coll} page#{page_i} offset={offset}  "
-                      f"FAILED: {err_text}")
+                       f"HTTP={code}  stage={failure['stage']}  "
+                       f"exc={failure['exception_type']}  "
+                       f"UNVERIFIED")
                 break
-            total_docs        = body.get("total_docs", total_docs)
-            logical_key_count = body.get("logical_key_count", logical_key_count)
-            dup_group_count   = body.get("duplicate_group_count", dup_group_count)
+            # Fail-closed branch 2 — malformed body.
+            if not isinstance(body, dict):
+                verified = False
+                failure = {
+                    "collection":     coll,
+                    "http_status":    code,
+                    "page_number":    page_i,
+                    "offset":         offset,
+                    "limit":          page_limit,
+                    "stage":          "malformed_response",
+                    "exception_type": "NonDictBody",
+                    "error":          str(body)[:800],
+                }
+                print(f"[step2] {coll} page#{page_i} offset={offset}  "
+                       f"MALFORMED_RESPONSE  UNVERIFIED")
+                break
+            # Fail-closed branch 3 — missing required stat fields.
+            required_fields = ("total_docs", "logical_key_count",
+                                "duplicate_group_count", "page_group_count",
+                                "has_more")
+            missing = [f for f in required_fields if f not in body]
+            if missing:
+                verified = False
+                failure = {
+                    "collection":     coll,
+                    "http_status":    code,
+                    "page_number":    page_i,
+                    "offset":         offset,
+                    "limit":          page_limit,
+                    "stage":          "malformed_response_missing_fields",
+                    "exception_type": "MissingFields",
+                    "error":          f"missing={missing}",
+                }
+                print(f"[step2] {coll} page#{page_i}  MISSING_FIELDS "
+                       f"{missing}  UNVERIFIED")
+                break
+            # Happy path: accumulate.
+            total_docs        = int(body["total_docs"])
+            logical_key_count = int(body["logical_key_count"])
+            dup_group_count   = int(body["duplicate_group_count"])
             exact            += int(body.get("page_exact_count")       or 0)
             conflicting      += int(body.get("page_conflicting_count") or 0)
             page_groups       = body.get("groups") or []
             all_groups.extend(page_groups)
+            pages_fetched.append({"offset": offset,
+                                    "returned": len(page_groups)})
             print(f"[step2] {coll} page#{page_i}  "
                    f"offset={offset}  returned={len(page_groups)}  "
                    f"dup_total={dup_group_count}  "
@@ -345,31 +410,70 @@ def main() -> int:
             offset = int(body["next_offset"])
         return {
             "collection":              coll,
-            "total_docs":              total_docs,
-            "logical_key_count":       logical_key_count,
-            "duplicate_group_count":   dup_group_count,
-            "exact_group_count":       exact,
-            "conflicting_group_count": conflicting,
-            "groups":                  all_groups,
-            "error":                   err_text,
+            "verified":                verified,
+            "total_docs":              total_docs if verified else None,
+            "logical_key_count":       logical_key_count if verified else None,
+            "duplicate_group_count":   dup_group_count if verified else None,
+            "exact_group_count":       exact if verified else None,
+            "conflicting_group_count": conflicting if verified else None,
+            "groups":                  all_groups if verified else [],
+            "pages_fetched":           pages_fetched,
+            "failure":                 failure,
         }
 
     per_coll: list[dict] = []
     for coll in list(RECONCILIATION_COLLECTIONS_LOCAL):
         per_coll.append(_fetch_coll_census(coll))
-    total_groups      = sum(c.get("duplicate_group_count")  or 0 for c in per_coll)
-    total_exact       = sum(c.get("exact_group_count")      or 0 for c in per_coll)
-    total_conflicting = sum(c.get("conflicting_group_count") or 0 for c in per_coll)
+    unverified_all = [c for c in per_coll if not c["verified"]]
+    unverified_apply_scope = [c for c in unverified_all
+                               if c["collection"] in APPLY_SCOPE_COLLS]
+    total_groups      = sum((c.get("duplicate_group_count")  or 0)
+                             for c in per_coll if c["verified"])
+    total_exact       = sum((c.get("exact_group_count")      or 0)
+                             for c in per_coll if c["verified"])
+    total_conflicting = sum((c.get("conflicting_group_count") or 0)
+                             for c in per_coll if c["verified"])
+    verified_count = sum(1 for c in per_coll if c["verified"])
+    print(f"[step2] verified={verified_count}/21  "
+          f"unverified_total={len(unverified_all)}  "
+          f"unverified_in_apply_scope={len(unverified_apply_scope)}  "
+          f"dup_groups(verified-only)={total_groups}")
 
     census = {
-        "generated_at":            None,
         "collections":             per_coll,
         "total_duplicate_groups":  total_groups,
         "total_exact_groups":      total_exact,
         "total_conflicting_groups": total_conflicting,
+        "unverified":              [c["collection"] for c in unverified_all],
+        "unverified_in_apply_scope": [c["collection"]
+                                        for c in unverified_apply_scope],
     }
-    print(f"[step2] total_dup_groups={total_groups} "
-          f"exact={total_exact} conflicting={total_conflicting}")
+
+    # ── FAIL-CLOSED gate: any unverified collection halts here ─────
+    if unverified_all:
+        print(f"\n[r3-ph7] FAIL-CLOSED: {len(unverified_all)} / 21 "
+              f"collections could not be verified.  Dumping failures:")
+        for c in unverified_all[:21]:
+            print(f"   - {c['collection']}: {c['failure']}")
+        _write_report(report_path, {
+            "generated_at":            None,
+            "api_target":              _redact(api_base),
+            "session_id":              session_id,
+            "mode":                    mode,
+            "workflow_run_id":         workflow_run_id,
+            "apply_confirm_phrase":    APPLY_CONFIRM_PHRASE,
+            "per_collection":          per_coll,
+            "unverified":              [c["collection"] for c in unverified_all],
+            "unverified_in_apply_scope": [c["collection"]
+                                            for c in unverified_apply_scope],
+            "verdict":                 "CANNOT_VERIFY",
+            "stage":                   "census",
+            "reason": ("one or more collections failed census; "
+                        "fail-closed per R3 Phase-7 contract"),
+        })
+        # Any APPLY-scope collection unverified → hard-stop immediately,
+        # no plan generation possible.
+        return 1
 
     per_coll_summary = []
     apply_scope_summary = {}
