@@ -22,6 +22,7 @@ import sys
 import uuid
 
 import pytest
+import pytest_asyncio
 pytestmark = pytest.mark.asyncio
 
 sys.path.insert(0, "/app/backend")
@@ -46,7 +47,7 @@ from services.canonical_dedupe import (                              # noqa: E40
 )
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db():
     """Fresh test DB per test — dropped at teardown."""
     client = AsyncIOMotorClient("mongodb://localhost:27017")
