@@ -132,83 +132,179 @@ async def scan_duplicates(
     db:            AsyncIOMotorDatabase,
     coll:          str,
     *,
-    max_groups:    int | None = None,
-    max_docs_per_group: int = 50,
+    offset:                int = 0,
+    limit:                 int = 100,
+    max_docs_per_group:    int = 50,
 ) -> dict:
-    """Return every duplicate logical-key group for ``coll`` with:
-      * ``logical_key``       — tuple of (field, value) pairs
-      * ``dup_count``         — number of physical rows in the group
-      * ``_ids``              — up to ``max_docs_per_group`` of them
-      * ``fingerprints``      — per-doc canonical fingerprint
-      * ``classification``    — EXACT_DUPLICATE | CONFLICTING_DUPLICATE
-      * ``distinct_fingerprint_count``
-    All operations are read-only.  Returns a dict with
-    ``total_docs``, ``logical_key_count``, ``duplicate_group_count``,
-    ``exact_group_count``, ``conflicting_group_count``, and
-    ``groups``.
+    """Return a PAGED, read-only duplicate-group census for ``coll``.
+
+    Memory-safe design (R3 Phase-7 census-500 regression fix):
+
+      1. Compute collection stats via lightweight aggregations that
+         never ``$push`` document arrays:
+           total_docs            — ``count_documents({})``
+           logical_key_count     — ``$group`` on logical key, no push,
+                                   final ``$count``.
+           duplicate_group_count — same, filtered to ``count > 1``.
+      2. Materialise only the requested PAGE of duplicate keys via
+         ``$group{count} → $match{>1} → $sort → $skip → $limit``,
+         still with no ``$push``.
+      3. For the page's keys, build ONE batched ``$or`` find to pull
+         every dup-group document in a SINGLE collection scan (serves
+         the entire page) and group them back by logical key in
+         Python — bounded at ``max_docs_per_group`` samples per group
+         and ``MAX_DOCS_PER_PAGE_CAP`` total per page.
+      4. Compute fingerprint + classification per group.
+
+    Pagination contract (deterministic):
+        * groups are sorted by ``_id`` (the logical-key dict); the
+          driver's cursor advances by ``next_offset``.
+        * ``has_more`` is True while ``offset + len(groups) < duplicate_group_count``.
+        * ``page_exact_count`` + ``page_conflicting_count`` are
+          PER-PAGE; the driver aggregates them across pages so the
+          server never has to recompute a full-collection classification.
+
+    Args:
+        offset:            0-based page cursor on the sorted dup-key list.
+        limit:             groups per page.  Hard cap 500.
+        max_docs_per_group: docs sampled per group for fingerprinting.
     """
+    MAX_DOCS_PER_PAGE_CAP = 10_000
+    limit = max(1, min(int(limit), 500))
+    max_docs_per_group = max(1, min(int(max_docs_per_group), 200))
+
     key_fields = list(logical_key_fields(coll))
-    total_docs = await db[coll].count_documents({})
-    logical_key_count = 0
-    group_count = 0
-    exact_count = 0
-    conflicting_count = 0
-    groups: list[dict] = []
-
-    # Build aggregation to find all duplicate logical-key groups.
     group_id = {f: f"${f}" for f in key_fields}
-    pipeline = [
-        {"$group": {
-            "_id":   group_id,
-            "ids":   {"$push": "$_id"},
-            "count": {"$sum": 1},
-        }},
-    ]
-    # First pass: count only, for logical_key_count stat.
-    count_pipe = pipeline + [{"$count": "total_logical_keys"}]
-    async for d in db[coll].aggregate(count_pipe, allowDiskUse=True):
-        logical_key_count = int(d.get("total_logical_keys") or 0)
 
-    # Second pass: materialise only groups with count > 1.
-    dup_pipe = pipeline + [{"$match": {"count": {"$gt": 1}}}]
-    async for grp in db[coll].aggregate(dup_pipe, allowDiskUse=True):
-        if max_groups is not None and group_count >= max_groups:
+    # ── Lightweight stats (no $push) ────────────────────────────────
+    total_docs = await db[coll].count_documents({})
+
+    pipe_lk_count = [
+        {"$group": {"_id": group_id}},
+        {"$count": "total"},
+    ]
+    lk_count_doc = None
+    async for d in db[coll].aggregate(pipe_lk_count, allowDiskUse=True):
+        lk_count_doc = d
+    logical_key_count = int((lk_count_doc or {}).get("total") or 0)
+
+    pipe_dup_count = [
+        {"$group": {"_id": group_id, "count": {"$sum": 1}}},
+        {"$match": {"count": {"$gt": 1}}},
+        {"$count": "total"},
+    ]
+    dup_count_doc = None
+    async for d in db[coll].aggregate(pipe_dup_count, allowDiskUse=True):
+        dup_count_doc = d
+    duplicate_group_count = int((dup_count_doc or {}).get("total") or 0)
+
+    # ── Fast path: no duplicates ────────────────────────────────────
+    if duplicate_group_count == 0 or offset >= duplicate_group_count:
+        return {
+            "collection":              coll,
+            "logical_key_fields":      key_fields,
+            "total_docs":              total_docs,
+            "logical_key_count":       logical_key_count,
+            "duplicate_group_count":   duplicate_group_count,
+            "page_offset":             offset,
+            "page_limit":              limit,
+            "page_group_count":        0,
+            "page_exact_count":        0,
+            "page_conflicting_count":  0,
+            "has_more":                False,
+            "next_offset":             None,
+            "groups":                  [],
+        }
+
+    # ── Paged dup-key fetch (still no $push on docs) ────────────────
+    pipe_page = [
+        {"$group": {"_id": group_id, "count": {"$sum": 1}}},
+        {"$match": {"count": {"$gt": 1}}},
+        {"$sort":  {"_id": 1}},
+        {"$skip":  offset},
+        {"$limit": limit},
+    ]
+    page_keys: list[dict] = []
+    async for d in db[coll].aggregate(pipe_page, allowDiskUse=True):
+        page_keys.append(d)
+
+    if not page_keys:
+        return {
+            "collection":              coll,
+            "logical_key_fields":      key_fields,
+            "total_docs":              total_docs,
+            "logical_key_count":       logical_key_count,
+            "duplicate_group_count":   duplicate_group_count,
+            "page_offset":             offset,
+            "page_limit":              limit,
+            "page_group_count":        0,
+            "page_exact_count":        0,
+            "page_conflicting_count":  0,
+            "has_more":                offset < duplicate_group_count,
+            "next_offset":             None,
+            "groups":                  [],
+        }
+
+    # ── Batched $or fetch — single collection scan serves the page ──
+    or_clauses = [k["_id"] for k in page_keys]  # each is a {field: value} dict
+    # Group-sort by _id so sample selection is deterministic.
+    cursor = db[coll].find({"$or": or_clauses}).sort("_id", 1)
+    collected: dict[tuple, list[dict]] = {}
+    overflow = False
+    total_fetched = 0
+    async for d in cursor:
+        total_fetched += 1
+        if total_fetched > MAX_DOCS_PER_PAGE_CAP:
+            overflow = True
             break
-        ids_full = grp.get("ids") or []
-        ids_sample = ids_full[:max_docs_per_group]
-        # Fetch each sampled doc individually (keeps query shape
-        # bounded and uses the forthcoming logical-key index when
-        # present).
-        docs: list[dict] = []
-        async for d in db[coll].find({"_id": {"$in": ids_sample}}):
-            docs.append(d)
-        # Preserve order of ids_sample
-        id_to_doc = {d["_id"]: d for d in docs}
-        ordered_docs = [id_to_doc[i] for i in ids_sample if i in id_to_doc]
-        fps = [canonical_doc_fingerprint(d) for d in ordered_docs]
-        cls = classify_group(fps)
-        if cls == EXACT_DUPLICATE:       exact_count += 1
-        else:                            conflicting_count += 1
-        group_count += 1
+        lk_tuple = tuple(d.get(f) for f in key_fields)
+        bucket = collected.setdefault(lk_tuple, [])
+        if len(bucket) < max_docs_per_group:
+            bucket.append(d)
+
+    # ── Build per-group output (deterministic order == paged keys) ──
+    groups: list[dict] = []
+    exact_cnt = 0
+    conflicting_cnt = 0
+    for k in page_keys:
+        lk_dict = k["_id"]
+        dup_count = int(k["count"])
+        lk_tuple = tuple(lk_dict.get(f) for f in key_fields)
+        docs = collected.get(lk_tuple, [])
+        ids = [d["_id"] for d in docs]
+        fps = [canonical_doc_fingerprint(d) for d in docs]
+        cls = classify_group(fps) if fps else "UNKNOWN"
+        if cls == EXACT_DUPLICATE:
+            exact_cnt += 1
+        elif cls == CONFLICTING_DUPLICATE:
+            conflicting_cnt += 1
         groups.append({
             "collection":                 coll,
-            "logical_key":                grp["_id"],
+            "logical_key":                lk_dict,
             "logical_key_fields":         key_fields,
-            "dup_count":                  int(grp["count"]),
-            "_ids":                       ids_sample,
-            "_ids_truncated":             len(ids_full) > len(ids_sample),
+            "dup_count":                  dup_count,
+            "_ids":                       ids,
+            "_ids_truncated":             len(ids) < dup_count,
             "fingerprints":               fps,
-            "distinct_fingerprint_count": len(set(fps)),
+            "distinct_fingerprint_count": len(set(fps)) if fps else 0,
             "classification":             cls,
         })
 
+    end = offset + len(groups)
     return {
         "collection":              coll,
+        "logical_key_fields":      key_fields,
         "total_docs":              total_docs,
         "logical_key_count":       logical_key_count,
-        "duplicate_group_count":   group_count,
-        "exact_group_count":       exact_count,
-        "conflicting_group_count": conflicting_count,
+        "duplicate_group_count":   duplicate_group_count,
+        "page_offset":             offset,
+        "page_limit":              limit,
+        "page_group_count":        len(groups),
+        "page_exact_count":        exact_cnt,
+        "page_conflicting_count":  conflicting_cnt,
+        "page_fetch_overflow":     overflow,
+        "has_more":                end < duplicate_group_count,
+        "next_offset":             (end if end < duplicate_group_count else None),
         "groups":                  groups,
     }
 

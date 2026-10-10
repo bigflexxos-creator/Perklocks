@@ -107,7 +107,7 @@ def test_classify_group_conflicting_when_fingerprints_differ():
     assert classify_group(["a", "b"]) == CONFLICTING_DUPLICATE
 
 
-# ─── scan_duplicates ───────────────────────────────────────────────
+# ─── scan_duplicates (paginated, read-only) ────────────────────────
 async def test_scan_duplicates_finds_exact_and_conflicting_groups(db):
     coll = "settlement_events"
     # Group 1: 3-way EXACT (same business content, different _id)
@@ -129,8 +129,11 @@ async def test_scan_duplicates_finds_exact_and_conflicting_groups(db):
     assert report["total_docs"]              == 6
     assert report["logical_key_count"]       == 3
     assert report["duplicate_group_count"]   == 2
-    assert report["exact_group_count"]       == 1
-    assert report["conflicting_group_count"] == 1
+    assert report["page_exact_count"]        == 1
+    assert report["page_conflicting_count"]  == 1
+    assert report["page_group_count"]        == 2
+    assert report["has_more"]                is False
+    assert report["next_offset"]             is None
 
     by_key = {g["logical_key"]["settlement_id"]: g for g in report["groups"]}
     exact = by_key["s_exact"]
@@ -142,6 +145,152 @@ async def test_scan_duplicates_finds_exact_and_conflicting_groups(db):
     assert conflict["classification"]           == CONFLICTING_DUPLICATE
     assert conflict["dup_count"]                == 2
     assert conflict["distinct_fingerprint_count"] == 2
+
+
+async def test_scan_duplicates_zero_duplicates_fast_path(db):
+    coll = "settlement_events"
+    for i in range(5):
+        await db[coll].insert_one({"_id": f"u{i}", "settlement_id": f"k{i}"})
+    r = await scan_duplicates(db, coll, offset=0, limit=100)
+    assert r["total_docs"]            == 5
+    assert r["logical_key_count"]     == 5
+    assert r["duplicate_group_count"] == 0
+    assert r["page_group_count"]      == 0
+    assert r["has_more"]              is False
+    assert r["next_offset"]           is None
+    assert r["groups"]                == []
+
+
+async def test_scan_duplicates_pagination_covers_all_groups(db):
+    """Create 450 duplicate groups × 2 docs each.  Page through at
+    limit=100 and assert the union of pages equals the full set."""
+    coll = "settlement_events"
+    for g in range(450):
+        for d in range(2):
+            await db[coll].insert_one({
+                "_id":           f"g{g:04d}_d{d}",
+                "settlement_id": f"key_{g:04d}",
+                "amount":        g,
+            })
+    # Also add 100 non-duplicate docs
+    for u in range(100):
+        await db[coll].insert_one({
+            "_id":           f"u{u:04d}",
+            "settlement_id": f"unique_{u:04d}",
+        })
+    seen_keys = set()
+    page_count = 0
+    offset = 0
+    while True:
+        r = await scan_duplicates(db, coll, offset=offset, limit=100)
+        assert r["duplicate_group_count"] == 450
+        page_count += 1
+        for g in r["groups"]:
+            seen_keys.add(g["logical_key"]["settlement_id"])
+        if not r["has_more"] or r["next_offset"] is None:
+            break
+        offset = r["next_offset"]
+    assert len(seen_keys) == 450
+    assert page_count     == 5    # 100+100+100+100+50
+    # No overlap in paged keys (deterministic ordering)
+    assert len(seen_keys) == 450
+
+
+async def test_scan_duplicates_player_game_logs_style_large_many_groups(db):
+    """Reproduce player_game_logs topology: thousands of 2-way
+    CONFLICTING groups + non-duplicates.  Server must stay read-only
+    and respond with a bounded page without blowing memory."""
+    coll = "player_game_logs"
+    for g in range(1200):
+        await db[coll].insert_one({
+            "_id":       f"log_a_{g:05d}", "sport": "nfl",
+            "game_id":   f"game_{g:05d}",   "player_id": f"p_{g:05d}",
+            "stat":      "pass_yds", "value": 100 + g,
+        })
+        await db[coll].insert_one({
+            "_id":       f"log_b_{g:05d}", "sport": "nfl",
+            "game_id":   f"game_{g:05d}",   "player_id": f"p_{g:05d}",
+            "stat":      "pass_yds", "value": 999 + g,  # conflicting
+        })
+    for u in range(500):
+        await db[coll].insert_one({
+            "_id":       f"log_u_{u:05d}", "sport": "nfl",
+            "game_id":   f"game_u_{u:05d}", "player_id": f"p_u_{u:05d}",
+        })
+    r = await scan_duplicates(db, coll, offset=0, limit=100)
+    assert r["total_docs"]            == 1200 * 2 + 500
+    assert r["duplicate_group_count"] == 1200
+    assert r["page_group_count"]      == 100
+    assert r["page_conflicting_count"] == 100
+    assert r["page_exact_count"]      == 0
+    assert r["has_more"]              is True
+    assert r["next_offset"]           == 100
+    # Each paged group has both docs with distinct fingerprints
+    for g in r["groups"]:
+        assert g["classification"]           == CONFLICTING_DUPLICATE
+        assert g["dup_count"]                == 2
+        assert len(g["_ids"])                == 2
+        assert g["distinct_fingerprint_count"] == 2
+
+
+async def test_scan_duplicates_massive_single_group_capped_at_sample(db):
+    """A single logical key with 1 000 physical rows → one group of
+    1 000.  The sampled fingerprints must be capped at
+    ``max_docs_per_group`` and ``_ids_truncated`` must be True."""
+    coll = "picks"
+    for i in range(1000):
+        await db[coll].insert_one({
+            "_id":    f"pick_{i:05d}",
+            "id":     "huge_key",
+            "sport":  "nfl",
+            "idx":    i,
+        })
+    r = await scan_duplicates(db, coll, offset=0, limit=10,
+                               max_docs_per_group=25)
+    assert r["duplicate_group_count"] == 1
+    g = r["groups"][0]
+    assert g["dup_count"]       == 1000
+    assert len(g["_ids"])       == 25
+    assert g["_ids_truncated"]  is True
+    # Fingerprints differ (each doc has different `idx`) → CONFLICTING
+    assert g["classification"] == CONFLICTING_DUPLICATE
+
+
+async def test_scan_duplicates_offset_beyond_total_returns_empty(db):
+    coll = "picks"
+    for i in range(3):
+        for d in range(2):
+            await db[coll].insert_one({
+                "_id": f"p{i}_{d}", "id": f"k{i}",
+            })
+    r = await scan_duplicates(db, coll, offset=10, limit=5)
+    assert r["duplicate_group_count"] == 3
+    assert r["page_group_count"]      == 0
+    assert r["groups"]                == []
+    assert r["has_more"]              is False
+    assert r["next_offset"]           is None
+
+
+async def test_scan_duplicates_is_read_only(db):
+    """Call scan_duplicates multiple times with CRUD operations
+    only inserting fixtures; assert no documents were deleted or
+    modified by the scan itself."""
+    coll = "settlement_events"
+    for i in range(4):
+        for d in range(2):
+            await db[coll].insert_one({
+                "_id": f"r{i}_{d}", "settlement_id": f"rk{i}", "val": i,
+            })
+    before_count = await db[coll].count_documents({})
+    before_ids   = sorted([d["_id"] async for d in db[coll].find({})])
+    for _ in range(3):
+        await scan_duplicates(db, coll, offset=0, limit=100)
+    after_count = await db[coll].count_documents({})
+    after_ids   = sorted([d["_id"] async for d in db[coll].find({})])
+    assert before_count == after_count
+    assert before_ids   == after_ids
+    # No audit records written by the scan (write happens only in APPLY).
+    assert await db[DEDUPE_AUDIT_COLLECTION].count_documents({}) == 0
 
 
 # ─── apply_dedupe_group — EXACT keeps authoritative survivor ──────

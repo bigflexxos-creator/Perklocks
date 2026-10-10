@@ -1364,65 +1364,55 @@ APPLY_DEDUPE_CONFIRM_PHRASE: str = "APPLY_PERKLOCKS_DEDUPE_R3_PHASE7_V1"
 @router.get("/canonical-cutover/dup-census")
 async def canonical_cutover_dup_census(
     admin:               Annotated[UserPublic, Depends(_require_admin)],
-    collections:         Optional[str] = None,
-    max_groups_per_coll: int = 2000,
+    collection:          str,
+    offset:              int = 0,
+    limit:               int = 100,
     max_docs_per_group:  int = 50,
 ):
-    """R3 Phase-7 duplicate census — READ-ONLY.
+    """R3 Phase-7 duplicate census — READ-ONLY, per-collection, paged.
 
-    Scans every canonical collection (or the subset in
-    ``collections=a,b,c``) for duplicate logical-key groups and
-    returns per-group ``_ids`` + canonical fingerprints + EXACT /
-    CONFLICTING classification.  No mutation.
+    (Rewrite of the pre-#20 all-21-in-one-call census that returned
+    HTTP 500 on large collections because ``$group{$push: $_id}``
+    materialised a push-array for EVERY logical key before
+    ``$match{count>1}`` filtered them.)
 
-    Args:
-        collections: optional CSV subset of
-            ``RECONCILIATION_COLLECTIONS``.  Default: all 21.
-        max_groups_per_coll: safety cap on groups materialised per
-            collection (dup-count-ordered); extra groups are counted
-            but not expanded.
-        max_docs_per_group: safety cap on sampled docs per group.
+    Pagination contract:
+      * ``collection`` is REQUIRED and must be in
+        ``RECONCILIATION_COLLECTIONS``.
+      * ``offset`` / ``limit`` page a deterministic sorted list of
+        duplicate keys for the single collection.
+      * Collection-level stats (``total_docs``, ``logical_key_count``,
+        ``duplicate_group_count``) are returned on every page.
+      * ``has_more`` + ``next_offset`` drive the driver's loop.
+
+    Structured error reporting: on any exception the endpoint
+    returns a 500 with a JSON detail
+    ``{collection, stage, exception_type, error}`` so GH-runner
+    operators can see WHY the scan failed rather than a generic
+    "Something went wrong — please retry."
     """
+    if collection not in RECONCILIATION_COLLECTIONS:
+        raise HTTPException(status_code=400,
+            detail=f"UNKNOWN_COLLECTION: {collection}")
     canon_db = get_canonical_database()
-    if collections:
-        wanted = [c.strip() for c in collections.split(",") if c.strip()]
-        unknown = [c for c in wanted if c not in RECONCILIATION_COLLECTIONS]
-        if unknown:
-            raise HTTPException(status_code=400,
-                detail=f"UNKNOWN_COLLECTIONS: {unknown}")
-    else:
-        wanted = list(RECONCILIATION_COLLECTIONS)
-
-    per_coll: list[dict] = []
-    total_groups = 0
-    total_exact  = 0
-    total_conflicting = 0
-
-    for coll in wanted:
-        try:
-            summary = await scan_duplicates(
-                canon_db, coll,
-                max_groups=max_groups_per_coll,
-                max_docs_per_group=max_docs_per_group,
-            )
-        except Exception as e:
-            per_coll.append({"collection": coll,
-                              "error": f"{type(e).__name__}: {str(e)[:400]}"})
-            continue
-        per_coll.append(summary)
-        total_groups      += summary["duplicate_group_count"]
-        total_exact       += summary["exact_group_count"]
-        total_conflicting += summary["conflicting_group_count"]
-
+    try:
+        summary = await scan_duplicates(
+            canon_db, collection,
+            offset=offset, limit=limit,
+            max_docs_per_group=max_docs_per_group,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={
+            "collection":     collection,
+            "stage":          "scan_duplicates",
+            "exception_type": type(e).__name__,
+            "error":          str(e)[:600],
+        })
     return {
-        "generated_at":            datetime.now(timezone.utc).isoformat(),
-        "scope":                   wanted,
-        "collections":             per_coll,
-        "apply_scope":             sorted(APPLY_DEDUPE_SCOPE),
-        "apply_confirm_phrase":    APPLY_DEDUPE_CONFIRM_PHRASE,
-        "total_duplicate_groups":  total_groups,
-        "total_exact_groups":      total_exact,
-        "total_conflicting_groups": total_conflicting,
+        "generated_at":         datetime.now(timezone.utc).isoformat(),
+        "apply_scope":          sorted(APPLY_DEDUPE_SCOPE),
+        "apply_confirm_phrase": APPLY_DEDUPE_CONFIRM_PHRASE,
+        **summary,
     }
 
 

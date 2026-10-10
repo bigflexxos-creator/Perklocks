@@ -90,6 +90,33 @@ APPLY_SCOPE_COLLS: tuple[str, ...] = (
     "settlement_events",
 )
 
+# Local mirror of RECONCILIATION_COLLECTIONS from backend/services/
+# canonical_cutover.py.  Driver must iterate per-collection to avoid
+# the pre-#20 single-call 500 regression.
+RECONCILIATION_COLLECTIONS_LOCAL: tuple[str, ...] = (
+    "games",
+    "historical_ingestion_state",
+    "nfl_ingest_meta",
+    "nfl_player_weekly",
+    "parlay_history",
+    "picks",
+    "player_game_actuals",
+    "player_game_logs",
+    "player_identities",
+    "prediction_snapshots",
+    "pregame_snapshots",
+    "publication_events",
+    "rollover_slate_events",
+    "rollover_slates",
+    "settlement_events",
+    "soccer_matches",
+    "soccer_player_game_logs",
+    "team_game_actuals",
+    "tennis_matches_history",
+    "user_bets",
+    "users",
+)
+
 # Must mirror backend/services/canonical_dedupe.APPLY_DEDUPE_CONFIRM_PHRASE
 APPLY_CONFIRM_PHRASE: str = "APPLY_PERKLOCKS_DEDUPE_R3_PHASE7_V1"
 
@@ -269,20 +296,78 @@ def main() -> int:
     hdr      = {"Authorization": f"Bearer {jwt}"}
     hdr_tok  = {**hdr, "X-Canonical-Import-Token": import_tok}
 
-    # ── STEP 2: READ-ONLY CENSUS (all 21) ──────────────────────────
-    print("\n[step2] GET /dup-census (all 21 collections)")
-    code, census = _http(
-        f"{api_base}/api/admin/canonical-cutover/dup-census",
-        headers=hdr, timeout_s=1800,
-    )
-    if code != 200 or not isinstance(census, dict):
-        _write_report(report_path, {"verdict": "CANNOT_VERIFY",
-                                     "stage": "census",
-                                     "status": code, "body": census})
-        return 1
-    total_groups      = int(census.get("total_duplicate_groups", 0))
-    total_exact       = int(census.get("total_exact_groups", 0))
-    total_conflicting = int(census.get("total_conflicting_groups", 0))
+    # ── STEP 2: READ-ONLY CENSUS (per-collection, paged, sequential) ─
+    print("\n[step2] GET /dup-census per collection (concurrency=1)")
+
+    def _fetch_coll_census(coll: str) -> dict:
+        """Fetch all pages of dup-census for one collection and
+        return a consolidated per-collection summary with all groups
+        flattened and exact/conflicting counts summed.  Streams
+        pages so the runner never holds the whole response in one
+        memory block."""
+        page_limit         = 100
+        max_docs_per_group = 50
+        offset             = 0
+        all_groups:        list[dict] = []
+        total_docs         = 0
+        logical_key_count  = 0
+        dup_group_count    = 0
+        exact              = 0
+        conflicting        = 0
+        page_i             = 0
+        err_text           = None
+        while True:
+            page_i += 1
+            qs = (f"collection={coll}&offset={offset}&limit={page_limit}"
+                   f"&max_docs_per_group={max_docs_per_group}")
+            code, body = _http(
+                f"{api_base}/api/admin/canonical-cutover/dup-census?{qs}",
+                headers=hdr, timeout_s=1800,
+            )
+            if code != 200 or not isinstance(body, dict):
+                err_text = f"HTTP {code}: {str(body)[:500]}"
+                print(f"[step2] {coll} page#{page_i} offset={offset}  "
+                      f"FAILED: {err_text}")
+                break
+            total_docs        = body.get("total_docs", total_docs)
+            logical_key_count = body.get("logical_key_count", logical_key_count)
+            dup_group_count   = body.get("duplicate_group_count", dup_group_count)
+            exact            += int(body.get("page_exact_count")       or 0)
+            conflicting      += int(body.get("page_conflicting_count") or 0)
+            page_groups       = body.get("groups") or []
+            all_groups.extend(page_groups)
+            print(f"[step2] {coll} page#{page_i}  "
+                   f"offset={offset}  returned={len(page_groups)}  "
+                   f"dup_total={dup_group_count}  "
+                   f"has_more={body.get('has_more')}")
+            if not body.get("has_more") or body.get("next_offset") is None:
+                break
+            offset = int(body["next_offset"])
+        return {
+            "collection":              coll,
+            "total_docs":              total_docs,
+            "logical_key_count":       logical_key_count,
+            "duplicate_group_count":   dup_group_count,
+            "exact_group_count":       exact,
+            "conflicting_group_count": conflicting,
+            "groups":                  all_groups,
+            "error":                   err_text,
+        }
+
+    per_coll: list[dict] = []
+    for coll in list(RECONCILIATION_COLLECTIONS_LOCAL):
+        per_coll.append(_fetch_coll_census(coll))
+    total_groups      = sum(c.get("duplicate_group_count")  or 0 for c in per_coll)
+    total_exact       = sum(c.get("exact_group_count")      or 0 for c in per_coll)
+    total_conflicting = sum(c.get("conflicting_group_count") or 0 for c in per_coll)
+
+    census = {
+        "generated_at":            None,
+        "collections":             per_coll,
+        "total_duplicate_groups":  total_groups,
+        "total_exact_groups":      total_exact,
+        "total_conflicting_groups": total_conflicting,
+    }
     print(f"[step2] total_dup_groups={total_groups} "
           f"exact={total_exact} conflicting={total_conflicting}")
 
@@ -482,26 +567,35 @@ def main() -> int:
         return 4
 
     # ── STEP 4 post-apply census: must be 0 for the 8 APPLY colls ──
-    print("\n[step4] re-run GET /dup-census for APPLY scope "
+    print("\n[step4] re-run GET /dup-census per APPLY-scope collection "
           "— require 0 duplicate groups")
-    code, post = _http(
-        f"{api_base}/api/admin/canonical-cutover/dup-census",
-        headers=hdr,
-        timeout_s=1800,
-    )
-    post_scope = {c: 0 for c in APPLY_SCOPE_COLLS}
-    for e in (post.get("collections") or []):
-        if e.get("collection") in APPLY_SCOPE_COLLS:
-            post_scope[e["collection"]] = int(
-                e.get("duplicate_group_count") or 0)
-    remaining_total = sum(post_scope.values())
+    post_scope: dict[str, int] = {c: 0 for c in APPLY_SCOPE_COLLS}
+    post_coll_errors: list[dict] = []
+    for coll in APPLY_SCOPE_COLLS:
+        # Only count-level stats are needed here — one page with
+        # limit=1 is enough; the server still returns the collection-
+        # level ``duplicate_group_count``.
+        code, body = _http(
+            f"{api_base}/api/admin/canonical-cutover/dup-census?"
+            f"collection={coll}&offset=0&limit=1",
+            headers=hdr, timeout_s=600,
+        )
+        if code != 200 or not isinstance(body, dict):
+            post_coll_errors.append({"collection": coll,
+                                      "status": code,
+                                      "body": str(body)[:400]})
+            post_scope[coll] = -1   # unknown
+            continue
+        post_scope[coll] = int(body.get("duplicate_group_count") or 0)
+    remaining_total = sum(v for v in post_scope.values() if v >= 0)
     print(f"[step4] remaining dup groups across 8 APPLY scope "
           f"collections = {remaining_total}  per_coll={post_scope}")
-    if remaining_total != 0:
+    if post_coll_errors or any(v != 0 for v in post_scope.values()):
         _write_report(report_path, {
             **canary_report, "verdict": "APPLY_INCOMPLETE_DUPS_REMAIN",
             "apply_results":  all_results,
             "post_apply_dup_groups": post_scope,
+            "post_apply_errors":     post_coll_errors,
         })
         return 5
 
