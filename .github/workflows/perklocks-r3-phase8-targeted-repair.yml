@@ -1,0 +1,185 @@
+name: Perklocks R3 Phase-8 Targeted Repair (3 collections)
+
+# Operator-approved repair for the three canonical collections whose
+# Phase-5 baseline was dropped by the overlay-replace bug in
+# push_canonical_to_production.py (lines 258-269):
+#
+#   * player_game_actuals
+#   * player_game_logs
+#   * soccer_matches
+#
+# Final merge contract (operator-approved 2026-10-10):
+#   valid Phase-5 baseline  ∪  valid Phase-6 overlay
+#   (by logical key; Phase-6 wins on conflict; no shots=0 canary override)
+#
+# Expected merged logical counts (hard-coded in the driver; preflight
+# fails closed if the pinned sources do not match):
+#
+#   player_game_actuals = 404 573
+#   player_game_logs    = 412 747
+#   soccer_matches      = 25 659
+#
+# This workflow MUST NEVER call:
+#   * Phase 5 / 6 / 7 / dedupe / divergence-patch / create-indexes
+#   * canonical-import (deployed buggy pipeline)
+#   * reset / soft-reset / drop-collection / new session
+#   * any collection other than the three targets above
+#
+# DRY_RUN (default) performs ZERO writes.  APPLY requires BOTH the
+# workflow input confirm_phrase AND the identical phrase set in the
+# driver env; the backend endpoint carries its own hard-coded
+# allowlist of exactly these three collections as the final belt +
+# braces.
+#
+# Required secrets (unchanged from previous R3 workflows):
+#   PROD_API_BASE
+#   PROD_ADMIN_EMAIL
+#   PROD_ADMIN_PASSWORD
+#   CANONICAL_IMPORT_TOKEN
+#   PREVIEW_BASE_URL
+#   MIGRATION_DOWNLOAD_TOKEN
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'DRY_RUN (default, no writes) or APPLY'
+        required: true
+        default: 'DRY_RUN'
+        type: choice
+        options: [DRY_RUN, APPLY]
+      confirm_phrase:
+        description: 'For APPLY only — must equal APPLY_PERKLOCKS_R3_PHASE8_REPAIR_V1'
+        required: false
+        default: ''
+        type: string
+      batch_size:
+        description: 'Upsert batch size (1..500, default 250)'
+        required: false
+        default: '250'
+        type: string
+      session_id:
+        description: 'R3 canonical cutover session ID (do NOT change)'
+        required: false
+        default: 'perklocks-cutover-20261003-r3'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group:  perklocks-r3-phase8-targeted-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    name: R3 Phase-8 three-collection repair (${{ inputs.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CHKP_DIR:   /tmp/perklocks-checkpoints
+      P8R_CHKP_P5: /tmp/perklocks-checkpoints/phase5_20261003_190628Z.tar.gz
+      P8R_CHKP_P6: /tmp/perklocks-checkpoints/phase6_20261003_192150Z.tar.gz
+      P8R_REPORT_PATH: /tmp/perklocks-logs/phase8_repair_report.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate session_id input
+        env:
+          SID: ${{ inputs.session_id }}
+        run: |
+          if [ "$SID" != "perklocks-cutover-20261003-r3" ]; then
+            echo "::error::session_id must equal perklocks-cutover-20261003-r3 (got $SID)"
+            exit 1
+          fi
+
+      - name: Validate APPLY requires confirm phrase
+        if: ${{ inputs.mode == 'APPLY' }}
+        env:
+          CP: ${{ inputs.confirm_phrase }}
+        run: |
+          if [ "$CP" != "APPLY_PERKLOCKS_R3_PHASE8_REPAIR_V1" ]; then
+            echo "::error::APPLY mode requires confirm_phrase=APPLY_PERKLOCKS_R3_PHASE8_REPAIR_V1 (got '$CP')"
+            exit 1
+          fi
+
+      # ── Pinned Phase-5 checkpoint ───────────────────────────────────
+      - name: Download + verify phase5 checkpoint
+        uses: ./.github/actions/perklocks-checkpoint-download
+        with:
+          phase:             phase5
+          preview_base_url:  ${{ secrets.PREVIEW_BASE_URL }}
+          download_token:    ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+          checkpoint_dir:    ${{ env.CHKP_DIR }}
+          fallback_filename: phase5_20261003_190628Z.tar.gz
+          fallback_bytes:    "337143523"
+          fallback_sha:      4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
+          max_attempts:      "10"
+          curl_max_time_seconds: "1800"
+
+      # ── Pinned Phase-6 checkpoint ───────────────────────────────────
+      - name: Download + verify phase6 checkpoint
+        uses: ./.github/actions/perklocks-checkpoint-download
+        with:
+          phase:             phase6
+          preview_base_url:  ${{ secrets.PREVIEW_BASE_URL }}
+          download_token:    ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+          checkpoint_dir:    ${{ env.CHKP_DIR }}
+          fallback_filename: phase6_20261003_192150Z.tar.gz
+          fallback_bytes:    "1606247"
+          fallback_sha:      327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22
+          max_attempts:      "10"
+          curl_max_time_seconds: "900"
+
+      - name: Preflight — belt+braces SHA re-verification
+        env:
+          P5_EXPECT: 4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
+          P6_EXPECT: 327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22
+        run: |
+          set -euo pipefail
+          for pair in "${P8R_CHKP_P5}:${P5_EXPECT}" "${P8R_CHKP_P6}:${P6_EXPECT}"; do
+            tar=${pair%:*}; exp=${pair#*:}
+            if [ ! -f "$tar" ]; then
+              echo "::error::missing $tar"; exit 1
+            fi
+            act=$(sha256sum "$tar" | awk '{print $1}')
+            echo "$tar  sha=$act"
+            if [ "$act" != "$exp" ]; then
+              echo "::error::SHA mismatch for $tar (expected $exp)"; exit 1
+            fi
+          done
+
+      - name: Run Phase-8 repair driver (${{ inputs.mode }})
+        env:
+          PROD_API_BASE:            ${{ secrets.PROD_API_BASE }}
+          PROD_ADMIN_EMAIL:         ${{ secrets.PROD_ADMIN_EMAIL }}
+          PROD_ADMIN_PASSWORD:      ${{ secrets.PROD_ADMIN_PASSWORD }}
+          CANONICAL_IMPORT_TOKEN:   ${{ secrets.CANONICAL_IMPORT_TOKEN }}
+          CANONICAL_IMPORT_SESSION: ${{ inputs.session_id }}
+          P8R_MODE:                 ${{ inputs.mode }}
+          P8R_CONFIRM_PHRASE:       ${{ inputs.confirm_phrase }}
+          P8R_BATCH_SIZE:           ${{ inputs.batch_size }}
+          RECONCILE_TMP:            /tmp/perklocks-work
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "${P8R_REPORT_PATH}")"
+          mkdir -p "${RECONCILE_TMP}"
+          echo "::add-mask::${PROD_ADMIN_EMAIL}"
+          echo "::add-mask::${PROD_ADMIN_PASSWORD}"
+          echo "::add-mask::${CANONICAL_IMPORT_TOKEN}"
+          python reconcile_workspace/scripts/r3_phase8_repair_3_collections.py
+
+      - name: Upload Phase-8 repair report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name:        perklocks-r3-phase8-repair-report-${{ inputs.mode }}
+          path:        /tmp/perklocks-logs/phase8_repair_report.json
+          if-no-files-found: warn
+          retention-days: 30

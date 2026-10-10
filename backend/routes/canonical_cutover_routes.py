@@ -1968,3 +1968,207 @@ async def canonical_cutover_patch_divergent_group(
         "generated_at":         datetime.now(timezone.utc).isoformat(),
     }
 
+
+# ────────────────────────────────────────────────────────────────────
+#   POST /canonical-cutover/targeted-logical-upsert
+# ────────────────────────────────────────────────────────────────────
+#
+# TEMPORARY, HARD-CODED surgical endpoint created on 2026-10-10 for
+# the R3 Phase-8 three-collection repair.  Support confirmed the
+# original ``push_canonical_to_production.py`` had an overlay-replace
+# bug (lines 258-269) that dropped the Phase-5 baseline whenever a
+# Phase-6 overlay existed, leaving these three canonical collections
+# incomplete:
+#
+#     * player_game_actuals
+#     * player_game_logs
+#     * soccer_matches
+#
+# This endpoint is the authorised offline-reconciliation write path
+# for the repair, deliberately separate from ``canonical-import``
+# (which runs the buggy batch/fingerprint pipeline).  It performs
+# idempotent logical-key UPSERTs ONLY on the three allowlisted
+# collections — no truncation, no drop, no delete, no index change,
+# no session mutation.
+#
+# Hard safety rails:
+#   * collection must be in ``_TARGETED_REPAIR_ALLOWED_COLLECTIONS``
+#   * batch size ≤ 500 rows per call
+#   * every row must carry a complete, non-null logical key
+#   * logical-key field names are hard-coded per collection; the
+#     caller cannot override them
+#   * the per-row ``_set_doc`` writes every business field present
+#     in the row (minus Mongo ``_id`` and underscore-prefixed
+#     bookkeeping); ``_id`` is NEVER changed by $set
+#   * admin JWT + CANONICAL_IMPORT_ENABLED + X-Canonical-Import-Token
+#     + confirm_phrase gate
+#   * audit event ``TARGETED_REPAIR_UPSERT_BATCH`` written AFTER each
+#     batch succeeds, recording inserts/updates/matched counts, the
+#     session id, and the workflow run id
+TARGETED_REPAIR_CONFIRM_PHRASE: str = \
+    "APPLY_PERKLOCKS_R3_PHASE8_REPAIR_V1"
+
+_TARGETED_REPAIR_ALLOWED_COLLECTIONS: dict[str, tuple[str, ...]] = {
+    "player_game_actuals": ("sport", "event_id", "player_id"),
+    "player_game_logs":    ("sport", "game_id", "player_id"),
+    "soccer_matches":      ("league", "season", "home_team",
+                             "away_team", "date"),
+}
+
+_TARGETED_REPAIR_MAX_BATCH:     int = 500
+_TARGETED_REPAIR_AUDIT_EVENT:   str = "TARGETED_REPAIR_UPSERT_BATCH"
+
+
+def _strip_bookkeeping(doc: dict) -> dict:
+    """Return a copy of ``doc`` without the Mongo ``_id`` field and
+    without any underscore-prefixed bookkeeping key.  Mirrors the
+    exclusion rule in ``canonical_dedupe._is_bookkeeping_field``.
+    """
+    return {k: v for k, v in doc.items()
+            if k != "_id" and not k.startswith("_")}
+
+
+class _TargetedUpsertBody(BaseModel):
+    session_id:      str = Field(..., min_length=8, max_length=128)
+    workflow_run_id: str = Field(..., min_length=1, max_length=128)
+    confirm_phrase:  str
+    collection:      str
+    batch_no:        int = Field(..., ge=0)
+    docs:            list[dict] = Field(..., min_length=1, max_length=500)
+
+
+@router.post("/canonical-cutover/targeted-logical-upsert")
+async def canonical_cutover_targeted_logical_upsert(
+    body:                     _TargetedUpsertBody,
+    admin:                    Annotated[UserPublic, Depends(_require_admin)],
+    x_canonical_import_token: Annotated[Optional[str],
+                              Header(convert_underscores=True)] = None,
+):
+    """Phase-8 three-collection repair upsert — see module docstring
+    above for the full fail-closed contract.
+    """
+    # ── Security envelope ────────────────────────────────────────────
+    if not _import_enabled():
+        raise HTTPException(status_code=403, detail="CANONICAL_IMPORT_ENABLED=false")
+    _verify_import_token(x_canonical_import_token)
+    if body.confirm_phrase != TARGETED_REPAIR_CONFIRM_PHRASE:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "BAD_CONFIRM_PHRASE: expected="
+                f"'{TARGETED_REPAIR_CONFIRM_PHRASE}'"
+            ),
+        )
+    if body.collection not in _TARGETED_REPAIR_ALLOWED_COLLECTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "COLLECTION_NOT_IN_ALLOWLIST: this endpoint can only "
+                "write to the three Phase-8 repair targets "
+                f"({sorted(_TARGETED_REPAIR_ALLOWED_COLLECTIONS)}); "
+                f"got {body.collection!r}"
+            ),
+        )
+    if len(body.docs) > _TARGETED_REPAIR_MAX_BATCH:
+        raise HTTPException(
+            status_code=413,
+            detail=f"BATCH_TOO_LARGE_MAX_{_TARGETED_REPAIR_MAX_BATCH}",
+        )
+    key_fields = _TARGETED_REPAIR_ALLOWED_COLLECTIONS[body.collection]
+
+    canon_db = get_canonical_database()
+    coll     = canon_db[body.collection]
+
+    inserted = updated = matched_unchanged = 0
+    first_bad_idx: Optional[int] = None
+    first_bad_reason: Optional[str] = None
+
+    for i, raw in enumerate(body.docs):
+        # Pull the business doc (support both "wrapped" r.doc and bare).
+        d = raw.get("doc", raw) if isinstance(raw, dict) else None
+        if not isinstance(d, dict):
+            first_bad_idx, first_bad_reason = i, "BAD_SHAPE"
+            break
+        lk_vals = {k: d.get(k) for k in key_fields}
+        if any(v is None for v in lk_vals.values()):
+            first_bad_idx, first_bad_reason = (
+                i, f"NULL_LOGICAL_KEY: {lk_vals}")
+            break
+        set_doc = _strip_bookkeeping(d)
+        try:
+            r = await coll.update_one(
+                lk_vals,
+                {"$set": set_doc},
+                upsert=True,
+            )
+        except Exception as e:
+            first_bad_idx, first_bad_reason = (
+                i, f"UPSERT_FAILED: {type(e).__name__}: {e}")
+            break
+        if r.upserted_id is not None:
+            inserted += 1
+        elif r.modified_count == 1:
+            updated += 1
+        else:
+            matched_unchanged += 1
+
+    if first_bad_idx is not None:
+        # Partial-batch error: audit the partial result so the operator
+        # can reconcile, then surface the index of the offending row.
+        await canon_db[DEDUPE_AUDIT_COLLECTION].insert_one({
+            "event":           _TARGETED_REPAIR_AUDIT_EVENT,
+            "status":          "PARTIAL_FAIL",
+            "collection":      body.collection,
+            "batch_no":        body.batch_no,
+            "docs_total":      len(body.docs),
+            "docs_committed":  inserted + updated + matched_unchanged,
+            "inserted":        inserted,
+            "updated":         updated,
+            "matched_unchanged": matched_unchanged,
+            "first_bad_idx":   first_bad_idx,
+            "first_bad_reason": first_bad_reason,
+            "session_id":      body.session_id,
+            "workflow_run_id": body.workflow_run_id,
+            "created_at":      datetime.now(timezone.utc),
+        })
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error":            "PARTIAL_BATCH_FAIL",
+                "collection":       body.collection,
+                "batch_no":         body.batch_no,
+                "docs_committed":   inserted + updated + matched_unchanged,
+                "first_bad_idx":    first_bad_idx,
+                "first_bad_reason": first_bad_reason,
+                "inserted":         inserted,
+                "updated":          updated,
+                "matched_unchanged": matched_unchanged,
+            },
+        )
+
+    await canon_db[DEDUPE_AUDIT_COLLECTION].insert_one({
+        "event":             _TARGETED_REPAIR_AUDIT_EVENT,
+        "status":            "OK",
+        "collection":        body.collection,
+        "batch_no":          body.batch_no,
+        "docs_total":        len(body.docs),
+        "inserted":          inserted,
+        "updated":           updated,
+        "matched_unchanged": matched_unchanged,
+        "session_id":        body.session_id,
+        "workflow_run_id":   body.workflow_run_id,
+        "created_at":        datetime.now(timezone.utc),
+    })
+
+    return {
+        "ok":                True,
+        "collection":        body.collection,
+        "batch_no":          body.batch_no,
+        "docs_total":        len(body.docs),
+        "inserted":          inserted,
+        "updated":           updated,
+        "matched_unchanged": matched_unchanged,
+        "generated_at":      datetime.now(timezone.utc).isoformat(),
+    }
+
+
