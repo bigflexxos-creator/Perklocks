@@ -59,6 +59,15 @@ from services.canonical_cutover import (
     SESSION_COLLECTION, BATCH_COLLECTION, AUDIT_COLLECTION,
     audit_log as _audit_log_impl,
 )
+from services.canonical_dedupe import (
+    APPLY_DEDUPE_SCOPE,
+    DEDUPE_AUDIT_COLLECTION,
+    EXACT_DUPLICATE, CONFLICTING_DUPLICATE,
+    canonical_doc_fingerprint,
+    classify_group,
+    scan_duplicates,
+    apply_dedupe_group,
+)
 
 
 async def audit_log_local(event: str, meta: dict) -> None:
@@ -1324,4 +1333,203 @@ async def canonical_cutover_certification(
         "import_endpoint_disabled":         import_disabled,
         "overall_pass": (duplicate_identities_total == 0 and
                            total_excluded_leaked == 0),
+    }
+
+
+# ─── R3 Phase-7 duplicate reconciliation ────────────────────────────
+# Two endpoints driven by the perklocks-r3-phase7-dedupe-finalize
+# workflow:
+#
+#   GET  /canonical-cutover/dup-census
+#     Read-only.  Enumerates every duplicate logical-key group across
+#     all 21 canonical collections with per-doc _ids + fingerprints +
+#     EXACT/CONFLICTING classification.  Produces the authoritative
+#     evidence an operator inspects before authorising APPLY.
+#
+#   POST /canonical-cutover/apply-dedupe
+#     Destructive.  Reconciles duplicate groups ONE AT A TIME against
+#     a pinned-source authoritative fingerprint supplied by the
+#     driver.  Hard constraints:
+#       * collection must be in APPLY_DEDUPE_SCOPE (the 8 that failed
+#         Phase-7 unique-index creation).
+#       * confirm_phrase must equal APPLY_DEDUPE_CONFIRM_PHRASE.
+#       * every mutation writes a durable audit record to
+#         ``canonical_dedupe_audit`` BEFORE the delete.
+#       * pre-delete guard: survivor fingerprint == source.
+#       * post-delete guard: logical-key count == 1.
+#       * FAIL CLOSED on any ambiguity (no "latest timestamp wins").
+APPLY_DEDUPE_CONFIRM_PHRASE: str = "APPLY_PERKLOCKS_DEDUPE_R3_PHASE7_V1"
+
+
+@router.get("/canonical-cutover/dup-census")
+async def canonical_cutover_dup_census(
+    admin:               Annotated[UserPublic, Depends(_require_admin)],
+    collections:         Optional[str] = None,
+    max_groups_per_coll: int = 2000,
+    max_docs_per_group:  int = 50,
+):
+    """R3 Phase-7 duplicate census — READ-ONLY.
+
+    Scans every canonical collection (or the subset in
+    ``collections=a,b,c``) for duplicate logical-key groups and
+    returns per-group ``_ids`` + canonical fingerprints + EXACT /
+    CONFLICTING classification.  No mutation.
+
+    Args:
+        collections: optional CSV subset of
+            ``RECONCILIATION_COLLECTIONS``.  Default: all 21.
+        max_groups_per_coll: safety cap on groups materialised per
+            collection (dup-count-ordered); extra groups are counted
+            but not expanded.
+        max_docs_per_group: safety cap on sampled docs per group.
+    """
+    canon_db = get_canonical_database()
+    if collections:
+        wanted = [c.strip() for c in collections.split(",") if c.strip()]
+        unknown = [c for c in wanted if c not in RECONCILIATION_COLLECTIONS]
+        if unknown:
+            raise HTTPException(status_code=400,
+                detail=f"UNKNOWN_COLLECTIONS: {unknown}")
+    else:
+        wanted = list(RECONCILIATION_COLLECTIONS)
+
+    per_coll: list[dict] = []
+    total_groups = 0
+    total_exact  = 0
+    total_conflicting = 0
+
+    for coll in wanted:
+        try:
+            summary = await scan_duplicates(
+                canon_db, coll,
+                max_groups=max_groups_per_coll,
+                max_docs_per_group=max_docs_per_group,
+            )
+        except Exception as e:
+            per_coll.append({"collection": coll,
+                              "error": f"{type(e).__name__}: {str(e)[:400]}"})
+            continue
+        per_coll.append(summary)
+        total_groups      += summary["duplicate_group_count"]
+        total_exact       += summary["exact_group_count"]
+        total_conflicting += summary["conflicting_group_count"]
+
+    return {
+        "generated_at":            datetime.now(timezone.utc).isoformat(),
+        "scope":                   wanted,
+        "collections":             per_coll,
+        "apply_scope":             sorted(APPLY_DEDUPE_SCOPE),
+        "apply_confirm_phrase":    APPLY_DEDUPE_CONFIRM_PHRASE,
+        "total_duplicate_groups":  total_groups,
+        "total_exact_groups":      total_exact,
+        "total_conflicting_groups": total_conflicting,
+    }
+
+
+class _ApplyDedupePlan(BaseModel):
+    collection:                str
+    logical_key_values:        dict
+    classification:            str
+    all_ids:                   list
+    authoritative_fingerprint: str
+    survivor_hint_order:       Optional[list] = None
+
+
+class _ApplyDedupeBody(BaseModel):
+    session_id:              str
+    workflow_run_id:         str
+    confirm_phrase:          str
+    plans:                   list[_ApplyDedupePlan]
+
+
+@router.post("/canonical-cutover/apply-dedupe")
+async def canonical_cutover_apply_dedupe(
+    body:                 _ApplyDedupeBody,
+    admin:                Annotated[UserPublic, Depends(_require_admin)],
+    x_canonical_import_token: Annotated[Optional[str],
+                              Header(convert_underscores=True)] = None,
+):
+    """R3 Phase-7 duplicate reconciliation APPLY — destructive.
+
+    * Admin JWT required.
+    * ``CANONICAL_IMPORT_ENABLED=true`` required.
+    * ``X-Canonical-Import-Token`` header required.
+    * ``confirm_phrase`` must equal ``APPLY_DEDUPE_CONFIRM_PHRASE``.
+    * Every plan's collection must be in ``APPLY_DEDUPE_SCOPE``.
+    * Processes plans one at a time; on first exception the run
+      stops with partial-progress details (all preceding plans are
+      durable because audit + delete are per-group atomic).
+    """
+    if not _import_enabled():
+        raise HTTPException(status_code=403, detail="CANONICAL_IMPORT_ENABLED=false")
+    _verify_import_token(x_canonical_import_token)
+    if body.confirm_phrase != APPLY_DEDUPE_CONFIRM_PHRASE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"BAD_CONFIRM_PHRASE: expected='{APPLY_DEDUPE_CONFIRM_PHRASE}'")
+
+    out_of_scope = [p.collection for p in body.plans
+                     if p.collection not in APPLY_DEDUPE_SCOPE]
+    if out_of_scope:
+        raise HTTPException(
+            status_code=400,
+            detail=f"OUT_OF_SCOPE_COLLECTIONS: {sorted(set(out_of_scope))}")
+
+    canon_db = get_canonical_database()
+    results:   list[dict] = []
+    halted_at: Optional[int] = None
+    halt_err:  Optional[str] = None
+
+    for idx, plan in enumerate(body.plans):
+        try:
+            r = await apply_dedupe_group(
+                canon_db,
+                collection=plan.collection,
+                logical_key_values=plan.logical_key_values,
+                classification=plan.classification,
+                all_ids=plan.all_ids,
+                authoritative_fingerprint=plan.authoritative_fingerprint,
+                workflow_run_id=body.workflow_run_id,
+                session_id=body.session_id,
+                survivor_hint_order=plan.survivor_hint_order,
+            )
+            results.append(r)
+        except Exception as e:
+            halted_at = idx
+            halt_err  = f"{type(e).__name__}: {str(e)[:600]}"
+            results.append({
+                "collection":         plan.collection,
+                "logical_key_values": plan.logical_key_values,
+                "error":              halt_err,
+                "halted":             True,
+            })
+            await audit_log_local("dedupe_apply_halted", {
+                "workflow_run_id": body.workflow_run_id,
+                "session_id":      body.session_id,
+                "plan_index":      idx,
+                "collection":      plan.collection,
+                "logical_key_values": plan.logical_key_values,
+                "error":           halt_err,
+            })
+            break
+
+    await audit_log_local("dedupe_apply_summary", {
+        "workflow_run_id":   body.workflow_run_id,
+        "session_id":        body.session_id,
+        "total_plans":       len(body.plans),
+        "processed":         len(results),
+        "halted_at":         halted_at,
+        "halt_err":          halt_err,
+    })
+
+    return {
+        "generated_at":     datetime.now(timezone.utc).isoformat(),
+        "session_id":       body.session_id,
+        "workflow_run_id":  body.workflow_run_id,
+        "total_plans":      len(body.plans),
+        "processed":        len(results),
+        "halted_at":        halted_at,
+        "halt_err":         halt_err,
+        "results":          results,
+        "ok":               halted_at is None,
     }
