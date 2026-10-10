@@ -176,27 +176,43 @@ async def scan_duplicates(
     key_fields = list(logical_key_fields(coll))
     group_id = {f: f"${f}" for f in key_fields}
 
-    # ── Lightweight stats (no $push) ────────────────────────────────
-    total_docs = await db[coll].count_documents({})
+    # ── Per-stage try/except — R3 Phase-7 census-500 diagnostics ───
+    # Every aggregation stage is wrapped so a failure returns a
+    # structured error identifying EXACTLY which stage failed.  The
+    # endpoint raises 500 with these details so the GH runner / audit
+    # can root-cause without rerunning blind.
+    stage = "unknown"
+    try:
+        stage = "count_documents"
+        total_docs = await db[coll].count_documents({})
 
-    pipe_lk_count = [
-        {"$group": {"_id": group_id}},
-        {"$count": "total"},
-    ]
-    lk_count_doc = None
-    async for d in db[coll].aggregate(pipe_lk_count, allowDiskUse=True):
-        lk_count_doc = d
-    logical_key_count = int((lk_count_doc or {}).get("total") or 0)
+        stage = "logical_key_count"
+        pipe_lk_count = [
+            {"$group": {"_id": group_id}},
+            {"$count": "total"},
+        ]
+        lk_count_doc = None
+        async for d in db[coll].aggregate(pipe_lk_count, allowDiskUse=True):
+            lk_count_doc = d
+        logical_key_count = int((lk_count_doc or {}).get("total") or 0)
 
-    pipe_dup_count = [
-        {"$group": {"_id": group_id, "count": {"$sum": 1}}},
-        {"$match": {"count": {"$gt": 1}}},
-        {"$count": "total"},
-    ]
-    dup_count_doc = None
-    async for d in db[coll].aggregate(pipe_dup_count, allowDiskUse=True):
-        dup_count_doc = d
-    duplicate_group_count = int((dup_count_doc or {}).get("total") or 0)
+        stage = "duplicate_group_count"
+        pipe_dup_count = [
+            {"$group": {"_id": group_id, "count": {"$sum": 1}}},
+            {"$match": {"count": {"$gt": 1}}},
+            {"$count": "total"},
+        ]
+        dup_count_doc = None
+        async for d in db[coll].aggregate(pipe_dup_count, allowDiskUse=True):
+            dup_count_doc = d
+        duplicate_group_count = int((dup_count_doc or {}).get("total") or 0)
+    except Exception as e:
+        # Re-raise with structured context so the endpoint can
+        # surface a non-ambiguous 500 payload.
+        raise RuntimeError(
+            f"CENSUS_STAGE_FAIL stage={stage} collection={coll} "
+            f"exception={type(e).__name__}: {str(e)[:400]}"
+        ) from e
 
     # ── Fast path: no duplicates ────────────────────────────────────
     if duplicate_group_count == 0 or offset >= duplicate_group_count:
@@ -217,16 +233,24 @@ async def scan_duplicates(
         }
 
     # ── Paged dup-key fetch (still no $push on docs) ────────────────
-    pipe_page = [
-        {"$group": {"_id": group_id, "count": {"$sum": 1}}},
-        {"$match": {"count": {"$gt": 1}}},
-        {"$sort":  {"_id": 1}},
-        {"$skip":  offset},
-        {"$limit": limit},
-    ]
-    page_keys: list[dict] = []
-    async for d in db[coll].aggregate(pipe_page, allowDiskUse=True):
-        page_keys.append(d)
+    try:
+        stage = "paged_duplicate_key_fetch"
+        pipe_page = [
+            {"$group": {"_id": group_id, "count": {"$sum": 1}}},
+            {"$match": {"count": {"$gt": 1}}},
+            {"$sort":  {"_id": 1}},
+            {"$skip":  offset},
+            {"$limit": limit},
+        ]
+        page_keys: list[dict] = []
+        async for d in db[coll].aggregate(pipe_page, allowDiskUse=True):
+            page_keys.append(d)
+    except Exception as e:
+        raise RuntimeError(
+            f"CENSUS_STAGE_FAIL stage={stage} collection={coll} "
+            f"offset={offset} limit={limit} "
+            f"exception={type(e).__name__}: {str(e)[:400]}"
+        ) from e
 
     if not page_keys:
         return {
@@ -246,49 +270,63 @@ async def scan_duplicates(
         }
 
     # ── Batched $or fetch — single collection scan serves the page ──
-    or_clauses = [k["_id"] for k in page_keys]  # each is a {field: value} dict
-    # Group-sort by _id so sample selection is deterministic.
-    cursor = db[coll].find({"$or": or_clauses}).sort("_id", 1)
-    collected: dict[tuple, list[dict]] = {}
-    overflow = False
-    total_fetched = 0
-    async for d in cursor:
-        total_fetched += 1
-        if total_fetched > MAX_DOCS_PER_PAGE_CAP:
-            overflow = True
-            break
-        lk_tuple = tuple(d.get(f) for f in key_fields)
-        bucket = collected.setdefault(lk_tuple, [])
-        if len(bucket) < max_docs_per_group:
-            bucket.append(d)
+    try:
+        stage = "document_fetch"
+        or_clauses = [k["_id"] for k in page_keys]
+        cursor = db[coll].find({"$or": or_clauses}).sort("_id", 1)
+        collected: dict[tuple, list[dict]] = {}
+        overflow = False
+        total_fetched = 0
+        async for d in cursor:
+            total_fetched += 1
+            if total_fetched > MAX_DOCS_PER_PAGE_CAP:
+                overflow = True
+                break
+            lk_tuple = tuple(d.get(f) for f in key_fields)
+            bucket = collected.setdefault(lk_tuple, [])
+            if len(bucket) < max_docs_per_group:
+                bucket.append(d)
+    except Exception as e:
+        raise RuntimeError(
+            f"CENSUS_STAGE_FAIL stage={stage} collection={coll} "
+            f"offset={offset} page_keys={len(page_keys)} "
+            f"exception={type(e).__name__}: {str(e)[:400]}"
+        ) from e
 
-    # ── Build per-group output (deterministic order == paged keys) ──
-    groups: list[dict] = []
-    exact_cnt = 0
-    conflicting_cnt = 0
-    for k in page_keys:
-        lk_dict = k["_id"]
-        dup_count = int(k["count"])
-        lk_tuple = tuple(lk_dict.get(f) for f in key_fields)
-        docs = collected.get(lk_tuple, [])
-        ids = [d["_id"] for d in docs]
-        fps = [canonical_doc_fingerprint(d) for d in docs]
-        cls = classify_group(fps) if fps else "UNKNOWN"
-        if cls == EXACT_DUPLICATE:
-            exact_cnt += 1
-        elif cls == CONFLICTING_DUPLICATE:
-            conflicting_cnt += 1
-        groups.append({
-            "collection":                 coll,
-            "logical_key":                lk_dict,
-            "logical_key_fields":         key_fields,
-            "dup_count":                  dup_count,
-            "_ids":                       ids,
-            "_ids_truncated":             len(ids) < dup_count,
-            "fingerprints":               fps,
-            "distinct_fingerprint_count": len(set(fps)) if fps else 0,
-            "classification":             cls,
-        })
+    # ── Build per-group output ──────────────────────────────────────
+    try:
+        stage = "fingerprint_and_classify"
+        groups: list[dict] = []
+        exact_cnt = 0
+        conflicting_cnt = 0
+        for k in page_keys:
+            lk_dict = k["_id"]
+            dup_count = int(k["count"])
+            lk_tuple = tuple(lk_dict.get(f) for f in key_fields)
+            docs = collected.get(lk_tuple, [])
+            ids = [d["_id"] for d in docs]
+            fps = [canonical_doc_fingerprint(d) for d in docs]
+            cls = classify_group(fps) if fps else "UNKNOWN"
+            if cls == EXACT_DUPLICATE:
+                exact_cnt += 1
+            elif cls == CONFLICTING_DUPLICATE:
+                conflicting_cnt += 1
+            groups.append({
+                "collection":                 coll,
+                "logical_key":                lk_dict,
+                "logical_key_fields":         key_fields,
+                "dup_count":                  dup_count,
+                "_ids":                       ids,
+                "_ids_truncated":             len(ids) < dup_count,
+                "fingerprints":               fps,
+                "distinct_fingerprint_count": len(set(fps)) if fps else 0,
+                "classification":             cls,
+            })
+    except Exception as e:
+        raise RuntimeError(
+            f"CENSUS_STAGE_FAIL stage={stage} collection={coll} "
+            f"exception={type(e).__name__}: {str(e)[:400]}"
+        ) from e
 
     end = offset + len(groups)
     return {
