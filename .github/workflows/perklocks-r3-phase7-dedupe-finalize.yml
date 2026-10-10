@@ -1,0 +1,177 @@
+name: Perklocks R3 Phase-7 Dedupe & Finalize
+
+# Support-approved R3 Phase-7 orchestration:
+#   STEP 1 (CANARY_ONLY, default) — read-only dup-census over all 21
+#          canonical collections + authoritative-winner proof for
+#          the 8 APPLY-scope collections against the pinned
+#          v2_phase5/canonical/*.ndjson.  No mutation.
+#   STEP 2 (APPLY, requires exact confirm phrase) — delete-only
+#          dedupe of EXACT_DUPLICATE and (authoritative-winner-only)
+#          CONFLICTING_DUPLICATE groups, then Phase-7 unique
+#          indexes, then Phase-8 certification — all chained in one
+#          workflow run.
+#
+# Hard safety invariants (enforced in driver + backend):
+#   * workflow_dispatch ONLY — never scheduled, never auto-triggered.
+#   * CONCURRENCY=1 — a second dispatch is QUEUED, not cancelled.
+#   * CANARY_ONLY is the DEFAULT.  First dispatch MUST be canary;
+#     the operator must inspect the report before authorizing APPLY.
+#   * APPLY requires both ``mode=APPLY`` AND the exact
+#     ``confirm_phrase=APPLY_PERKLOCKS_DEDUPE_R3_PHASE7_V1``.
+#   * Scope of APPLY is the 8 collections that failed Phase-7
+#     unique-index creation.  Any other collection is refused.
+#   * Pinned authoritative source is required for APPLY — survivor
+#     must match the ``v2_phase5/canonical/<coll>.ndjson``
+#     fingerprint for that logical key.
+#   * CONFLICTING groups without an authoritative winner HALT the
+#     APPLY immediately — no "latest timestamp wins" fallback.
+#   * NEVER rerun Phase-5 migration batches.
+#   * NEVER reset the canonical database.
+#   * NEVER create a new migration session.
+#   * NEVER delete a whole collection.
+#   * NEVER weaken a unique index (``_INDEX_SPECS`` is byte-identical).
+#   * NEVER change logical-key definitions, scoring, or app behaviour.
+#   * ``ix_*_r3`` non-unique performance indexes are NOT dropped by
+#     this workflow (per Support — they stay until the final ``ux_*``
+#     unique indexes are verified healthy, then follow the existing
+#     cleanup design in a later pass).
+#   * Reuses the EXISTING GH Actions secrets; adds none; logs none.
+#
+# Required GH Actions secrets (unchanged from prior R3 workflows):
+#   PROD_API_BASE
+#   PROD_ADMIN_EMAIL
+#   PROD_ADMIN_PASSWORD
+#   CANONICAL_IMPORT_TOKEN
+#   MIGRATION_DOWNLOAD_TOKEN   (used to fetch pinned source tarball)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Phase-7 mode.  CANARY_ONLY = read-only census.  APPLY = destructive dedupe + Phase-7 unique indexes + Phase-8 cert.'
+        required: true
+        default: 'CANARY_ONLY'
+        type: choice
+        options:
+          - CANARY_ONLY
+          - APPLY
+      confirm_phrase:
+        description: 'APPLY only: must equal APPLY_PERKLOCKS_DEDUPE_R3_PHASE7_V1 (leave blank for CANARY_ONLY)'
+        required: false
+        default: ''
+        type: string
+      session_id:
+        description: 'Canonical cutover session ID (do not change)'
+        required: false
+        default: 'perklocks-cutover-20261003-r3'
+        type: string
+      apply_batch_size:
+        description: 'Plans per /apply-dedupe POST (default 100, max 500)'
+        required: false
+        default: '100'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group:  perklocks-r3-phase7-dedupe
+  cancel-in-progress: false
+
+jobs:
+  r3-phase7-dedupe:
+    name: R3 Phase-7 Dedupe & Finalize
+    runs-on: ubuntu-latest
+    # Census can take ~5-10 min for 21 collections; APPLY processes
+    # per-group deletes individually; Phase-8 cert fingerprints every
+    # collection.  Hard cap 90 min.
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate APPLY inputs
+        if: ${{ inputs.mode == 'APPLY' }}
+        env:
+          CP: ${{ inputs.confirm_phrase }}
+        run: |
+          if [ "$CP" != "APPLY_PERKLOCKS_DEDUPE_R3_PHASE7_V1" ]; then
+            echo "::error::APPLY requires confirm_phrase=APPLY_PERKLOCKS_DEDUPE_R3_PHASE7_V1"
+            exit 1
+          fi
+          echo "::add-mask::$CP"
+
+      - name: Fetch pinned v2_phase5 canonical NDJSONs
+        if: ${{ inputs.mode == 'APPLY' }}
+        env:
+          PROD_API_BASE:            ${{ secrets.PROD_API_BASE }}
+          MIGRATION_DOWNLOAD_TOKEN: ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+        run: |
+          # Download the pinned phase5 tarball through the existing
+          # read-only migration-download endpoint and extract ONLY the
+          # 8 scope collections' canonical NDJSON files.
+          mkdir -p /tmp/perklocks-pinned
+          echo "::add-mask::$MIGRATION_DOWNLOAD_TOKEN"
+          # Use the same download pattern as earlier R3 workflows.
+          curl -sS -f -L \
+            -H "Authorization: Bearer $MIGRATION_DOWNLOAD_TOKEN" \
+            -o /tmp/perklocks-pinned/phase5.tar.gz \
+            "$PROD_API_BASE/api/admin/migration-download/phase5-canonical" \
+            || { echo "::error::pinned source download failed"; exit 1; }
+          tar -xzf /tmp/perklocks-pinned/phase5.tar.gz \
+            -C /tmp/perklocks-pinned \
+            v2_phase5/canonical/picks.ndjson \
+            v2_phase5/canonical/player_game_actuals.ndjson \
+            v2_phase5/canonical/player_game_logs.ndjson \
+            v2_phase5/canonical/player_identities.ndjson \
+            v2_phase5/canonical/prediction_snapshots.ndjson \
+            v2_phase5/canonical/pregame_snapshots.ndjson \
+            v2_phase5/canonical/publication_events.ndjson \
+            v2_phase5/canonical/settlement_events.ndjson
+          ls -lh /tmp/perklocks-pinned/v2_phase5/canonical/
+          rm -f /tmp/perklocks-pinned/phase5.tar.gz
+
+      - name: Run Phase-7 dedupe driver
+        id: driver
+        env:
+          PROD_API_BASE:         ${{ secrets.PROD_API_BASE }}
+          PROD_ADMIN_EMAIL:      ${{ secrets.PROD_ADMIN_EMAIL }}
+          PROD_ADMIN_PASSWORD:   ${{ secrets.PROD_ADMIN_PASSWORD }}
+          CANONICAL_IMPORT_TOKEN: ${{ secrets.CANONICAL_IMPORT_TOKEN }}
+          SESSION_ID:            ${{ inputs.session_id }}
+          PHASE7_MODE:           ${{ inputs.mode }}
+          PHASE7_CONFIRM_PHRASE: ${{ inputs.confirm_phrase }}
+          PINNED_SOURCE_DIR:     /tmp/perklocks-pinned/v2_phase5/canonical
+          REPORT_PATH:           /tmp/perklocks-logs/r3_phase7_dedupe_report.json
+          APPLY_BATCH_SIZE:      ${{ inputs.apply_batch_size }}
+        run: |
+          mkdir -p /tmp/perklocks-logs
+          python3 reconcile_workspace/scripts/r3_phase7_dedupe_apply.py
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r3_phase7_dedupe_report
+          path: /tmp/perklocks-logs/r3_phase7_dedupe_report.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "============================================================"
+          echo " Perklocks R3 Phase-7 Dedupe — step outcome: ${{ steps.driver.outcome }}"
+          echo " Mode: ${{ inputs.mode }}"
+          echo " Report: /tmp/perklocks-logs/r3_phase7_dedupe_report.json"
+          echo " APPLY scope: picks, player_game_actuals, player_game_logs,"
+          echo "              player_identities, prediction_snapshots,"
+          echo "              pregame_snapshots, publication_events,"
+          echo "              settlement_events (8 collections)"
+          echo " APPLY confirm phrase: APPLY_PERKLOCKS_DEDUPE_R3_PHASE7_V1"
+          echo "============================================================"
