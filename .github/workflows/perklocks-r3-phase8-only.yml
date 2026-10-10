@@ -1,0 +1,144 @@
+name: Perklocks R3 Phase-8 Only Certification
+
+# Support-approved READ-ONLY Phase-8 certification wrapper.
+#
+# Why a separate workflow?
+# ────────────────────────
+# The previous Phase-8 auto-chain failed because:
+#   1. ``PHASE8_CERT_EXPECTED_JSON`` was never populated → empty
+#      ``expected`` map in the POST body.
+#   2. The auto-chain posted body key ``expected_counts``, but the
+#      certification endpoint requires ``expected``.
+#
+# Phase-7 is already complete and MUST NOT run again.  This
+# workflow re-runs ONLY the Phase-8 completeness certification,
+# nothing else.
+#
+# HARD SAFETY — this workflow MUST NEVER call:
+#   * Phase 5 (push_canonical_* / migration import)
+#   * Phase 6
+#   * Phase 7 (dedupe / divergence patches / create-indexes)
+#   * reset / soft-reset / drop-collection
+#   * new session creation
+# It is Phase-8 certification ONLY and read-only.
+#
+# Required GH Actions secrets (unchanged from prior R3 workflows):
+#   PROD_API_BASE
+#   PROD_ADMIN_EMAIL
+#   PROD_ADMIN_PASSWORD
+#   CANONICAL_IMPORT_TOKEN
+#   PREVIEW_BASE_URL          (used by the shared checkpoint-download
+#                               composite action)
+#   MIGRATION_DOWNLOAD_TOKEN  (used to fetch the pinned Phase-5 tarball)
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_id:
+        description: 'R3 canonical cutover session ID (do NOT change)'
+        required: false
+        default: 'perklocks-cutover-20261003-r3'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group:  perklocks-r3-phase8-only
+  cancel-in-progress: false
+
+jobs:
+  r3-phase8-only-cert:
+    name: R3 Phase-8 Only Certification (read-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      CHKP_DIR:          /tmp/perklocks-checkpoints
+      P8_CHECKPOINT_TAR: /tmp/perklocks-checkpoints/phase5_20261003_190628Z.tar.gz
+      P8_REPORT_PATH:    /tmp/perklocks-logs/phase8_only_report.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate session_id input
+        env:
+          SID: ${{ inputs.session_id }}
+        run: |
+          if [ "$SID" != "perklocks-cutover-20261003-r3" ]; then
+            echo "::error::session_id must equal perklocks-cutover-20261003-r3 (got $SID)"
+            exit 1
+          fi
+
+      # ── Pinned Phase-5 checkpoint — fetched via the shared composite
+      # action so the download URL / SHA verification / retry policy
+      # are identical to every other R3 workflow.
+      - name: Download + verify phase5 checkpoint (shared composite action)
+        uses: ./.github/actions/perklocks-checkpoint-download
+        with:
+          phase:             phase5
+          preview_base_url:  ${{ secrets.PREVIEW_BASE_URL }}
+          download_token:    ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+          checkpoint_dir:    ${{ env.CHKP_DIR }}
+          fallback_filename: phase5_20261003_190628Z.tar.gz
+          fallback_bytes:    "337143523"
+          fallback_sha:      4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
+          max_attempts:      "10"
+          curl_max_time_seconds: "1800"
+
+      - name: Preflight — verify pinned Phase-5 SHA at expected path
+        env:
+          EXPECTED_SHA: 4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
+        run: |
+          set -euo pipefail
+          TAR="${P8_CHECKPOINT_TAR}"
+          if [ ! -f "${TAR}" ]; then
+            echo "::error::pinned Phase-5 tarball missing at ${TAR}"
+            exit 1
+          fi
+          ACTUAL_SHA=$(sha256sum "${TAR}" | awk '{print $1}')
+          echo "pinned tarball: ${TAR}"
+          echo "expected sha:   ${EXPECTED_SHA}"
+          echo "actual sha:     ${ACTUAL_SHA}"
+          if [ "${ACTUAL_SHA}" != "${EXPECTED_SHA}" ]; then
+            echo "::error::phase5 tarball SHA mismatch — aborting Phase-8 cert"
+            exit 1
+          fi
+          echo "phase5 tarball SHA verified: ${ACTUAL_SHA}"
+
+      - name: Run Phase-8 only certification (read-only)
+        env:
+          PROD_API_BASE:            ${{ secrets.PROD_API_BASE }}
+          PROD_ADMIN_EMAIL:         ${{ secrets.PROD_ADMIN_EMAIL }}
+          PROD_ADMIN_PASSWORD:      ${{ secrets.PROD_ADMIN_PASSWORD }}
+          CANONICAL_IMPORT_TOKEN:   ${{ secrets.CANONICAL_IMPORT_TOKEN }}
+          CANONICAL_IMPORT_SESSION: ${{ inputs.session_id }}
+          # P8_CHECKPOINT_TAR + P8_REPORT_PATH already set at job env
+          # scope above so the driver uses the SHA-verified path.
+          RECONCILE_TMP:            /tmp/perklocks-work
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "${P8_REPORT_PATH}")"
+          mkdir -p "${RECONCILE_TMP}"
+
+          # Mask credentials in log — belt + braces (the shell never
+          # echoes them, but just in case anything inside the Python
+          # script prints an env dump by accident).
+          echo "::add-mask::${PROD_ADMIN_EMAIL}"
+          echo "::add-mask::${PROD_ADMIN_PASSWORD}"
+          echo "::add-mask::${CANONICAL_IMPORT_TOKEN}"
+
+          python reconcile_workspace/scripts/r3_phase8_only_cert.py
+
+      - name: Upload Phase-8 report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name:        perklocks-r3-phase8-only-report
+          path:        /tmp/perklocks-logs/phase8_only_report.json
+          if-no-files-found: warn
+          retention-days: 30
