@@ -51,6 +51,9 @@ jobs:
       # Zero-write proof flag — the accelerated driver issues ZERO
       # POSTs when CANARY_ONLY=1, regardless of any other knob.
       CANARY_ONLY:     "1"
+      # Support-mandated for R3 recovery (zero concurrency on canary too
+      # so the manifest fetch and NDJSON walk stay deterministic).
+      CONCURRENCY:     "1"
       # Pinned SHA-256s.
       PHASE5_SHA256: 4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
       PHASE6_SHA256: 327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22

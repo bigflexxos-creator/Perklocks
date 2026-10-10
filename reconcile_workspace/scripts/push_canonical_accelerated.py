@@ -128,6 +128,230 @@ EXPECTED_SHA = {
 }
 
 
+# ─── R3 Resume #16 — single shared existing-batch resolver ────────────
+# Support-confirmed reconstruction rule (verbatim):
+#
+#   For every existing batch in a collection:
+#       batch_size  = stored doc_count for that exact batch
+#       batch_start = SUM(stored doc_count for every earlier batch_no
+#                           in that collection)
+#   Then reconstruct:
+#       candidate_docs = accepted_docs[batch_start : batch_start+batch_size]
+#   Compute the server-identical content_hash.
+#   Require: computed_hash == stored authoritative content_hash.
+#   If not: FAIL CLOSED with BATCH_LAYOUT_MISMATCH.
+#
+# USED BY BOTH:
+#   • live Resume planner  (plan POSTs for failed/in_progress)
+#   • CANARY_ONLY mode     (same algorithm, zero POSTs)
+#
+# OUTPUT (per batch):
+#   ResolvedBatch(
+#       collection, batch_no, start_offset, doc_count,
+#       buf,                 # list of accepted dicts
+#       computed_hash,       # server-identical sha256
+#       stored_hash,         # authoritative, may be None for new tail
+#       stored_status,       # 'succeeded'|'failed'|'in_progress'|'incomplete_write'|'new'
+#       match,               # bool — computed_hash == stored_hash (True for 'new')
+#       mismatch_reason,     # str or None
+#   )
+#
+# Succeeded batches: skip-only in the live Resume.  Never POST.
+# Failed/in-progress: replay only when match == True.
+# Any match == False → the resolver appends to `mismatches` list; the
+# caller MUST stop before any POST (fail-closed).
+# After exhausting the manifest, any remaining accepted docs become
+# NEW tail batches at NEW_COLLECTION_BATCH_SIZE starting at
+# batch_no = max_hist_bno + 1.
+_RESOLVED_FIELDS = (
+    "collection", "batch_no", "start_offset", "doc_count",
+    "buf", "computed_hash", "stored_hash",
+    "stored_status", "match", "mismatch_reason",
+)
+
+
+def _resolve_existing_batches(
+    coll: str,
+    src_path: pathlib.Path,
+    coll_manifest: dict[int, dict],
+    new_batch_size: int,
+) -> tuple[list[dict], list[dict], dict]:
+    """Single-pass cumulative-offset resolver (Support-confirmed).
+
+    Walks ``src_path`` NDJSON in file order, applies ``_is_excluded``,
+    and partitions the accepted-doc stream into batches at the exact
+    cumulative offsets implied by the authoritative manifest's
+    per-batch ``doc_count`` values.  No fixed-bsize derivation, no
+    inference — the manifest is the authority.
+
+    Returns:
+        (resolved, mismatches, summary)
+        - resolved[i]  : one dict per batch (``_RESOLVED_FIELDS``)
+        - mismatches[i]: subset of resolved where ``match=False``,
+                         enriched with layout-mismatch fields for the
+                         operator-facing report.
+        - summary      : {total_batches, succeeded_batches,
+                          failed_batches, in_progress_batches,
+                          new_tail_batches, cumulative_total,
+                          first_5_batches:[(bno, doc_count, status)]}
+    """
+    # Sort manifest batches by batch_no — cumulative offsets require
+    # strict ascending order.  Gaps are tolerated (we fail-closed
+    # separately via hash guard).
+    sorted_entries = sorted(coll_manifest.items(), key=lambda kv: kv[0])
+    # Build authoritative boundary table: [(batch_no, start, size, stored_hash, status), ...]
+    boundaries: list[tuple[int, int, int, str, str]] = []
+    cur_start = 0
+    for bno, meta in sorted_entries:
+        size = int(meta.get("doc_count") or 0)
+        if size <= 0:
+            # Manifest entry with zero doc_count — skip from boundary
+            # table but keep it visible in summary.
+            continue
+        stored_hash   = meta.get("content_hash") or ""
+        stored_status = meta.get("status") or "unknown"
+        boundaries.append((int(bno), cur_start, size, stored_hash, stored_status))
+        cur_start += size
+    cumulative_total = cur_start
+    max_hist_bno = max((b[0] for b in boundaries), default=-1)
+
+    # Single-pass walk through the accepted-doc stream.
+    resolved:   list[dict] = []
+    mismatches: list[dict] = []
+
+    cur_boundary_idx = 0
+    buf: list[dict]  = []
+    pos              = 0  # position in the accepted (post-filter) stream
+
+    def _flush(bno: int, start: int, buf_: list[dict],
+                stored_hash: str, stored_status: str) -> None:
+        computed_hash = _server_batch_content_hash(coll, buf_)
+        match = (not stored_hash) or (computed_hash == stored_hash)
+        reason = None
+        if stored_hash and computed_hash != stored_hash:
+            reason = (f"computed_hash != stored_hash "
+                      f"(expected={stored_hash[:12]}… got={computed_hash[:12]}…)")
+        entry = {
+            "collection":      coll,
+            "batch_no":        bno,
+            "start_offset":    start,
+            "doc_count":       len(buf_),
+            "buf":             list(buf_),
+            "computed_hash":   computed_hash,
+            "stored_hash":     stored_hash or None,
+            "stored_status":   stored_status,
+            "match":           match,
+            "mismatch_reason": reason,
+        }
+        resolved.append(entry)
+        if stored_hash and not match:
+            mismatches.append({
+                "collection":           coll,
+                "batch_no":             bno,
+                "start_offset":         start,
+                "expected_hash":        stored_hash,
+                "computed_hash":        computed_hash,
+                "authoritative_count":  len(buf_),  # same by construction
+                "reconstructed_count":  len(buf_),
+                "authoritative_status": stored_status,
+                "mismatch_reason":      reason,
+            })
+
+    for d in _ndjson(src_path):
+        if _is_excluded(d):
+            continue
+        if cur_boundary_idx < len(boundaries):
+            bno, start, size, stored_hash, stored_status = boundaries[cur_boundary_idx]
+            # Guard: if cumulative offsets have holes (which happens
+            # when boundaries are not strictly consecutive starting at 0),
+            # we skip docs between the previous end and `start`.  This
+            # is defensive — Support states the manifest is dense.
+            if pos < start:
+                # Advance by discarding — but discarding changes
+                # downstream positions. To be safe, treat holes as
+                # a hard error: FAIL CLOSED.
+                mismatches.append({
+                    "collection":           coll,
+                    "batch_no":             bno,
+                    "start_offset":         start,
+                    "expected_hash":        stored_hash,
+                    "computed_hash":        None,
+                    "authoritative_count":  size,
+                    "reconstructed_count":  0,
+                    "authoritative_status": stored_status,
+                    "mismatch_reason": (
+                        f"MANIFEST_OFFSET_HOLE: boundary start={start} "
+                        f"but prev end={pos}; batch_no sequence is not "
+                        f"dense from offset 0"),
+                })
+                # Still consume to advance pos.
+            buf.append(d)
+            pos += 1
+            if len(buf) >= size:
+                _flush(bno, start, buf, stored_hash, stored_status)
+                buf = []
+                cur_boundary_idx += 1
+        else:
+            # Beyond the historical range — new tail batches at
+            # NEW_COLLECTION_BATCH_SIZE.
+            buf.append(d)
+            pos += 1
+            if len(buf) >= new_batch_size:
+                _flush(max_hist_bno + 1 + (cur_boundary_idx - len(boundaries)),
+                        pos - len(buf), buf, "", "new")
+                buf = []
+                cur_boundary_idx += 1
+
+    # Partial final batch.
+    if buf:
+        if cur_boundary_idx < len(boundaries):
+            bno, start, size, stored_hash, stored_status = boundaries[cur_boundary_idx]
+            # The final historical batch may legitimately be a partial
+            # tail (size < historical count) — that's a MISMATCH if the
+            # stored size says otherwise.
+            if len(buf) < size:
+                mismatches.append({
+                    "collection":           coll,
+                    "batch_no":             bno,
+                    "start_offset":         start,
+                    "expected_hash":        stored_hash,
+                    "computed_hash":        None,
+                    "authoritative_count":  size,
+                    "reconstructed_count":  len(buf),
+                    "authoritative_status": stored_status,
+                    "mismatch_reason": (
+                        f"NDJSON_UNDER_REACH: historical batch expected "
+                        f"{size} docs starting at {start} but NDJSON ran "
+                        f"out at {len(buf)}"),
+                })
+            else:
+                _flush(bno, start, buf, stored_hash, stored_status)
+        else:
+            _flush(max_hist_bno + 1 + (cur_boundary_idx - len(boundaries)),
+                    pos - len(buf), buf, "", "new")
+
+    # Summary stats.
+    status_counts = {"succeeded": 0, "failed": 0, "in_progress": 0,
+                      "incomplete_write": 0, "unknown": 0, "new": 0}
+    for r in resolved:
+        s = r["stored_status"]
+        if s in status_counts: status_counts[s] += 1
+        else: status_counts["unknown"] += 1
+
+    first_5 = [(b[0], b[2], b[4]) for b in boundaries[:5]]
+    summary = {
+        "total_batches":       len(resolved),
+        "cumulative_total":    cumulative_total,
+        "max_hist_bno":        max_hist_bno,
+        "new_tail_batches":    status_counts["new"],
+        "succeeded_batches":   status_counts["succeeded"],
+        "failed_batches":      status_counts["failed"],
+        "in_progress_batches": status_counts["in_progress"] + status_counts["incomplete_write"],
+        "first_5_batches":     first_5,
+    }
+    return resolved, mismatches, summary
+
+
 # ─── Server-identical hashing (replicates services/canonical_cutover.py) ──
 # These helpers MUST remain byte-for-byte compatible with the server's
 # ``batch_content_hash`` + ``extract_logical_key`` + ``is_excluded``.
@@ -485,143 +709,30 @@ def main() -> int:
 
         pre_s = pre_succeeded.get(coll, 0)
         coll_manifest = batch_manifest.get(coll, {})
-        inferred_server_bsize = inferred_bsize.get(coll, 0)
-        has_prior_batches = len(coll_manifest) > 0  # ANY existing batch
-                                                    # identity (succeeded,
-                                                    # failed, in_progress,
-                                                    # incomplete_write)
+        has_prior_batches = len(coll_manifest) > 0
 
-        # ── Earliest-authoritative-batch cutpoint derivation (R3 Resume #15 fix) ──
-        #
-        # Canary #4 proved that ``max(succeeded doc_counts)`` is NOT
-        # safe.  settlement_events now has 1989 succeeded batches
-        # with max=1000 — because a later Run-B successfully inserted
-        # ONE new batch at the collection tail with doc_count=1000.
-        # The ORIGINAL run (which successfully imported batches
-        # 0..1987 at doc_count=250) is the one we need to replay
-        # against; its authoritative bsize is encoded in the EARLIEST
-        # succeeded batches (``batch_no=0`` and its immediate
-        # neighbors).
-        #
-        # Rule:
-        #   1. If any succeeded batch exists, take the doc_count of
-        #      the LOWEST-NUMBERED succeeded batch_no as the
-        #      authoritative historical bsize.  Validate by checking
-        #      that at least one of the next few early succeeded
-        #      batches agrees (full batches of the ORIGINAL partition
-        #      share this value; only the final tail is smaller).
-        #   2. If no succeeded batches exist but historical identities
-        #      do, use the doc_count of the lowest-numbered batch
-        #      (succeeded or not) as a conservative best-effort.  The
-        #      preflight hash-match guard remains the final arbiter.
-        #   3. If zero historical identities, this is a truly-new
-        #      collection → use NEW_COLLECTION_BATCH_SIZE.
-        #
-        # Rationale for trusting batch_no=0:
-        #   - record_batch_begin raises ALTERED_REPLAY_REJECTED if a
-        #     new attempt's content_hash differs from the existing
-        #     record's.  Once batch_no=0 reaches ``status=succeeded``,
-        #     its ``content_hash`` and ``doc_count`` are IMMUTABLE
-        #     by server contract (lines 316-332 of
-        #     backend/services/canonical_cutover.py).
-        #   - The ORIGINAL driver walks NDJSON linearly from batch 0
-        #     upward with a fixed bsize; it cannot skip batch 0 or
-        #     renumber it.  Hence batch_no=0's doc_count is the
-        #     authoritative original bsize for the first partition,
-        #     with the sole exception that a collection whose total
-        #     fits in a single batch has batch_no=0 as the "tail" —
-        #     but that is still correct (the whole collection fits in
-        #     one fixed-size batch).
-        historical_counts: dict[int, int] = {
-            bno: v["doc_count"] for bno, v in coll_manifest.items()
-            if v.get("doc_count", 0) > 0
-        }
-        max_hist_bno = max(historical_counts.keys(),
-                           default=-1) if historical_counts else -1
+        # ── Support-confirmed shared cumulative-offset resolver ──
+        # ONE algorithm, used by BOTH live planning and CANARY_ONLY.
+        # No fixed-bsize derivation, no max()/min() inference —
+        # cumulative stored doc_count is the authority.
+        resolved, this_coll_mismatches, resolver_summary = \
+            _resolve_existing_batches(coll, src, coll_manifest, new_batch_size)
+        batches_this_coll = len(resolved)
 
-        # Succeeded batches sorted ascending by batch_no.
-        succeeded_by_bno = sorted(
-            [(bno, v["doc_count"]) for bno, v in coll_manifest.items()
-             if v.get("status") == "succeeded"
-             and v.get("doc_count", 0) > 0]
-        )
-        # For observability: capture first-N doc_counts so operators
-        # can audit the derivation in the plan summary + report.
-        first_n_succeeded = succeeded_by_bno[:5]
-
-        if succeeded_by_bno:
-            earliest_bno, earliest_bsize = succeeded_by_bno[0]
-            agreement = sum(1 for _, dc in succeeded_by_bno
-                             if dc == earliest_bsize)
-            fixed_bsize    = earliest_bsize
-            bsize_rationale = (
-                f"earliest succeeded batch_no={earliest_bno} has "
-                f"doc_count={earliest_bsize}; {agreement}/"
-                f"{len(succeeded_by_bno)} succeeded batches "
-                f"({100*agreement//len(succeeded_by_bno)}%) agree; "
-                f"first-5 by bno=[{', '.join(f'b{b}:{d}' for b,d in first_n_succeeded)}]"
-            )
-        elif historical_counts:
-            # No succeeded batches but historical records exist.
-            earliest_bno = min(historical_counts.keys())
-            fixed_bsize    = historical_counts[earliest_bno]
-            bsize_rationale = (
-                f"no succeeded batches; using doc_count of "
-                f"lowest-numbered historical batch_no={earliest_bno} "
-                f"= {fixed_bsize} (preflight hash guard is the final arbiter)"
-            )
-        else:
-            # Truly new collection (zero manifest entries).
-            fixed_bsize    = new_batch_size
-            bsize_rationale = f"new_collection_bsize={fixed_bsize}"
-
-        # Materialize batches.
-        docs_buffer: list[dict] = []
-        batches_this_coll = 0
-        this_coll_mismatches: list[dict] = []
-
-        def _flush_batch(bno: int, buf: list[dict]) -> None:
-            # Compute server-identical hash on the accepted buffer.
-            local_hash = _server_batch_content_hash(coll, buf)
-            # Preflight hash-match guard: if this batch_no has an
-            # authoritative stored hash, require exact match.
-            stored = coll_manifest.get(bno)
-            if stored is not None:
-                stored_hash = stored.get("content_hash")
-                if stored_hash and local_hash != stored_hash:
-                    this_coll_mismatches.append({
-                        "collection":           coll,
-                        "batch_no":             bno,
-                        "expected_hash":        stored_hash,
-                        "computed_hash":        local_hash,
-                        "authoritative_count":  stored.get("doc_count"),
-                        "reconstructed_count":  len(buf),
-                        "target_bsize_used":    fixed_bsize,
-                        "bsize_rationale":      bsize_rationale,
-                        "authoritative_status": stored.get("status"),
-                    })
-                    return  # do NOT add to plan
-                # Fast-skip succeeded batches locally — no POST,
-                # relying on the authoritative stored hash match.
-                if stored.get("status") == "succeeded":
-                    skip_counts["succeeded_batch_local_skips"] += 1
-                    return
-            plan.append((coll, bno, list(buf), local_hash))
-
-        # ── FIXED-size partitioning (same contract as original driver) ──
-        # Every batch of this collection consumes exactly
-        # ``fixed_bsize`` accepted (post-filter) docs in NDJSON file
-        # order.  The final (tail) batch may be smaller.
-        for d in _ndjson(src):
-            if _is_excluded(d): continue
-            docs_buffer.append(d)
-            if len(docs_buffer) >= fixed_bsize:
-                _flush_batch(batches_this_coll, docs_buffer)
-                batches_this_coll += 1
-                docs_buffer = []
-        if docs_buffer:
-            _flush_batch(batches_this_coll, docs_buffer)
-            batches_this_coll += 1
+        # Each resolved batch is categorized for planning:
+        #   succeeded + match      → LOCAL SKIP (no POST)
+        #   failed/in-progress + match → PLAN FOR POST (hash-matched replay)
+        #   any status + mismatch  → mismatches list (preflight stops run)
+        #   new (beyond manifest)  → PLAN FOR POST (new tail batch)
+        for r in resolved:
+            if r["match"] is False:
+                continue  # already captured in this_coll_mismatches
+            status = r["stored_status"]
+            if status == "succeeded":
+                skip_counts["succeeded_batch_local_skips"] += 1
+                continue
+            # Failed, in_progress, incomplete_write, new → plan POST.
+            plan.append((coll, r["batch_no"], r["buf"], r["computed_hash"]))
 
         if this_coll_mismatches:
             layout_mismatches.extend(this_coll_mismatches)
@@ -629,18 +740,23 @@ def main() -> int:
         # DONE fast-skip: if every batch of this collection is already
         # succeeded, remove them from the plan entirely.
         remaining_in_plan = [t for t in plan if t[0] == coll]
-        if pre_s >= batches_this_coll and batches_this_coll > 0 and not remaining_in_plan:
+        if (resolver_summary["succeeded_batches"] >= batches_this_coll
+                and batches_this_coll > 0 and not remaining_in_plan):
             skip_counts["done_collections"] += 1
             plan_summary.append((coll, batches_this_coll, pre_s, 0,
                                   f"DONE (all {batches_this_coll} succeeded)"))
         else:
             remaining = len(remaining_in_plan)
             if has_prior_batches:
-                note = (f"fixed bsize={fixed_bsize}  "
-                        f"[hist bnos 0..{max_hist_bno}  "
-                        f"rationale: {bsize_rationale}]")
+                f5 = resolver_summary["first_5_batches"]
+                f5_str = ", ".join(f"b{b}:{d}({s[0] if s else '?'})"
+                                     for b, d, s in f5)
+                note = (f"cumulative-offset  "
+                        f"[hist={batches_this_coll - resolver_summary['new_tail_batches']} "
+                        f"new_tail={resolver_summary['new_tail_batches']}  "
+                        f"first-5=[{f5_str}]]")
             else:
-                note = f"new collection bsize={fixed_bsize}"
+                note = f"new collection bsize={new_batch_size}"
             plan_summary.append((coll, batches_this_coll, pre_s, remaining, note))
 
     total_in_plan = len(plan)
@@ -663,17 +779,30 @@ def main() -> int:
     if layout_mismatches:
         print(f"\n❌ BATCH_LAYOUT_MISMATCH on {len(layout_mismatches)} batch(es) — "
               f"STOP LOCALLY, zero POSTs sent", file=sys.stderr)
-        print(f"\n{'collection':<30}{'batch_no':>10} {'expected_hash':<66} "
-              f"{'computed_hash':<66} {'exp_cnt':>8} {'rec_cnt':>8} "
-              f"{'target':>7} status", file=sys.stderr)
-        print("-" * 220, file=sys.stderr)
+        print(f"\n{'collection':<30}{'batch_no':>10} {'start':>10} "
+              f"{'expected_hash':<66} {'computed_hash':<66} "
+              f"{'exp_cnt':>8} {'rec_cnt':>8} status", file=sys.stderr)
+        print("-" * 240, file=sys.stderr)
+        # Partition mismatches by stored doc_count bucket for easier
+        # operator triage (Support format: 1000 / 250 / leftover).
+        def _bucket(mm: dict) -> str:
+            dc = mm.get("authoritative_count") or 0
+            if dc == 1000: return "1000"
+            if dc == 250:  return "250"
+            return "leftover"
+        buckets = {"1000": [], "250": [], "leftover": []}
+        for m in layout_mismatches:
+            buckets[_bucket(m)].append(m)
+        print(f"[buckets] 1000-batch mismatches = {len(buckets['1000'])}", file=sys.stderr)
+        print(f"[buckets]  250-batch mismatches = {len(buckets['250'])}", file=sys.stderr)
+        print(f"[buckets] leftover mismatches  = {len(buckets['leftover'])}", file=sys.stderr)
         for m in layout_mismatches[:50]:
             print(f"{m['collection']:<30}{m['batch_no']:>10} "
+                  f"{str(m.get('start_offset') or '-'):>10} "
                   f"{str(m['expected_hash']):<66} "
-                  f"{str(m['computed_hash']):<66} "
+                  f"{str(m.get('computed_hash') or '-'):<66} "
                   f"{str(m['authoritative_count']):>8} "
                   f"{str(m['reconstructed_count']):>8} "
-                  f"{str(m['target_bsize_used']):>7} "
                   f"{m['authoritative_status']}", file=sys.stderr)
         # Persist a machine-readable mismatch report alongside the
         # (optional) canary report.
@@ -681,8 +810,12 @@ def main() -> int:
             try:
                 mm_path = canary_report_path + ".mismatches.json"
                 with open(mm_path, "w") as f:
-                    json.dump({"session_id": session,
-                                "layout_mismatches": layout_mismatches}, f, indent=2)
+                    json.dump({
+                        "session_id":           session,
+                        "total_mismatches":     len(layout_mismatches),
+                        "mismatches_by_bucket": {k: len(v) for k, v in buckets.items()},
+                        "buckets":              buckets,
+                    }, f, indent=2)
                 print(f"[mismatch] report written to {mm_path}", file=sys.stderr)
             except Exception as _me:
                 print(f"[mismatch] write failed: {_me}", file=sys.stderr)
@@ -693,82 +826,72 @@ def main() -> int:
     # When CANARY_ONLY=1, we have ALREADY proven every planned batch's
     # local hash matches the server's stored hash (by virtue of
     # getting past the preflight guard above).  Now produce the
-    # operator-facing MATCH table limited to the standard canary set.
+    # operator-facing MATCH table limited to the standard canary set,
+    # using the SAME shared resolver output as the live planner (R3
+    # Resume #16 — one resolver).
     if canary_only:
         print("\n==================== CANARY_ONLY — ZERO-WRITE HASH PROOF ====================")
-        # Build canary candidates per collection.
+        # Rebuild per-coll resolver output so we can report succeeded
+        # batches too (they're not in `plan`).  This is still ONE
+        # resolver — identical to what the live path used above.
         canary_rows: list[dict] = []
+        canary_buckets = {"1000": 0, "250": 0, "leftover": 0}
         for coll, candidates in _CANARY_FIXED_BATCH_IDS.items():
             if filter_set and coll not in filter_set: continue
             coll_manifest = batch_manifest.get(coll, {})
-            # Local plan rows for this coll keyed by bno.
-            plan_by_bno = {t[1]: t for t in plan if t[0] == coll}
+            src = _source_for(coll)
+            if src is None: continue
+            resolved, _mm, _summary = _resolve_existing_batches(
+                coll, src, coll_manifest, new_batch_size)
+            resolved_by_bno = {r["batch_no"]: r for r in resolved}
+
             for bno in candidates:
                 stored = coll_manifest.get(bno)
                 if stored is None:
                     canary_rows.append({
                         "collection": coll, "batch_no": bno,
                         "expected_hash": None, "computed_hash": None,
-                        "match": None,  # not-yet-created server-side
+                        "match": None,
                         "note": "no server record for batch_no (not yet created)",
                     })
                     continue
-                if bno in plan_by_bno:
-                    local_hash = plan_by_bno[bno][3]
-                else:
-                    # Succeeded batch locally skipped — recompute to
-                    # produce the canary proof row.  Use the SAME
-                    # earliest-authoritative-batch contract as the
-                    # main planner (R3 Resume #15 fix): derive bsize
-                    # from the LOWEST-numbered succeeded batch, not
-                    # from max over succeeded.
-                    _tmp_buf: list[dict] = []
-                    src = _source_for(coll)
-                    if src is not None:
-                        coll_mf = batch_manifest.get(coll, {})
-                        _succ_sorted = sorted(
-                            [(b, v["doc_count"]) for b, v in coll_mf.items()
-                             if v.get("status") == "succeeded"
-                             and v.get("doc_count", 0) > 0]
-                        )
-                        _hist_sorted = sorted(
-                            [(b, v["doc_count"]) for b, v in coll_mf.items()
-                             if v.get("doc_count", 0) > 0]
-                        )
-                        if _succ_sorted:
-                            _fixed_bsize = _succ_sorted[0][1]
-                        elif _hist_sorted:
-                            _fixed_bsize = _hist_sorted[0][1]
-                        else:
-                            _fixed_bsize = new_batch_size
-                        _idx = 0
-                        _buf: list[dict] = []
-                        for d in _ndjson(src):
-                            if _is_excluded(d): continue
-                            _buf.append(d)
-                            if len(_buf) >= _fixed_bsize:
-                                if _idx == bno:
-                                    _tmp_buf = list(_buf); break
-                                _idx += 1; _buf = []
-                        else:
-                            if _buf and _idx == bno:
-                                _tmp_buf = list(_buf)
-                    local_hash = _server_batch_content_hash(coll, _tmp_buf)
-                stored_hash = stored.get("content_hash")
-                match = (stored_hash is not None and local_hash == stored_hash)
-                canary_rows.append({
-                    "collection":     coll,
-                    "batch_no":       bno,
-                    "expected_hash":  stored_hash,
-                    "computed_hash":  local_hash,
-                    "match":          match,
-                    "status":         stored.get("status"),
-                })
+                r = resolved_by_bno.get(bno)
+                if r is None:
+                    canary_rows.append({
+                        "collection": coll, "batch_no": bno,
+                        "expected_hash": stored.get("content_hash"),
+                        "computed_hash": None, "match": False,
+                        "note": "resolver did not reach this batch_no "
+                                "(cumulative offsets exhausted NDJSON)",
+                    })
+                    continue
+                row = {
+                    "collection":    coll,
+                    "batch_no":      bno,
+                    "start_offset":  r["start_offset"],
+                    "doc_count":     r["doc_count"],
+                    "expected_hash": r["stored_hash"],
+                    "computed_hash": r["computed_hash"],
+                    "match":         r["match"],
+                    "status":        r["stored_status"],
+                }
+                # Bucket categorization.
+                dc = r["doc_count"]
+                if dc == 1000:  canary_buckets["1000"] += 1
+                elif dc == 250: canary_buckets["250"]  += 1
+                else:           canary_buckets["leftover"] += 1
+                canary_rows.append(row)
+
         # picks: first unfinished boundary.
         for coll in _CANARY_FIRST_UNFINISHED:
             if filter_set and coll not in filter_set: continue
             coll_manifest = batch_manifest.get(coll, {})
-            # First batch_no with status != succeeded (ascending).
+            src = _source_for(coll)
+            if src is None: continue
+            resolved, _mm, _summary = _resolve_existing_batches(
+                coll, src, coll_manifest, new_batch_size)
+            resolved_by_bno = {r["batch_no"]: r for r in resolved}
+            # Lowest bno with status != succeeded.
             first_unfin = None
             for bno in sorted(coll_manifest.keys()):
                 if coll_manifest[bno].get("status") != "succeeded":
@@ -779,25 +902,32 @@ def main() -> int:
                                      "match": True,
                                      "note": "no unfinished batch (fully succeeded)"})
                 continue
-            stored = coll_manifest.get(first_unfin, {})
-            plan_by_bno = {t[1]: t for t in plan if t[0] == coll}
-            local_hash = None
-            if first_unfin in plan_by_bno:
-                local_hash = plan_by_bno[first_unfin][3]
+            r = resolved_by_bno.get(first_unfin)
+            if r is None:
+                canary_rows.append({
+                    "collection": coll, "batch_no": first_unfin,
+                    "expected_hash": coll_manifest[first_unfin].get("content_hash"),
+                    "computed_hash": None, "match": False,
+                    "note": "resolver did not reach first unfinished",
+                })
+                continue
             canary_rows.append({
-                "collection":     coll,
-                "batch_no":       first_unfin,
-                "expected_hash":  stored.get("content_hash"),
-                "computed_hash":  local_hash,
-                "match":          (local_hash is not None and local_hash == stored.get("content_hash")),
-                "status":         stored.get("status"),
-                "note":           "first unfinished boundary",
+                "collection":    coll,
+                "batch_no":      first_unfin,
+                "start_offset":  r["start_offset"],
+                "doc_count":     r["doc_count"],
+                "expected_hash": r["stored_hash"],
+                "computed_hash": r["computed_hash"],
+                "match":         r["match"],
+                "status":        r["stored_status"],
+                "note":          "first unfinished boundary",
             })
 
         # Pretty-print the operator table.
-        print(f"\n{'collection':<30}{'batch_id':>10} {'expected_hash':<66} "
+        print(f"\n{'collection':<30}{'batch_id':>10} {'start':>10} "
+                f"{'dc':>6}  {'expected_hash':<66} "
                 f"{'computed_hash':<66} MATCH")
-        print("-" * 180)
+        print("-" * 220)
         all_match = True
         for r in canary_rows:
             m = r.get("match")
@@ -805,19 +935,25 @@ def main() -> int:
             if m is False: all_match = False
             print(f"{r['collection']:<30}"
                   f"{str(r.get('batch_no') if r.get('batch_no') is not None else '-'):>10} "
+                  f"{str(r.get('start_offset') or '-'):>10} "
+                  f"{str(r.get('doc_count') or '-'):>6}  "
                   f"{str(r.get('expected_hash') or '-'):<66} "
                   f"{str(r.get('computed_hash') or '-'):<66} {tag}"
                   + (f"  ({r['note']})" if r.get("note") else ""))
+        print(f"\n[canary buckets] 1000-batch={canary_buckets['1000']} "
+              f"250-batch={canary_buckets['250']} "
+              f"leftover={canary_buckets['leftover']}")
 
         canary_report = {
-            "schema":             "r3_batch_layout_canary_v1",
-            "generated_at_unix":  int(time.time()),
-            "session_id":         session,
+            "schema":              "r3_batch_layout_canary_v2",
+            "generated_at_unix":   int(time.time()),
+            "session_id":          session,
             "api_target_redacted": _redact(api_base),
-            "canary_rows":        canary_rows,
-            "all_match":          all_match,
-            "total_batches_planned": total_in_plan,
-            "layout_mismatches":  layout_mismatches,  # [] after preflight pass
+            "canary_rows":         canary_rows,
+            "canary_buckets":      canary_buckets,
+            "all_match":           all_match,
+            "total_batches_planned":  total_in_plan,
+            "layout_mismatches":   layout_mismatches,  # [] after preflight pass
         }
         if canary_report_path:
             try:
