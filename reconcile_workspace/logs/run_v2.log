@@ -1,0 +1,77 @@
+
+========================================================================
+[PREFLIGHT] V2 inputs
+========================================================================
+  Baseline zip:  /app/reconcile_workspace/preview_baseline_v2/perklocks_preview_baseline_v2_scoped_20261003_181544Z.zip (205,074,775 bytes)
+  Baseline SHA:  26cd67d0648ef62f495807c5303fdc1acafb28a3015e249718a7b47a3728d78b
+  Baseline tag:  PREVIEW_BASELINE_V2_SCOPED_21_COLLECTIONS
+  Baseline docs: 1,736,907
+  Baseline cols: 21
+  Prod files:    147 under /app/reconcile_workspace/production_input
+  /app free:     0.0 MB
+  /opt free:     72607.4 MB
+
+========================================================================
+[PHASE 2] offline reconciliation (V2)
+========================================================================
+── loading Preview backup ──
+2026-10-03 18:54:40,503 reconcile_offline INFO [preview] extracting perklocks_preview_baseline_v2_scoped_20261003_181544Z.zip → /tmp/recon_preview_ilu_lx0p
+[preview] db_dir=/tmp/recon_preview_ilu_lx0p/dump/lockscore_db
+[preview] sha256=26cd67d0648ef62f495807c5303fdc1acafb28a3015e249718a7b47a3728d78b
+── reconciling games ──
+   -> REVIEW_REQUIRED  safe=17399  conflicts=0  review=2  aborted=0
+── reconciling historical_ingestion_state ──
+   -> CONFLICTS_RESOLVED  safe=20  conflicts=6  review=0  aborted=0
+── reconciling nfl_ingest_meta ──
+   -> CONFLICTS_RESOLVED  safe=1  conflicts=1  review=0  aborted=0
+── reconciling nfl_player_weekly ──
+   -> SAFE  safe=133077  conflicts=0  review=0  aborted=0
+── reconciling parlay_history ──
+   -> CONFLICTS_RESOLVED  safe=2286  conflicts=7  review=0  aborted=0
+── reconciling picks ──
+   -> CONFLICTS_RESOLVED  safe=325190  conflicts=237889  review=0  aborted=0
+── reconciling player_game_actuals ──
+   -> REVIEW_REQUIRED  safe=397251  conflicts=0  review=7353  aborted=0
+── reconciling player_game_logs ──
+   -> REVIEW_REQUIRED  safe=436429  conflicts=0  review=26599  aborted=0
+── reconciling player_identities ──
+   -> REVIEW_REQUIRED  safe=32661  conflicts=0  review=30324  aborted=0
+── reconciling prediction_snapshots ──
+   -> ABORTED  safe=182296  conflicts=49795  review=0  aborted=49795
+── reconciling pregame_snapshots ──
+   -> SAFE  safe=13601  conflicts=0  review=0  aborted=0
+── reconciling publication_events ──
+   -> SAFE  safe=157333  conflicts=0  review=0  aborted=0
+── reconciling rollover_slate_events ──
+   -> SAFE  safe=32  conflicts=0  review=0  aborted=0
+── reconciling rollover_slates ──
+   -> CONFLICTS_RESOLVED  safe=14  conflicts=10  review=0  aborted=0
+── reconciling settlement_events ──
+   -> SAFE  safe=497047  conflicts=0  review=0  aborted=0
+── reconciling soccer_matches ──
+   -> REVIEW_REQUIRED  safe=25657  conflicts=0  review=5  aborted=0
+── reconciling soccer_player_game_logs ──
+   -> SAFE  safe=100025  conflicts=0  review=0  aborted=0
+── reconciling team_game_actuals ──
+   -> SAFE  safe=60206  conflicts=0  review=0  aborted=0
+── reconciling tennis_matches_history ──
+   -> REVIEW_REQUIRED  safe=38379  conflicts=0  review=1  aborted=0
+── reconciling user_bets ──
+   -> SAFE  safe=14  conflicts=0  review=0  aborted=0
+── reconciling users ──
+   -> CONFLICTS_RESOLVED  safe=242  conflicts=5  review=0  aborted=0
+Traceback (most recent call last):
+  File "/app/reconcile_workspace/scripts/run_v2_reconciliation.py", line 370, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/app/reconcile_workspace/scripts/run_v2_reconciliation.py", line 284, in main
+    p2_out = run_phase2(pre["v2_zip"])
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/reconcile_workspace/scripts/run_v2_reconciliation.py", line 127, in run_phase2
+    rc = rf.main()
+         ^^^^^^^^^
+  File "/app/backend/scripts/reconcile_full.py", line 421, in main
+    (REPORT_DIR / "conflict_report.json").write_text(
+  File "/usr/local/lib/python3.11/pathlib.py", line 1079, in write_text
+    return f.write(data)
+           ^

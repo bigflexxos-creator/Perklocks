@@ -1,0 +1,886 @@
+[1/5] verifying checkpoint SHA-256s …
+  ✓ phase5_20261003_190628Z.tar.gz  sha=4adc99890885e7b7…
+  ✓ phase6_20261003_192150Z.tar.gz  sha=327a38903daf3bd9…
+[2/5] redacted Prod API target: *.emergent.host
+[3/5] reconstructing final canonical from Phase 5 + Phase 6 …
+[4/5] uploading 21 canonical collections to Prod …
+  → games: source=games.ndjson (size=7659915)
+      batch #0: accepted=250 rejected=0 status=succeeded replay=False
+      batch #1: accepted=250 rejected=0 status=succeeded replay=False
+      batch #2: accepted=250 rejected=0 status=succeeded replay=False
+      batch #3: accepted=250 rejected=0 status=succeeded replay=False
+      batch #4: accepted=250 rejected=0 status=succeeded replay=False
+      batch #5: accepted=250 rejected=0 status=succeeded replay=False
+      batch #6: accepted=250 rejected=0 status=succeeded replay=False
+      batch #7: accepted=250 rejected=0 status=succeeded replay=False
+      batch #8: accepted=250 rejected=0 status=succeeded replay=False
+      batch #9: accepted=250 rejected=0 status=succeeded replay=False
+      batch #10: accepted=250 rejected=0 status=succeeded replay=False
+      batch #11: accepted=250 rejected=0 status=succeeded replay=False
+      batch #12: accepted=250 rejected=0 status=succeeded replay=False
+      batch #13: accepted=250 rejected=0 status=succeeded replay=False
+      batch #14: accepted=250 rejected=0 status=succeeded replay=False
+      batch #15: accepted=250 rejected=0 status=succeeded replay=False
+      batch #16: accepted=250 rejected=0 status=succeeded replay=False
+      batch #17: accepted=250 rejected=0 status=succeeded replay=False
+      batch #18: accepted=250 rejected=0 status=succeeded replay=False
+      batch #19: accepted=250 rejected=0 status=succeeded replay=False
+      batch #20: accepted=250 rejected=0 status=succeeded replay=False
+      batch #21: accepted=250 rejected=0 status=succeeded replay=False
+      batch #22: accepted=250 rejected=0 status=succeeded replay=False
+      batch #23: accepted=250 rejected=0 status=succeeded replay=False
+      batch #24: accepted=250 rejected=0 status=succeeded replay=False
+      batch #25: accepted=250 rejected=0 status=succeeded replay=False
+      batch #26: accepted=250 rejected=0 status=succeeded replay=False
+      batch #27: accepted=250 rejected=0 status=succeeded replay=False
+      batch #28: accepted=250 rejected=0 status=succeeded replay=False
+      batch #29: accepted=250 rejected=0 status=succeeded replay=False
+      batch #30: accepted=250 rejected=0 status=succeeded replay=False
+      batch #31: accepted=250 rejected=0 status=succeeded replay=False
+      batch #32: accepted=250 rejected=0 status=succeeded replay=False
+      batch #33: accepted=250 rejected=0 status=succeeded replay=False
+      batch #34: accepted=250 rejected=0 status=succeeded replay=False
+      batch #35: accepted=250 rejected=0 status=succeeded replay=False
+      batch #36: accepted=250 rejected=0 status=succeeded replay=False
+      batch #37: accepted=250 rejected=0 status=succeeded replay=False
+      batch #38: accepted=250 rejected=0 status=succeeded replay=False
+      batch #39: accepted=250 rejected=0 status=succeeded replay=False
+      batch #40: accepted=250 rejected=0 status=succeeded replay=False
+      batch #41: accepted=250 rejected=0 status=succeeded replay=False
+      batch #42: accepted=250 rejected=0 status=succeeded replay=False
+      batch #43: accepted=250 rejected=0 status=succeeded replay=False
+      batch #44: accepted=250 rejected=0 status=succeeded replay=False
+      batch #45: accepted=250 rejected=0 status=succeeded replay=False
+      batch #46: accepted=250 rejected=0 status=succeeded replay=False
+      batch #47: accepted=250 rejected=0 status=succeeded replay=False
+      batch #48: accepted=250 rejected=0 status=succeeded replay=False
+      batch #49: accepted=250 rejected=0 status=succeeded replay=False
+      batch #50: accepted=250 rejected=0 status=succeeded replay=False
+      batch #51: accepted=250 rejected=0 status=succeeded replay=False
+      batch #52: accepted=250 rejected=0 status=succeeded replay=False
+      batch #53: accepted=250 rejected=0 status=succeeded replay=False
+      batch #54: accepted=250 rejected=0 status=succeeded replay=False
+      batch #55: accepted=250 rejected=0 status=succeeded replay=False
+      batch #56: accepted=250 rejected=0 status=succeeded replay=False
+      batch #57: accepted=250 rejected=0 status=succeeded replay=False
+      batch #58: accepted=250 rejected=0 status=succeeded replay=False
+      batch #59: accepted=250 rejected=0 status=succeeded replay=False
+      batch #60: accepted=250 rejected=0 status=succeeded replay=False
+      batch #61: accepted=250 rejected=0 status=succeeded replay=False
+      batch #62: accepted=250 rejected=0 status=succeeded replay=False
+      batch #63: accepted=250 rejected=0 status=succeeded replay=False
+      batch #64: accepted=250 rejected=0 status=succeeded replay=False
+      batch #65: accepted=250 rejected=0 status=succeeded replay=False
+      batch #66: accepted=250 rejected=0 status=succeeded replay=False
+      batch #67: accepted=250 rejected=0 status=succeeded replay=False
+      batch #68: accepted=250 rejected=0 status=succeeded replay=False
+      batch #69: accepted=151 rejected=0 status=succeeded replay=False
+  → historical_ingestion_state: source=historical_ingestion_state.ndjson (size=10880)
+      batch #0: accepted=20 rejected=0 status=succeeded replay=False
+  → nfl_ingest_meta: source=nfl_ingest_meta.ndjson (size=363)
+      batch #0: accepted=1 rejected=0 status=succeeded replay=False
+  → nfl_player_weekly: source=nfl_player_weekly.ndjson (size=144951826)
+      batch #0: accepted=250 rejected=0 status=succeeded replay=False
+      batch #1: accepted=250 rejected=0 status=succeeded replay=False
+      batch #2: accepted=250 rejected=0 status=succeeded replay=False
+      batch #3: accepted=250 rejected=0 status=succeeded replay=False
+      batch #4: accepted=250 rejected=0 status=succeeded replay=False
+      batch #5: accepted=250 rejected=0 status=succeeded replay=False
+      batch #6: accepted=250 rejected=0 status=succeeded replay=False
+      batch #7: accepted=250 rejected=0 status=succeeded replay=False
+      batch #8: accepted=250 rejected=0 status=succeeded replay=False
+      batch #9: accepted=250 rejected=0 status=succeeded replay=False
+      batch #10: accepted=250 rejected=0 status=succeeded replay=False
+      batch #11: accepted=250 rejected=0 status=succeeded replay=False
+      batch #12: accepted=250 rejected=0 status=succeeded replay=False
+      batch #13: accepted=250 rejected=0 status=succeeded replay=False
+      batch #14: accepted=250 rejected=0 status=succeeded replay=False
+      batch #15: accepted=250 rejected=0 status=succeeded replay=False
+      batch #16: accepted=250 rejected=0 status=succeeded replay=False
+      batch #17: accepted=250 rejected=0 status=succeeded replay=False
+      batch #18: accepted=250 rejected=0 status=succeeded replay=False
+      batch #19: accepted=250 rejected=0 status=succeeded replay=False
+      batch #20: accepted=250 rejected=0 status=succeeded replay=False
+      batch #21: accepted=250 rejected=0 status=succeeded replay=False
+      batch #22: accepted=250 rejected=0 status=succeeded replay=False
+      batch #23: accepted=250 rejected=0 status=succeeded replay=False
+      batch #24: accepted=250 rejected=0 status=succeeded replay=False
+      batch #25: accepted=250 rejected=0 status=succeeded replay=False
+      batch #26: accepted=250 rejected=0 status=succeeded replay=False
+      batch #27: accepted=250 rejected=0 status=succeeded replay=False
+      batch #28: accepted=250 rejected=0 status=succeeded replay=False
+      batch #29: accepted=250 rejected=0 status=succeeded replay=False
+      batch #30: accepted=250 rejected=0 status=succeeded replay=False
+      batch #31: accepted=250 rejected=0 status=succeeded replay=False
+      batch #32: accepted=250 rejected=0 status=succeeded replay=False
+      batch #33: accepted=250 rejected=0 status=succeeded replay=False
+      batch #34: accepted=250 rejected=0 status=succeeded replay=False
+      batch #35: accepted=250 rejected=0 status=succeeded replay=False
+      batch #36: accepted=250 rejected=0 status=succeeded replay=False
+      batch #37: accepted=250 rejected=0 status=succeeded replay=False
+      batch #38: accepted=250 rejected=0 status=succeeded replay=False
+      batch #39: accepted=250 rejected=0 status=succeeded replay=False
+      batch #40: accepted=250 rejected=0 status=succeeded replay=False
+      batch #41: accepted=250 rejected=0 status=succeeded replay=False
+      batch #42: accepted=250 rejected=0 status=succeeded replay=False
+      batch #43: accepted=250 rejected=0 status=succeeded replay=False
+      batch #44: accepted=250 rejected=0 status=succeeded replay=False
+      batch #45: accepted=250 rejected=0 status=succeeded replay=False
+      batch #46: accepted=250 rejected=0 status=succeeded replay=False
+      batch #47: accepted=250 rejected=0 status=succeeded replay=False
+      batch #48: accepted=250 rejected=0 status=succeeded replay=False
+      batch #49: accepted=250 rejected=0 status=succeeded replay=False
+      batch #50: accepted=250 rejected=0 status=succeeded replay=False
+      batch #51: accepted=250 rejected=0 status=succeeded replay=False
+      batch #52: accepted=250 rejected=0 status=succeeded replay=False
+      batch #53: accepted=250 rejected=0 status=succeeded replay=False
+      batch #54: accepted=250 rejected=0 status=succeeded replay=False
+      batch #55: accepted=250 rejected=0 status=succeeded replay=False
+      batch #56: accepted=250 rejected=0 status=succeeded replay=False
+      batch #57: accepted=250 rejected=0 status=succeeded replay=False
+      batch #58: accepted=250 rejected=0 status=succeeded replay=False
+      batch #59: accepted=250 rejected=0 status=succeeded replay=False
+      batch #60: accepted=250 rejected=0 status=succeeded replay=False
+      batch #61: accepted=250 rejected=0 status=succeeded replay=False
+      batch #62: accepted=250 rejected=0 status=succeeded replay=False
+      batch #63: accepted=250 rejected=0 status=succeeded replay=False
+      batch #64: accepted=250 rejected=0 status=succeeded replay=False
+      batch #65: accepted=250 rejected=0 status=succeeded replay=False
+      batch #66: accepted=250 rejected=0 status=succeeded replay=False
+      batch #67: accepted=250 rejected=0 status=succeeded replay=False
+      batch #68: accepted=250 rejected=0 status=succeeded replay=False
+      batch #69: accepted=250 rejected=0 status=succeeded replay=False
+      batch #70: accepted=250 rejected=0 status=succeeded replay=False
+      batch #71: accepted=250 rejected=0 status=succeeded replay=False
+      batch #72: accepted=250 rejected=0 status=succeeded replay=False
+      batch #73: accepted=250 rejected=0 status=succeeded replay=False
+      batch #74: accepted=250 rejected=0 status=succeeded replay=False
+      batch #75: accepted=250 rejected=0 status=succeeded replay=False
+      batch #76: accepted=250 rejected=0 status=succeeded replay=False
+      batch #77: accepted=250 rejected=0 status=succeeded replay=False
+      batch #78: accepted=250 rejected=0 status=succeeded replay=False
+      batch #79: accepted=250 rejected=0 status=succeeded replay=False
+      batch #80: accepted=250 rejected=0 status=succeeded replay=False
+      batch #81: accepted=250 rejected=0 status=succeeded replay=False
+      batch #82: accepted=250 rejected=0 status=succeeded replay=False
+      batch #83: accepted=250 rejected=0 status=succeeded replay=False
+      batch #84: accepted=250 rejected=0 status=succeeded replay=False
+      batch #85: accepted=250 rejected=0 status=succeeded replay=False
+      batch #86: accepted=250 rejected=0 status=succeeded replay=False
+      batch #87: accepted=250 rejected=0 status=succeeded replay=False
+      batch #88: accepted=250 rejected=0 status=succeeded replay=False
+      batch #89: accepted=250 rejected=0 status=succeeded replay=False
+      batch #90: accepted=250 rejected=0 status=succeeded replay=False
+      batch #91: accepted=250 rejected=0 status=succeeded replay=False
+      batch #92: accepted=250 rejected=0 status=succeeded replay=False
+      batch #93: accepted=250 rejected=0 status=succeeded replay=False
+      batch #94: accepted=250 rejected=0 status=succeeded replay=False
+      batch #95: accepted=250 rejected=0 status=succeeded replay=False
+      batch #96: accepted=250 rejected=0 status=succeeded replay=False
+      batch #97: accepted=250 rejected=0 status=succeeded replay=False
+      batch #98: accepted=250 rejected=0 status=succeeded replay=False
+      batch #99: accepted=250 rejected=0 status=succeeded replay=False
+      batch #100: accepted=250 rejected=0 status=succeeded replay=False
+      batch #101: accepted=250 rejected=0 status=succeeded replay=False
+      batch #102: accepted=250 rejected=0 status=succeeded replay=False
+      batch #103: accepted=250 rejected=0 status=succeeded replay=False
+      batch #104: accepted=250 rejected=0 status=succeeded replay=False
+      batch #105: accepted=250 rejected=0 status=succeeded replay=False
+      batch #106: accepted=250 rejected=0 status=succeeded replay=False
+      batch #107: accepted=250 rejected=0 status=succeeded replay=False
+      batch #108: accepted=250 rejected=0 status=succeeded replay=False
+      batch #109: accepted=250 rejected=0 status=succeeded replay=False
+      batch #110: accepted=250 rejected=0 status=succeeded replay=False
+      batch #111: accepted=250 rejected=0 status=succeeded replay=False
+      batch #112: accepted=250 rejected=0 status=succeeded replay=False
+      batch #113: accepted=250 rejected=0 status=succeeded replay=False
+      batch #114: accepted=250 rejected=0 status=succeeded replay=False
+      batch #115: accepted=250 rejected=0 status=succeeded replay=False
+      batch #116: accepted=250 rejected=0 status=succeeded replay=False
+      batch #117: accepted=250 rejected=0 status=succeeded replay=False
+      batch #118: accepted=250 rejected=0 status=succeeded replay=False
+      batch #119: accepted=250 rejected=0 status=succeeded replay=False
+      batch #120: accepted=250 rejected=0 status=succeeded replay=False
+      batch #121: accepted=250 rejected=0 status=succeeded replay=False
+      batch #122: accepted=250 rejected=0 status=succeeded replay=False
+      batch #123: accepted=250 rejected=0 status=succeeded replay=False
+      batch #124: accepted=250 rejected=0 status=succeeded replay=False
+      batch #125: accepted=250 rejected=0 status=succeeded replay=False
+      batch #126: accepted=250 rejected=0 status=succeeded replay=False
+      batch #127: accepted=250 rejected=0 status=succeeded replay=False
+      batch #128: accepted=250 rejected=0 status=succeeded replay=False
+      batch #129: accepted=250 rejected=0 status=succeeded replay=False
+      batch #130: accepted=250 rejected=0 status=succeeded replay=False
+      batch #131: accepted=250 rejected=0 status=succeeded replay=False
+      batch #132: accepted=250 rejected=0 status=succeeded replay=False
+      batch #133: accepted=250 rejected=0 status=succeeded replay=False
+      batch #134: accepted=250 rejected=0 status=succeeded replay=False
+      batch #135: accepted=250 rejected=0 status=succeeded replay=False
+      batch #136: accepted=250 rejected=0 status=succeeded replay=False
+      batch #137: accepted=250 rejected=0 status=succeeded replay=False
+      batch #138: accepted=250 rejected=0 status=succeeded replay=False
+      batch #139: accepted=250 rejected=0 status=succeeded replay=False
+      batch #140: accepted=250 rejected=0 status=succeeded replay=False
+      batch #141: accepted=250 rejected=0 status=succeeded replay=False
+      batch #142: accepted=250 rejected=0 status=succeeded replay=False
+      batch #143: accepted=250 rejected=0 status=succeeded replay=False
+      batch #144: accepted=250 rejected=0 status=succeeded replay=False
+      batch #145: accepted=250 rejected=0 status=succeeded replay=False
+      batch #146: accepted=250 rejected=0 status=succeeded replay=False
+      batch #147: accepted=250 rejected=0 status=succeeded replay=False
+      batch #148: accepted=250 rejected=0 status=succeeded replay=False
+      batch #149: accepted=250 rejected=0 status=succeeded replay=False
+      batch #150: accepted=250 rejected=0 status=succeeded replay=False
+      batch #151: accepted=250 rejected=0 status=succeeded replay=False
+      batch #152: accepted=250 rejected=0 status=succeeded replay=False
+      batch #153: accepted=250 rejected=0 status=succeeded replay=False
+      batch #154: accepted=250 rejected=0 status=succeeded replay=False
+      batch #155: accepted=250 rejected=0 status=succeeded replay=False
+      batch #156: accepted=250 rejected=0 status=succeeded replay=False
+      batch #157: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #158: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #159: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #160: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #161: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #162: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #163: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #164: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #165: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #166: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #167: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #168: accepted=250 rejected=0 status=succeeded replay=False
+      batch #169: accepted=250 rejected=0 status=succeeded replay=False
+      batch #170: accepted=250 rejected=0 status=succeeded replay=False
+      batch #171: accepted=250 rejected=0 status=succeeded replay=False
+      batch #172: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #173: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #174: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #175: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #176: accepted=250 rejected=0 status=succeeded replay=False
+      batch #177: accepted=250 rejected=0 status=succeeded replay=False
+      batch #178: accepted=250 rejected=0 status=succeeded replay=False
+      batch #179: accepted=250 rejected=0 status=succeeded replay=False
+      batch #180: accepted=250 rejected=0 status=succeeded replay=False
+      batch #181: accepted=250 rejected=0 status=succeeded replay=False
+      batch #182: accepted=250 rejected=0 status=succeeded replay=False
+      batch #183: accepted=250 rejected=0 status=succeeded replay=False
+      batch #184: accepted=250 rejected=0 status=succeeded replay=False
+      batch #185: accepted=250 rejected=0 status=succeeded replay=False
+      batch #186: accepted=250 rejected=0 status=succeeded replay=False
+      batch #187: accepted=250 rejected=0 status=succeeded replay=False
+      batch #188: accepted=250 rejected=0 status=succeeded replay=False
+      batch #189: accepted=250 rejected=0 status=succeeded replay=False
+      batch #190: accepted=250 rejected=0 status=succeeded replay=False
+      batch #191: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #192: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #193: accepted=250 rejected=0 status=succeeded replay=False
+      batch #194: accepted=250 rejected=0 status=succeeded replay=False
+      batch #195: accepted=250 rejected=0 status=succeeded replay=False
+      batch #196: accepted=250 rejected=0 status=succeeded replay=False
+      batch #197: accepted=250 rejected=0 status=succeeded replay=False
+      batch #198: accepted=250 rejected=0 status=succeeded replay=False
+      batch #199: accepted=250 rejected=0 status=succeeded replay=False
+      batch #200: accepted=250 rejected=0 status=succeeded replay=False
+      batch #201: accepted=250 rejected=0 status=succeeded replay=False
+      batch #202: accepted=250 rejected=0 status=succeeded replay=False
+      batch #203: accepted=250 rejected=0 status=succeeded replay=False
+      batch #204: accepted=250 rejected=0 status=succeeded replay=False
+      batch #205: accepted=250 rejected=0 status=succeeded replay=False
+      batch #206: accepted=250 rejected=0 status=succeeded replay=False
+      batch #207: accepted=250 rejected=0 status=succeeded replay=False
+      batch #208: accepted=250 rejected=0 status=succeeded replay=False
+      batch #209: accepted=250 rejected=0 status=succeeded replay=False
+      batch #210: accepted=250 rejected=0 status=succeeded replay=False
+      batch #211: accepted=250 rejected=0 status=succeeded replay=False
+      batch #212: accepted=250 rejected=0 status=succeeded replay=False
+      batch #213: accepted=250 rejected=0 status=succeeded replay=False
+      batch #214: accepted=250 rejected=0 status=succeeded replay=False
+      batch #215: accepted=250 rejected=0 status=succeeded replay=False
+      batch #216: accepted=250 rejected=0 status=succeeded replay=False
+      batch #217: accepted=250 rejected=0 status=succeeded replay=False
+      batch #218: accepted=250 rejected=0 status=succeeded replay=False
+      batch #219: accepted=250 rejected=0 status=succeeded replay=False
+      batch #220: accepted=250 rejected=0 status=succeeded replay=False
+      batch #221: accepted=250 rejected=0 status=succeeded replay=False
+      batch #222: accepted=250 rejected=0 status=succeeded replay=False
+      batch #223: accepted=250 rejected=0 status=succeeded replay=False
+      batch #224: accepted=250 rejected=0 status=succeeded replay=False
+      batch #225: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #226: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #227: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #228: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #229: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #230: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #231: accepted=250 rejected=0 status=succeeded replay=False
+      batch #232: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #233: accepted=250 rejected=0 status=succeeded replay=False
+      batch #234: accepted=250 rejected=0 status=succeeded replay=False
+      batch #235: accepted=250 rejected=0 status=succeeded replay=False
+      batch #236: accepted=250 rejected=0 status=succeeded replay=False
+      batch #237: accepted=250 rejected=0 status=succeeded replay=False
+      batch #238: accepted=250 rejected=0 status=succeeded replay=False
+      batch #239: accepted=250 rejected=0 status=succeeded replay=False
+      batch #240: accepted=250 rejected=0 status=succeeded replay=False
+      batch #241: accepted=250 rejected=0 status=succeeded replay=False
+      batch #242: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #243: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #244: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #245: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #246: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #247: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #248: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #249: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #250: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #251: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #252: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #253: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #254: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #255: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #256: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #257: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #258: accepted=250 rejected=0 status=succeeded replay=False
+      batch #259: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #260: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #261: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #262: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #263: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #264: accepted=250 rejected=0 status=succeeded replay=False
+      batch #265: accepted=250 rejected=0 status=succeeded replay=False
+      batch #266: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #267: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #268: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #269: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #270: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #271: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #272: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #273: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #274: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #275: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #276: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #277: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #278: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #279: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #280: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #281: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #282: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #283: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #284: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #285: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #286: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #287: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #288: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #289: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #290: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #291: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #292: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #293: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #294: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #295: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #296: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #297: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #298: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #299: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #300: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #301: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #302: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #303: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #304: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #305: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #306: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #307: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #308: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #309: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #310: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #311: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #312: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #313: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #314: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #315: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #316: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #317: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #318: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #319: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #320: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #321: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #322: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #323: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #324: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #325: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #326: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #327: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #328: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #329: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #330: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #331: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #332: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #333: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #334: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #335: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #336: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #337: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #338: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #339: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #340: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #341: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #342: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #343: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #344: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #345: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #346: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #347: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #348: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #349: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #350: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #351: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #352: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #353: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #354: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #355: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #356: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #357: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #358: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #359: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #360: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #361: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #362: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #363: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #364: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #365: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #366: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #367: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #368: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #369: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #370: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #371: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #372: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #373: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #374: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #375: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #376: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #377: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #378: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #379: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #380: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #381: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #382: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #383: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #384: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #385: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #386: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #387: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #388: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #389: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #390: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #391: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #392: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #393: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #394: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #395: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #396: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #397: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #398: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #399: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #400: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #401: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #402: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #403: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #404: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #405: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #406: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #407: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #408: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #409: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #410: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #411: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #412: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #413: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #414: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #415: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #416: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #417: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #418: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #419: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #420: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #421: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #422: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #423: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #424: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #425: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #426: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #427: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #428: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #429: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #430: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #431: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #432: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #433: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #434: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}
+      batch #435: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #436: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #437: PERSISTENT FAIL — will retry at end  err=HTTP 500 after 3 tries: {"detail":{"error_class":"ExecutionTimeout","error":"operation exceeded time limit, full error: {'writeConcernError': {'code': 50, 'codeName': 'MaxTimeMSExpired', 'errmsg': 'operation exceeded time limit', 'errInfo': {'writeConcern': {'w': 'majority', 'wtimeout': 0, 'provenance': 'clientSupplied'}}}, 'ok': 0.0, 'errmsg': 'operation exceeded time limit', 'code': 50, 'codeNam
+      batch #438: PERSISTENT FAIL — will retry at end  err=HTTP 524 after 3 tries: error code: 524
+
+      batch #439: accepted=250 rejected=0 status=succeeded replay=False
+      batch #440: accepted=250 rejected=0 status=succeeded replay=False
+      batch #441: accepted=250 rejected=0 status=succeeded replay=False
+      batch #442: accepted=250 rejected=0 status=succeeded replay=False
+      batch #443: accepted=250 rejected=0 status=succeeded replay=False
+      batch #444: accepted=250 rejected=0 status=succeeded replay=False
+      batch #445: accepted=250 rejected=0 status=succeeded replay=False
+      batch #446: accepted=250 rejected=0 status=succeeded replay=False
+      batch #447: accepted=250 rejected=0 status=succeeded replay=False
+      batch #448: accepted=250 rejected=0 status=succeeded replay=False
+      batch #449: accepted=250 rejected=0 status=succeeded replay=False
+      batch #450: accepted=250 rejected=0 status=succeeded replay=False
+      batch #451: accepted=250 rejected=0 status=succeeded replay=False
+      batch #452: accepted=250 rejected=0 status=succeeded replay=False
+      batch #453: accepted=250 rejected=0 status=succeeded replay=False
+      batch #454: accepted=250 rejected=0 status=succeeded replay=False
+      batch #455: accepted=250 rejected=0 status=succeeded replay=False
+      batch #456: accepted=250 rejected=0 status=succeeded replay=False
+      batch #457: accepted=250 rejected=0 status=succeeded replay=False
+      batch #458: accepted=250 rejected=0 status=succeeded replay=False
+      batch #459: accepted=250 rejected=0 status=succeeded replay=False
+      batch #460: accepted=250 rejected=0 status=succeeded replay=False
+      batch #461: accepted=250 rejected=0 status=succeeded replay=False
+      batch #462: accepted=250 rejected=0 status=succeeded replay=False
+      batch #463: accepted=250 rejected=0 status=succeeded replay=False
+      batch #464: accepted=250 rejected=0 status=succeeded replay=False
+      batch #465: accepted=250 rejected=0 status=succeeded replay=False
+      batch #466: accepted=250 rejected=0 status=succeeded replay=False
+      batch #467: accepted=250 rejected=0 status=succeeded replay=False
+      batch #468: accepted=250 rejected=0 status=succeeded replay=False
+      batch #469: accepted=250 rejected=0 status=succeeded replay=False
+      batch #470: accepted=250 rejected=0 status=succeeded replay=False
+      batch #471: accepted=250 rejected=0 status=succeeded replay=False
+      batch #472: accepted=250 rejected=0 status=succeeded replay=False
+      batch #473: accepted=250 rejected=0 status=succeeded replay=False
+      batch #474: accepted=250 rejected=0 status=succeeded replay=False
+      batch #475: accepted=250 rejected=0 status=succeeded replay=False
+      batch #476: accepted=250 rejected=0 status=succeeded replay=False
+      batch #477: accepted=250 rejected=0 status=succeeded replay=False
+      batch #478: accepted=250 rejected=0 status=succeeded replay=False
+      batch #479: accepted=250 rejected=0 status=succeeded replay=False
+      batch #480: accepted=250 rejected=0 status=succeeded replay=False
+      batch #481: accepted=250 rejected=0 status=succeeded replay=False
+      batch #482: accepted=250 rejected=0 status=succeeded replay=False
+      batch #483: accepted=250 rejected=0 status=succeeded replay=False
+      batch #484: accepted=250 rejected=0 status=succeeded replay=False
+      batch #485: accepted=250 rejected=0 status=succeeded replay=False
+      batch #486: accepted=250 rejected=0 status=succeeded replay=False
+      batch #487: accepted=250 rejected=0 status=succeeded replay=False
+      batch #488: accepted=250 rejected=0 status=succeeded replay=False
+      batch #489: accepted=250 rejected=0 status=succeeded replay=False
+      batch #490: accepted=250 rejected=0 status=succeeded replay=False
+      batch #491: accepted=250 rejected=0 status=succeeded replay=False
+      batch #492: accepted=250 rejected=0 status=succeeded replay=False
+      batch #493: accepted=250 rejected=0 status=succeeded replay=False
+      batch #494: accepted=250 rejected=0 status=succeeded replay=False
+      batch #495: accepted=250 rejected=0 status=succeeded replay=False
+      batch #496: accepted=250 rejected=0 status=succeeded replay=False
+      batch #497: accepted=250 rejected=0 status=succeeded replay=False
+      batch #498: accepted=250 rejected=0 status=succeeded replay=False
+      batch #499: accepted=250 rejected=0 status=succeeded replay=False
+      batch #500: accepted=250 rejected=0 status=succeeded replay=False
+      batch #501: accepted=250 rejected=0 status=succeeded replay=False
+      batch #502: accepted=250 rejected=0 status=succeeded replay=False
+      batch #503: accepted=250 rejected=0 status=succeeded replay=False
+      batch #504: accepted=250 rejected=0 status=succeeded replay=False
+      batch #505: accepted=250 rejected=0 status=succeeded replay=False
+      batch #506: accepted=250 rejected=0 status=succeeded replay=False
+      batch #507: accepted=250 rejected=0 status=succeeded replay=False
+      batch #508: accepted=250 rejected=0 status=succeeded replay=False
+      batch #509: accepted=250 rejected=0 status=succeeded replay=False
+      batch #510: accepted=250 rejected=0 status=succeeded replay=False
+      batch #511: accepted=250 rejected=0 status=succeeded replay=False
+      batch #512: accepted=250 rejected=0 status=succeeded replay=False
+      batch #513: accepted=250 rejected=0 status=succeeded replay=False
+      batch #514: accepted=250 rejected=0 status=succeeded replay=False
+      batch #515: accepted=250 rejected=0 status=succeeded replay=False
+      batch #516: accepted=250 rejected=0 status=succeeded replay=False
+      batch #517: accepted=250 rejected=0 status=succeeded replay=False
+      batch #518: accepted=250 rejected=0 status=succeeded replay=False
+      batch #519: accepted=250 rejected=0 status=succeeded replay=False
+      batch #520: accepted=250 rejected=0 status=succeeded replay=False
+      batch #521: accepted=250 rejected=0 status=succeeded replay=False
+      batch #522: accepted=250 rejected=0 status=succeeded replay=False
+      batch #523: accepted=250 rejected=0 status=succeeded replay=False
+      batch #524: accepted=250 rejected=0 status=succeeded replay=False
+      batch #525: accepted=250 rejected=0 status=succeeded replay=False
+      batch #526: accepted=250 rejected=0 status=succeeded replay=False
+      batch #527: accepted=250 rejected=0 status=succeeded replay=False
+      batch #528: accepted=250 rejected=0 status=succeeded replay=False
+      batch #529: accepted=250 rejected=0 status=succeeded replay=False
+      batch #530: accepted=250 rejected=0 status=succeeded replay=False
+      batch #531: accepted=250 rejected=0 status=succeeded replay=False
+      batch #532: accepted=77 rejected=0 status=succeeded replay=False
+  → parlay_history: source=parlay_history.ndjson (size=10153844)
+      batch #0: accepted=250 rejected=0 status=succeeded replay=False
+      batch #1: accepted=250 rejected=0 status=succeeded replay=False
+      batch #2: accepted=250 rejected=0 status=succeeded replay=False
+      batch #3: accepted=250 rejected=0 status=succeeded replay=False
+      batch #4: accepted=250 rejected=0 status=succeeded replay=False
+      batch #5: accepted=250 rejected=0 status=succeeded replay=False
+      batch #6: accepted=250 rejected=0 status=succeeded replay=False
+      batch #7: accepted=250 rejected=0 status=succeeded replay=False
+      batch #8: accepted=250 rejected=0 status=succeeded replay=False
+      batch #9: accepted=36 rejected=0 status=succeeded replay=False
+  → picks: source=picks.ndjson (size=1517442096)
+      batch #0: accepted=250 rejected=0 status=succeeded replay=False
+      batch #1: accepted=250 rejected=0 status=succeeded replay=False
+      batch #2: accepted=250 rejected=0 status=succeeded replay=False
+      batch #3: accepted=250 rejected=0 status=succeeded replay=False
+      batch #4: accepted=250 rejected=0 status=succeeded replay=False
+      batch #5: accepted=250 rejected=0 status=succeeded replay=False
+      batch #6: accepted=250 rejected=0 status=succeeded replay=False
+      batch #7: accepted=250 rejected=0 status=succeeded replay=False
+      batch #8: accepted=250 rejected=0 status=succeeded replay=False
+      batch #9: accepted=250 rejected=0 status=succeeded replay=False
+      batch #10: accepted=250 rejected=0 status=succeeded replay=False
+      batch #11: accepted=250 rejected=0 status=succeeded replay=False
+      batch #12: accepted=250 rejected=0 status=succeeded replay=False
+      batch #13: accepted=250 rejected=0 status=succeeded replay=False
+      batch #14: accepted=250 rejected=0 status=succeeded replay=False
+      batch #15: accepted=250 rejected=0 status=succeeded replay=False
+      batch #16: accepted=250 rejected=0 status=succeeded replay=False
+      batch #17: accepted=250 rejected=0 status=succeeded replay=False
+      batch #18: accepted=250 rejected=0 status=succeeded replay=False
+      batch #19: accepted=250 rejected=0 status=succeeded replay=False
+      batch #20: accepted=250 rejected=0 status=succeeded replay=False
+      batch #21: accepted=250 rejected=0 status=succeeded replay=False
+      batch #22: accepted=250 rejected=0 status=succeeded replay=False
+      batch #23: accepted=250 rejected=0 status=succeeded replay=False
+      batch #24: accepted=250 rejected=0 status=succeeded replay=False
+      batch #25: accepted=250 rejected=0 status=succeeded replay=False
+      batch #26: accepted=250 rejected=0 status=succeeded replay=False
+      batch #27: accepted=250 rejected=0 status=succeeded replay=False
+      batch #28: accepted=250 rejected=0 status=succeeded replay=False
+      batch #29: accepted=250 rejected=0 status=succeeded replay=False
+      batch #30: accepted=250 rejected=0 status=succeeded replay=False
+      batch #31: accepted=250 rejected=0 status=succeeded replay=False
+      batch #32: accepted=250 rejected=0 status=succeeded replay=False
+      batch #33: accepted=250 rejected=0 status=succeeded replay=False
+      batch #34: accepted=250 rejected=0 status=succeeded replay=False
+      batch #35: accepted=250 rejected=0 status=succeeded replay=False
+      batch #36: accepted=250 rejected=0 status=succeeded replay=False
+      batch #37: accepted=250 rejected=0 status=succeeded replay=False
+      batch #38: accepted=250 rejected=0 status=succeeded replay=False
+      batch #39: accepted=250 rejected=0 status=succeeded replay=False
+      batch #40: accepted=250 rejected=0 status=succeeded replay=False
+      batch #41: accepted=250 rejected=0 status=succeeded replay=False
+      batch #42: accepted=250 rejected=0 status=succeeded replay=False
+      batch #43: accepted=250 rejected=0 status=succeeded replay=False
+      batch #44: accepted=250 rejected=0 status=succeeded replay=False
+      batch #45: accepted=250 rejected=0 status=succeeded replay=False
+      batch #46: accepted=250 rejected=0 status=succeeded replay=False
+      batch #47: accepted=250 rejected=0 status=succeeded replay=False
+      batch #48: accepted=250 rejected=0 status=succeeded replay=False
+      batch #49: accepted=250 rejected=0 status=succeeded replay=False
+      batch #50: accepted=250 rejected=0 status=succeeded replay=False
+      batch #51: accepted=250 rejected=0 status=succeeded replay=False
+      batch #52: accepted=250 rejected=0 status=succeeded replay=False
+      batch #53: accepted=250 rejected=0 status=succeeded replay=False
+      batch #54: accepted=250 rejected=0 status=succeeded replay=False
+      batch #55: accepted=250 rejected=0 status=succeeded replay=False
+      batch #56: accepted=250 rejected=0 status=succeeded replay=False
+      batch #57: accepted=250 rejected=0 status=succeeded replay=False
+      batch #58: accepted=250 rejected=0 status=succeeded replay=False
+      batch #59: accepted=250 rejected=0 status=succeeded replay=False
+      batch #60: accepted=250 rejected=0 status=succeeded replay=False
+      batch #61: accepted=250 rejected=0 status=succeeded replay=False
+      batch #62: accepted=250 rejected=0 status=succeeded replay=False
+      batch #63: accepted=250 rejected=0 status=succeeded replay=False
+      batch #64: accepted=250 rejected=0 status=succeeded replay=False
+      batch #65: accepted=250 rejected=0 status=succeeded replay=False
+      batch #66: accepted=250 rejected=0 status=succeeded replay=False
+      batch #67: accepted=250 rejected=0 status=succeeded replay=False
+      batch #68: accepted=250 rejected=0 status=succeeded replay=False
+      batch #69: accepted=250 rejected=0 status=succeeded replay=False
+      batch #70: accepted=250 rejected=0 status=succeeded replay=False
+      batch #71: accepted=250 rejected=0 status=succeeded replay=False
+      batch #72: accepted=250 rejected=0 status=succeeded replay=False
+      batch #73: accepted=250 rejected=0 status=succeeded replay=False
+      batch #74: accepted=250 rejected=0 status=succeeded replay=False
+      batch #75: accepted=250 rejected=0 status=succeeded replay=False
+      batch #76: accepted=250 rejected=0 status=succeeded replay=False
+      batch #77: accepted=250 rejected=0 status=succeeded replay=False
+      batch #78: accepted=250 rejected=0 status=succeeded replay=False
+      batch #79: accepted=250 rejected=0 status=succeeded replay=False
+      batch #80: accepted=250 rejected=0 status=succeeded replay=False
+      batch #81: accepted=250 rejected=0 status=succeeded replay=False
+      batch #82: accepted=250 rejected=0 status=succeeded replay=False
+      batch #83: accepted=250 rejected=0 status=succeeded replay=False
+      batch #84: accepted=250 rejected=0 status=succeeded replay=False
+      batch #85: accepted=250 rejected=0 status=succeeded replay=False
+      batch #86: accepted=250 rejected=0 status=succeeded replay=False
+      batch #87: accepted=250 rejected=0 status=succeeded replay=False
+      batch #88: accepted=250 rejected=0 status=succeeded replay=False
+      batch #89: accepted=250 rejected=0 status=succeeded replay=False
+      batch #90: accepted=250 rejected=0 status=succeeded replay=False
+      batch #91: accepted=250 rejected=0 status=succeeded replay=False
+      batch #92: accepted=250 rejected=0 status=succeeded replay=False
+      batch #93: accepted=250 rejected=0 status=succeeded replay=False
+      batch #94: accepted=250 rejected=0 status=succeeded replay=False
+      batch #95: accepted=250 rejected=0 status=succeeded replay=False
+      batch #96: accepted=250 rejected=0 status=succeeded replay=False
+      batch #97: accepted=250 rejected=0 status=succeeded replay=False
+      batch #98: accepted=250 rejected=0 status=succeeded replay=False
+      batch #99: accepted=250 rejected=0 status=succeeded replay=False
+      batch #100: accepted=250 rejected=0 status=succeeded replay=False
+      batch #101: accepted=250 rejected=0 status=succeeded replay=False
+      batch #102: accepted=250 rejected=0 status=succeeded replay=False
+      batch #103: accepted=250 rejected=0 status=succeeded replay=False
+      batch #104: accepted=250 rejected=0 status=succeeded replay=False
+      batch #105: accepted=250 rejected=0 status=succeeded replay=False
+      batch #106: accepted=250 rejected=0 status=succeeded replay=False
+      batch #107: accepted=250 rejected=0 status=succeeded replay=False
+      batch #108: accepted=250 rejected=0 status=succeeded replay=False
+      batch #109: accepted=250 rejected=0 status=succeeded replay=False
+      batch #110: accepted=250 rejected=0 status=succeeded replay=False
+      batch #111: accepted=250 rejected=0 status=succeeded replay=False
+      batch #112: accepted=250 rejected=0 status=succeeded replay=False
+      batch #113: accepted=250 rejected=0 status=succeeded replay=False
+      batch #114: accepted=250 rejected=0 status=succeeded replay=False
+      batch #115: accepted=250 rejected=0 status=succeeded replay=False
+      batch #116: accepted=250 rejected=0 status=succeeded replay=False
+      batch #117: accepted=250 rejected=0 status=succeeded replay=False
+      batch #118: accepted=250 rejected=0 status=succeeded replay=False
+      batch #119: accepted=250 rejected=0 status=succeeded replay=False
+      batch #120: accepted=250 rejected=0 status=succeeded replay=False
+      batch #121: accepted=250 rejected=0 status=succeeded replay=False
+      batch #122: accepted=250 rejected=0 status=succeeded replay=False
+      batch #123: accepted=250 rejected=0 status=succeeded replay=False
+      batch #124: accepted=250 rejected=0 status=succeeded replay=False
+      batch #125: accepted=250 rejected=0 status=succeeded replay=False
+      batch #126: accepted=250 rejected=0 status=succeeded replay=False
+      batch #127: accepted=250 rejected=0 status=succeeded replay=False
+      batch #128: accepted=250 rejected=0 status=succeeded replay=False
+      batch #129: accepted=250 rejected=0 status=succeeded replay=False
+      batch #130: accepted=250 rejected=0 status=succeeded replay=False
+      batch #131: accepted=250 rejected=0 status=succeeded replay=False
+      batch #132: accepted=250 rejected=0 status=succeeded replay=False
+      batch #133: accepted=250 rejected=0 status=succeeded replay=False
+      batch #134: accepted=250 rejected=0 status=succeeded replay=False
+      batch #135: accepted=250 rejected=0 status=succeeded replay=False
+      batch #136: accepted=250 rejected=0 status=succeeded replay=False
+      batch #137: accepted=250 rejected=0 status=succeeded replay=False
+      batch #138: accepted=250 rejected=0 status=succeeded replay=False
+      batch #139: accepted=250 rejected=0 status=succeeded replay=False
+      batch #140: accepted=250 rejected=0 status=succeeded replay=False
+      batch #141: accepted=250 rejected=0 status=succeeded replay=False
+      batch #142: accepted=250 rejected=0 status=succeeded replay=False
+      batch #143: accepted=250 rejected=0 status=succeeded replay=False
+      batch #144: accepted=250 rejected=0 status=succeeded replay=False
+      batch #145: accepted=250 rejected=0 status=succeeded replay=False
+      batch #146: accepted=250 rejected=0 status=succeeded replay=False
+      batch #147: accepted=250 rejected=0 status=succeeded replay=False
+      batch #148: accepted=250 rejected=0 status=succeeded replay=False
+      batch #149: accepted=250 rejected=0 status=succeeded replay=False
+      batch #150: accepted=250 rejected=0 status=succeeded replay=False
+      batch #151: accepted=250 rejected=0 status=succeeded replay=False
+      batch #152: accepted=250 rejected=0 status=succeeded replay=False
+      batch #153: accepted=250 rejected=0 status=succeeded replay=False
+      batch #154: accepted=250 rejected=0 status=succeeded replay=False
+      batch #155: accepted=250 rejected=0 status=succeeded replay=False
+      batch #156: accepted=250 rejected=0 status=succeeded replay=False
+      batch #157: accepted=250 rejected=0 status=succeeded replay=False
+      batch #158: accepted=250 rejected=0 status=succeeded replay=False
+      batch #159: accepted=250 rejected=0 status=succeeded replay=False
+      batch #160: accepted=250 rejected=0 status=succeeded replay=False
+      batch #161: accepted=250 rejected=0 status=succeeded replay=False
+      batch #162: accepted=250 rejected=0 status=succeeded replay=False
+      batch #163: accepted=250 rejected=0 status=succeeded replay=False
+      batch #164: accepted=250 rejected=0 status=succeeded replay=False
+      batch #165: accepted=250 rejected=0 status=succeeded replay=False
+      batch #166: accepted=250 rejected=0 status=succeeded replay=False
+      batch #167: accepted=250 rejected=0 status=succeeded replay=False
+      batch #168: accepted=250 rejected=0 status=succeeded replay=False
+      batch #169: accepted=250 rejected=0 status=succeeded replay=False
+      batch #170: accepted=250 rejected=0 status=succeeded replay=False
+      batch #171: accepted=250 rejected=0 status=succeeded replay=False
+      batch #172: accepted=250 rejected=0 status=succeeded replay=False
+      batch #173: accepted=250 rejected=0 status=succeeded replay=False
+      batch #174: accepted=250 rejected=0 status=succeeded replay=False
+      batch #175: accepted=250 rejected=0 status=succeeded replay=False
+      batch #176: accepted=250 rejected=0 status=succeeded replay=False
+      batch #177: accepted=250 rejected=0 status=succeeded replay=False
+      batch #178: accepted=250 rejected=0 status=succeeded replay=False
+      batch #179: accepted=250 rejected=0 status=succeeded replay=False
+      batch #180: accepted=250 rejected=0 status=succeeded replay=False
+      batch #181: accepted=250 rejected=0 status=succeeded replay=False
+      batch #182: accepted=250 rejected=0 status=succeeded replay=False
+      batch #183: accepted=250 rejected=0 status=succeeded replay=False
+      batch #184: accepted=250 rejected=0 status=succeeded replay=False
+      batch #185: accepted=250 rejected=0 status=succeeded replay=False
+      batch #186: accepted=250 rejected=0 status=succeeded replay=False
+      batch #187: accepted=250 rejected=0 status=succeeded replay=False
+      batch #188: accepted=250 rejected=0 status=succeeded replay=False
+      batch #189: accepted=250 rejected=0 status=succeeded replay=False
+      batch #190: accepted=250 rejected=0 status=succeeded replay=False
+      batch #191: accepted=250 rejected=0 status=succeeded replay=False
+      batch #192: accepted=250 rejected=0 status=succeeded replay=False
+      batch #193: accepted=250 rejected=0 status=succeeded replay=False
+      batch #194: accepted=250 rejected=0 status=succeeded replay=False
+      batch #195: accepted=250 rejected=0 status=succeeded replay=False
+      batch #196: accepted=250 rejected=0 status=succeeded replay=False
+      batch #197: accepted=250 rejected=0 status=succeeded replay=False
+      batch #198: accepted=250 rejected=0 status=succeeded replay=False
+      batch #199: accepted=250 rejected=0 status=succeeded replay=False
+      batch #200: accepted=250 rejected=0 status=succeeded replay=False
+      batch #201: accepted=250 rejected=0 status=succeeded replay=False
+      batch #202: accepted=250 rejected=0 status=succeeded replay=False
+      batch #203: accepted=250 rejected=0 status=succeeded replay=False
+      batch #204: accepted=250 rejected=0 status=succeeded replay=False
+      batch #205: accepted=250 rejected=0 status=succeeded replay=False
+      batch #206: accepted=250 rejected=0 status=succeeded replay=False
+      batch #207: accepted=250 rejected=0 status=succeeded replay=False
+      batch #208: accepted=250 rejected=0 status=succeeded replay=False
+      batch #209: accepted=250 rejected=0 status=succeeded replay=False
+      batch #210: accepted=250 rejected=0 status=succeeded replay=False
+      batch #211: accepted=250 rejected=0 status=succeeded replay=False
+      batch #212: accepted=250 rejected=0 status=succeeded replay=False
+      batch #213: accepted=250 rejected=0 status=succeeded replay=False
+      batch #214: accepted=250 rejected=0 status=succeeded replay=False
+      batch #215: accepted=250 rejected=0 status=succeeded replay=False
+      batch #216: accepted=250 rejected=0 status=succeeded replay=False
+      batch #217: accepted=250 rejected=0 status=succeeded replay=False
+      batch #218: accepted=250 rejected=0 status=succeeded replay=False
+      batch #219: accepted=250 rejected=0 status=succeeded replay=False
+      batch #220: accepted=250 rejected=0 status=succeeded replay=False
+      batch #221: accepted=250 rejected=0 status=succeeded replay=False
+      batch #222: accepted=250 rejected=0 status=succeeded replay=False
+      batch #223: accepted=250 rejected=0 status=succeeded replay=False
+      batch #224: accepted=250 rejected=0 status=succeeded replay=False
+      batch #225: accepted=250 rejected=0 status=succeeded replay=False
+      batch #226: accepted=250 rejected=0 status=succeeded replay=False
+      batch #227: accepted=250 rejected=0 status=succeeded replay=False
+      batch #228: accepted=250 rejected=0 status=succeeded replay=False
+      batch #229: accepted=250 rejected=0 status=succeeded replay=False
+      batch #230: accepted=250 rejected=0 status=succeeded replay=False
+      batch #231: accepted=250 rejected=0 status=succeeded replay=False
+      batch #232: accepted=250 rejected=0 status=succeeded replay=False
+      batch #233: accepted=250 rejected=0 status=succeeded replay=False
+      batch #234: accepted=250 rejected=0 status=succeeded replay=False
+      batch #235: accepted=250 rejected=0 status=succeeded replay=False
+      batch #236: accepted=250 rejected=0 status=succeeded replay=False
+      batch #237: accepted=250 rejected=0 status=succeeded replay=False
+      batch #238: accepted=250 rejected=0 status=succeeded replay=False
+      batch #239: accepted=250 rejected=0 status=succeeded replay=False
+      batch #240: accepted=250 rejected=0 status=succeeded replay=False
+      batch #241: accepted=250 rejected=0 status=succeeded replay=False
+      batch #242: accepted=250 rejected=0 status=succeeded replay=False
+      batch #243: accepted=250 rejected=0 status=succeeded replay=False
+      batch #244: accepted=250 rejected=0 status=succeeded replay=False
+      batch #245: accepted=250 rejected=0 status=succeeded replay=False
+      batch #246: accepted=250 rejected=0 status=succeeded replay=False
+      batch #247: accepted=250 rejected=0 status=succeeded replay=False
+      batch #248: accepted=250 rejected=0 status=succeeded replay=False
+      batch #249: accepted=250 rejected=0 status=succeeded replay=False
+      batch #250: accepted=250 rejected=0 status=succeeded replay=False
+      batch #251: accepted=250 rejected=0 status=succeeded replay=False
+      batch #252: accepted=250 rejected=0 status=succeeded replay=False
+      batch #253: accepted=250 rejected=0 status=succeeded replay=False
+      batch #254: accepted=250 rejected=0 status=succeeded replay=False
+      batch #255: accepted=250 rejected=0 status=succeeded replay=False
+      batch #256: accepted=250 rejected=0 status=succeeded replay=False
+      batch #257: accepted=250 rejected=0 status=succeeded replay=False

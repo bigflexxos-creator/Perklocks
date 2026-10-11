@@ -1,0 +1,39 @@
+Inventory lists 147 files. URL map has 147 files.
+Downloading 147 files to /app/reconcile_workspace/production_input …
+  [ 10/147] PASS                   nfl_player_weekly_part1.json
+  [ 20/147] PASS                   picks_part10.json
+  [ 30/147] PASS                   picks_part19.json
+  [ 40/147] PASS                   player_game_actuals_part1.json
+  [ 50/147] PASS                   player_game_actuals_part2.json
+  [ 60/147] PASS                   player_game_logs_part1.json
+  [ 70/147] PASS                   player_game_logs_part2.json
+  [ 80/147] PASS                   player_game_logs_part9.json
+  [ 90/147] PASS                   prediction_snapshots_part12.json
+  [100/147] PASS                   prediction_snapshots_part6.json
+  [110/147] PASS                   rollover_slates.json
+  [120/147] PASS                   settlement_events_part7.json
+  [128/147] DOWNLOAD_FAILED        soccer_player_game_logs_part9.json
+  [129/147] DOWNLOAD_FAILED        soccer_player_game_logs_part4.json
+  [130/147] DOWNLOAD_FAILED        team_game_actuals_part4.json
+  [131/147] DOWNLOAD_FAILED        team_game_actuals_part5.json
+  [132/147] DOWNLOAD_FAILED        team_game_actuals_part1.json
+  [133/147] DOWNLOAD_FAILED        team_game_actuals_part6.json
+  [134/147] DOWNLOAD_FAILED        team_game_actuals_part7.json
+  [139/147] DOWNLOAD_FAILED        tennis_matches_history_part2.json
+  [140/147] DOWNLOAD_FAILED        tennis_matches_history_part3.json
+  [141/147] DOWNLOAD_FAILED        team_game_actuals_part3.json
+  [142/147] DOWNLOAD_FAILED        soccer_player_game_logs_part8.json
+  [143/147] DOWNLOAD_FAILED        soccer_player_game_logs_part6.json
+  [144/147] DOWNLOAD_FAILED        team_game_actuals_part2.json
+  [145/147] DOWNLOAD_FAILED        users.json
+  [146/147] DOWNLOAD_FAILED        tennis_matches_history_part4.json
+  [147/147] DOWNLOAD_FAILED        soccer_player_game_logs_part7.json
+Traceback (most recent call last):
+  File "/app/reconcile_workspace/scripts/download_and_verify_production.py", line 168, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/app/reconcile_workspace/scripts/download_and_verify_production.py", line 146, in main
+    json.dump(report, f, indent=2, default=str)
+  File "/usr/local/lib/python3.11/json/__init__.py", line 180, in dump
+    fp.write(chunk)
+OSError: [Errno 28] No space left on device

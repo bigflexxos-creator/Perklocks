@@ -1,0 +1,108 @@
+[1/5] verifying checkpoint SHA-256s …
+  ✓ phase5_20261003_190628Z.tar.gz  sha=4adc99890885e7b7…
+  ✓ phase6_20261003_192150Z.tar.gz  sha=327a38903daf3bd9…
+[2/5] redacted Prod API target: *.emergent.host
+[3/5] reconstructing final canonical from Phase 5 + Phase 6 …
+[4/5] uploading 21 canonical collections to Prod …
+  → games: source=games.ndjson (size=7659915)
+      batch #0: accepted=500 rejected=0 replay=False
+      batch #1: accepted=500 rejected=0 replay=False
+      batch #2: accepted=500 rejected=0 replay=False
+      batch #3: accepted=500 rejected=0 replay=False
+      batch #4: accepted=500 rejected=0 replay=False
+      batch #5: accepted=500 rejected=0 replay=False
+      batch #6: accepted=500 rejected=0 replay=False
+      batch #7: accepted=500 rejected=0 replay=False
+      batch #8: accepted=500 rejected=0 replay=False
+      batch #9: accepted=500 rejected=0 replay=False
+      batch #10: accepted=500 rejected=0 replay=False
+      batch #11: accepted=500 rejected=0 replay=False
+      batch #12: accepted=500 rejected=0 replay=False
+      batch #13: accepted=500 rejected=0 replay=False
+      batch #14: accepted=500 rejected=0 replay=False
+      batch #15: accepted=500 rejected=0 replay=False
+      batch #16: accepted=500 rejected=0 replay=False
+      batch #17: accepted=500 rejected=0 replay=False
+      batch #18: accepted=500 rejected=0 replay=False
+      batch #19: accepted=500 rejected=0 replay=False
+      batch #20: accepted=500 rejected=0 replay=False
+      batch #21: accepted=500 rejected=0 replay=False
+      batch #22: accepted=500 rejected=0 replay=False
+      batch #23: accepted=500 rejected=0 replay=False
+      batch #24: accepted=500 rejected=0 replay=False
+      batch #25: accepted=500 rejected=0 replay=False
+      batch #26: accepted=500 rejected=0 replay=False
+      batch #27: accepted=500 rejected=0 replay=False
+      batch #28: accepted=500 rejected=0 replay=False
+      batch #29: accepted=500 rejected=0 replay=False
+      batch #30: accepted=500 rejected=0 replay=False
+      batch #31: accepted=500 rejected=0 replay=False
+      batch #32: accepted=500 rejected=0 replay=False
+      batch #33: accepted=500 rejected=0 replay=False
+      batch #34: accepted=401 rejected=0 replay=False
+  → historical_ingestion_state: source=historical_ingestion_state.ndjson (size=10880)
+      batch #0: accepted=20 rejected=0 replay=False
+  → nfl_ingest_meta: source=nfl_ingest_meta.ndjson (size=363)
+      batch #0: accepted=1 rejected=0 replay=False
+  → nfl_player_weekly: source=nfl_player_weekly.ndjson (size=144951826)
+      batch #0: accepted=500 rejected=0 replay=False
+      batch #1: accepted=500 rejected=0 replay=False
+      batch #2: accepted=500 rejected=0 replay=False
+      batch #3: accepted=500 rejected=0 replay=False
+      batch #4: accepted=500 rejected=0 replay=False
+      batch #5: accepted=500 rejected=0 replay=False
+      batch #6: accepted=500 rejected=0 replay=False
+      batch #7: accepted=500 rejected=0 replay=False
+      batch #8: accepted=500 rejected=0 replay=False
+      batch #9: accepted=500 rejected=0 replay=False
+      batch #10: accepted=500 rejected=0 replay=False
+      batch #11: accepted=500 rejected=0 replay=False
+      batch #12: accepted=500 rejected=0 replay=False
+      batch #13: accepted=500 rejected=0 replay=False
+      batch #14: accepted=500 rejected=0 replay=False
+      batch #15: accepted=500 rejected=0 replay=False
+      batch #16: accepted=500 rejected=0 replay=False
+      batch #17: accepted=500 rejected=0 replay=False
+      batch #18: accepted=500 rejected=0 replay=False
+      batch #19: accepted=500 rejected=0 replay=False
+      batch #20: accepted=500 rejected=0 replay=False
+      batch #21: accepted=500 rejected=0 replay=False
+      batch #22: accepted=500 rejected=0 replay=False
+      batch #23: accepted=500 rejected=0 replay=False
+      batch #24: accepted=500 rejected=0 replay=False
+      batch #25: accepted=500 rejected=0 replay=False
+Traceback (most recent call last):
+  File "/app/reconcile_workspace/scripts/push_canonical_to_production.py", line 145, in _post
+    with urllib.request.urlopen(req, timeout=300) as resp:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/urllib/request.py", line 216, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/urllib/request.py", line 525, in open
+    response = meth(req, response)
+               ^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/urllib/request.py", line 634, in http_response
+    response = self.parent.error(
+               ^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/urllib/request.py", line 563, in error
+    return self._call_chain(*args)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/urllib/request.py", line 496, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/usr/local/lib/python3.11/urllib/request.py", line 643, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 500: Internal Server Error
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/app/reconcile_workspace/scripts/push_canonical_to_production.py", line 346, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/app/reconcile_workspace/scripts/push_canonical_to_production.py", line 272, in main
+    res = _post(
+          ^^^^^^
+  File "/app/reconcile_workspace/scripts/push_canonical_to_production.py", line 155, in _post
+    raise RuntimeError(f"HTTP {e.code} after {retries} tries: {text}")
+RuntimeError: HTTP 500 after 6 tries: {"detail":{"error_class":"NetworkTimeout","error":"customer-apps-shard-00-02.lzstca.mongodb.net:27017: The read operation timed out"}}

@@ -1,0 +1,27 @@
+[Q28] historical pending matched: 60557
+[Q28] progress: scanned=5000/60557  ledger=497  final=0  unresolved=4503  err=0
+[Q28] progress: scanned=10000/60557  ledger=499  final=0  unresolved=9501  err=0
+[Q28] progress: scanned=15000/60557  ledger=499  final=0  unresolved=14501  err=0
+[Q28] progress: scanned=20000/60557  ledger=499  final=0  unresolved=19501  err=0
+[Q28] progress: scanned=25000/60557  ledger=499  final=0  unresolved=24501  err=0
+[Q28] progress: scanned=30000/60557  ledger=499  final=0  unresolved=29501  err=0
+[Q28] progress: scanned=35000/60557  ledger=499  final=0  unresolved=34501  err=0
+[Q28] progress: scanned=40000/60557  ledger=499  final=0  unresolved=39501  err=0
+[Q28] progress: scanned=45000/60557  ledger=499  final=0  unresolved=44501  err=0
+[Q28] progress: scanned=50000/60557  ledger=499  final=0  unresolved=49501  err=0
+[Q28] progress: scanned=55000/60557  ledger=499  final=0  unresolved=54501  err=0
+[Q28] progress: scanned=60000/60557  ledger=499  final=0  unresolved=59501  err=0
+
+── Q28 SUMMARY ──────────────────────────────────────────
+{
+  "scanned": 60557,
+  "settled_from_ledger": 499,
+  "settled_from_final": 0,
+  "unresolved_no_actual": 60058,
+  "unresolved_no_market": 0,
+  "errors": 0,
+  "cutoff_utc": "2026-09-02T14:44:05.355825Z",
+  "started_at": "2026-09-02T20:44:05.355825+00:00",
+  "matched": 60557,
+  "finished_at": "2026-09-02T20:44:54.346862+00:00"
+}

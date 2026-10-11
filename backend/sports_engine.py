@@ -1905,6 +1905,68 @@ def _consensus_market(game: dict, market_key: str) -> list:
     return out
 
 
+# ─── Preferred-book selection — reuse existing Perklocks policy ────
+# IMPORTANT: this is NOT a new policy.  The ``_PREFERRED_BOOKS`` tuple
+# is the SAME one that already governs:
+#   * ``/app/backend/soccer/real_odds.py::_PREFERRED_BOOKS``
+#   * ``/app/backend/tennis_extra/real_odds.py::_PREFERRED_BOOKS``
+# We extend it to game-market (ML / totals) builders in sports_engine
+# so MLB/CFB/NFL/NHL/NBA pull a REAL per-book quote (not a median) and
+# the resulting pick carries honest ``bookmaker`` + ``odds_source``
+# provenance.  The ordering comment in the Soccer source captures the
+# original user mandate verbatim ("FanDuel first because the US-based
+# user that asked for this feature uses FanDuel").
+#
+# We import at module load from the Soccer source so there is ONE
+# source-of-truth.  If the Soccer import fails for any reason
+# (packaging / circular-import edge case) we fall through to an
+# identical literal copy — never a different ordering, never a
+# different set.  A unit test (`test_preferred_books_single_source_
+# of_truth`) asserts the two tuples are byte-equal.
+try:
+    from soccer.real_odds import _PREFERRED_BOOKS as _PREFERRED_BOOKS
+except Exception:                                       # pragma: no cover
+    _PREFERRED_BOOKS = (
+        "fanduel", "draftkings", "betmgm", "caesars", "pointsbet",
+    )
+
+
+def _select_preferred_book_market(
+    game: dict, market_key: str,
+) -> tuple[Optional[dict], Optional[str]]:
+    """Return ``(market_dict, bookmaker_key)`` for the FIRST preferred
+    sportsbook that carries ``market_key`` on this event, else
+    ``(None, None)``.
+
+    Walks ``game['bookmakers']`` in strict ``_PREFERRED_BOOKS`` order,
+    using whichever books The Odds API returned for this event.  The
+    returned market dict is intact — the caller selects atomic
+    outcomes (home/away, Over/Under) from the SAME book at the SAME
+    line.  No per-outcome shuffling across books; no median; no
+    reconstruction.
+    """
+    bookmakers = game.get("bookmakers") or []
+    by_key = {b.get("key"): b for b in bookmakers if isinstance(b, dict)}
+    for pref_key in _PREFERRED_BOOKS:
+        b = by_key.get(pref_key)
+        if not b:
+            continue
+        for m in (b.get("markets") or []):
+            if m.get("key") == market_key:
+                return m, pref_key
+    return None, None
+
+
+def _price_from_outcome(outcome: Optional[dict]) -> Optional[int]:
+    """Safely coerce ``outcome['price']`` to int, else None."""
+    if not outcome:
+        return None
+    p = outcome.get("price")
+    if not isinstance(p, (int, float)):
+        return None
+    return int(p)
+
+
 def _build_pick(*, sport, league, event, event_time, market, pick_side,
                 model_win_prob, book_odds, lock, factors, insights, external_id,
                 is_alt_prop: bool = False, is_long_shot: bool = False,
@@ -2446,10 +2508,29 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
 
     picks: list[dict] = []
 
-    # Moneyline + (for soccer) Draw & Win-or-Draw via 3-way h2h.
-    home_ml = _median_price(h2h_outs, home)
-    away_ml = _median_price(h2h_outs, away)
-    draw_ml = _median_price(h2h_outs, "Draw")  # only present in soccer 3-way
+    # ─── 2026-10-03 SYNTHETIC_BOOK_ODDS fix — PROVENANCE-REQUIRED ─────
+    # Moneyline (+ Soccer Draw/Win-or-Draw) selection now uses the
+    # EXISTING Perklocks preferred-book policy (``_PREFERRED_BOOKS``)
+    # rather than ``_median_price``.  Atomic single-book selection: we
+    # pick ONE preferred sportsbook that quoted the h2h market on this
+    # event and read home/away/(draw) prices from the SAME book, so
+    # devig math stays internally consistent.  Fail-closed when no
+    # preferred book is on the slate.  The old ``h2h_outs`` list is
+    # kept populated above for any downstream helper that may consume
+    # it, but the ML prices now carry real per-book provenance.
+    _h2h_market, _ml_book = _select_preferred_book_market(game, "h2h")
+    if _h2h_market is None:
+        home_ml = None
+        away_ml = None
+        draw_ml = None
+    else:
+        _h2h_outs_book = _h2h_market.get("outcomes") or []
+        def _h2h_price(name):
+            o = next((x for x in _h2h_outs_book if x.get("name") == name), None)
+            return _price_from_outcome(o)
+        home_ml = _h2h_price(home)
+        away_ml = _h2h_price(away)
+        draw_ml = _h2h_price("Draw")  # only present in soccer 3-way
 
     if home_ml is not None and away_ml is not None:
         home_implied = _implied_prob(home_ml)
@@ -3075,6 +3156,19 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 insights=_insights_for(sport, breakdown, side, home, away),
                 external_id=f"{sport}-{game_id}-ml",
                 opposing_prices=_opp_ml_prices,
+                # 2026-10-03 SYNTHETIC_BOOK_ODDS fix — PROVENANCE-REQUIRED.
+                # ``side_ml`` now traces to ``_select_preferred_book_market(
+                # game, "h2h")`` — atomic single-book selection via the
+                # existing Perklocks ``_PREFERRED_BOOKS`` policy.  Stamp
+                # the exact bookmaker and the ``the_odds_api`` provider
+                # label on the published pick.  When no preferred book
+                # quoted the h2h market, ``_ml_book`` is None and we omit
+                # provenance so ``_build_pick`` fail-closes via its
+                # internal "no odds_source + non-null book_odds" guard.
+                # (In that no-book case ``side_ml`` is also None, so
+                # ``no_real_book_line=True`` is set instead.)
+                odds_source=("the_odds_api" if _ml_book else None),
+                bookmaker=_ml_book,
             )
             if ml_pick and dd_ml_result:
                 ml_pick["data_driven_used"] = True
@@ -3518,12 +3612,27 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
     # retired) — they resolve to MODEL_UNAVAILABLE until a UFC model
     # is wired.
     if totals_outs:
-        over = next((o for o in totals_outs if o.get("name") == "Over"), None)
-        under = next((o for o in totals_outs if o.get("name") == "Under"), None)
+        # ─── 2026-10-03 SYNTHETIC_BOOK_ODDS fix — PROVENANCE-REQUIRED ─
+        # Totals selection now uses the EXISTING Perklocks preferred-
+        # book policy — identical pattern to the ML path above.  Pick
+        # ONE preferred sportsbook that quoted the ``totals`` market
+        # on this event and read Over + Under from the SAME book at
+        # the SAME line.  Fail-closed when no preferred book is on
+        # the slate.  Prior behaviour (median over flattened
+        # ``totals_outs``) is retired because the derived price could
+        # not be stamped with real sportsbook provenance.
+        _totals_market, _tot_book = _select_preferred_book_market(game, "totals")
+        if _totals_market is not None:
+            _tot_outs_book = _totals_market.get("outcomes") or []
+            over = next((o for o in _tot_outs_book if o.get("name") == "Over"), None)
+            under = next((o for o in _tot_outs_book if o.get("name") == "Under"), None)
+        else:
+            over = under = None
+            _tot_book = None
         if over and under and over.get("point") == under.get("point"):
             line = over.get("point")
-            o_price = _median_price(totals_outs, "Over")
-            u_price = _median_price(totals_outs, "Under")
+            o_price = _price_from_outcome(over)
+            u_price = _price_from_outcome(under)
 
             # Score both sides. For MLB, use the DATA-DRIVEN model
             # (weather / park HR / pitcher Stuff+ / team scoring)
@@ -3967,6 +4076,16 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                             # PHASE 2A — exact same line, opposite side
                             opposing_prices=[u_price if best["side"] == "Over"
                                              else o_price],
+                            # 2026-10-03 SYNTHETIC_BOOK_ODDS fix — PROVENANCE-REQUIRED.
+                            # ``best['price']`` is ``o_price``/``u_price`` which
+                            # were set from ``_select_preferred_book_market(
+                            # game, "totals")`` above — atomic single-book
+                            # Over/Under at the SAME line via the existing
+                            # Perklocks ``_PREFERRED_BOOKS`` policy.  Stamp
+                            # the exact bookmaker and ``the_odds_api``.
+                            # Fail-closed when ``_tot_book`` is None.
+                            odds_source=("the_odds_api" if _tot_book else None),
+                            bookmaker=_tot_book,
                         )
                         if total_pick:
                             if best["side"] == "Under":

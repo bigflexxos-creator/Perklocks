@@ -1,0 +1,10 @@
+[auth] POST *.emergent.host/api/auth/login (admin creds in-memory, not logged)
+[auth] login OK   role=admin   jwt_len=244
+[preflight] GET /api/admin/data-authority/status
+[preflight] env_flags = {"BACKGROUND_WORKERS_ENABLED": false, "CANONICAL_FALLBACK_MODE": true, "CANONICAL_IMPORT_ENABLED": true, "CANONICAL_WRITE_ENABLED": false, "DATA_AUTHORITY": "preview", "USE_CANONICAL_DB": false}
+[preflight] active_db_name = bet-edge-ai-1-lockscore_db
+[preflight] legacy_fp  = b48e071d8e447c23
+[preflight] canon_fp   = 22c91d3b03626bc4
+[preflight] ✓ all required env flags in expected state
+
+==================== PHASE 5 — IMPORT 21 COLLECTIONS ====================
