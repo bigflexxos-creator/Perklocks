@@ -53,9 +53,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      CHKP_DIR:          /tmp/perklocks-checkpoints
-      P8_CHECKPOINT_TAR: /tmp/perklocks-checkpoints/phase5_20261003_190628Z.tar.gz
-      P8_REPORT_PATH:    /tmp/perklocks-logs/phase8_only_report.json
+      CHKP_DIR:             /tmp/perklocks-checkpoints
+      P8_CHECKPOINT_TAR:    /tmp/perklocks-checkpoints/phase5_20261003_190628Z.tar.gz
+      P8_CHECKPOINT_TAR_P6: /tmp/perklocks-checkpoints/phase6_20261003_192150Z.tar.gz
+      P8_REPORT_PATH:       /tmp/perklocks-logs/phase8_only_report.json
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -106,6 +107,43 @@ jobs:
           echo "actual sha:     ${ACTUAL_SHA}"
           if [ "${ACTUAL_SHA}" != "${EXPECTED_SHA}" ]; then
             echo "::error::phase5 tarball SHA mismatch — aborting Phase-8 cert"
+            exit 1
+          fi
+
+      # ── Pinned Phase-6 overlay — required to re-derive EXPECTED for
+      # the three repaired collections (player_game_actuals,
+      # player_game_logs, soccer_matches) using the operator-approved
+      # P5-valid ∪ P6-valid merge contract.  The other 18 collections
+      # continue to use the P5-only derivation.
+      - name: Download + verify phase6 checkpoint
+        uses: ./.github/actions/perklocks-checkpoint-download
+        with:
+          phase:             phase6
+          preview_base_url:  ${{ secrets.PREVIEW_BASE_URL }}
+          download_token:    ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+          checkpoint_dir:    ${{ env.CHKP_DIR }}
+          fallback_filename: phase6_20261003_192150Z.tar.gz
+          fallback_bytes:    "1606247"
+          fallback_sha:      327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22
+          max_attempts:      "10"
+          curl_max_time_seconds: "900"
+
+      - name: Preflight — verify pinned Phase-6 SHA at expected path
+        env:
+          EXPECTED_SHA: 327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22
+        run: |
+          set -euo pipefail
+          TAR="${P8_CHECKPOINT_TAR_P6}"
+          if [ ! -f "${TAR}" ]; then
+            echo "::error::pinned Phase-6 tarball missing at ${TAR}"
+            exit 1
+          fi
+          ACTUAL_SHA=$(sha256sum "${TAR}" | awk '{print $1}')
+          echo "pinned tarball: ${TAR}"
+          echo "expected sha:   ${EXPECTED_SHA}"
+          echo "actual sha:     ${ACTUAL_SHA}"
+          if [ "${ACTUAL_SHA}" != "${EXPECTED_SHA}" ]; then
+            echo "::error::phase6 tarball SHA mismatch — aborting Phase-8 cert"
             exit 1
           fi
           echo "phase5 tarball SHA verified: ${ACTUAL_SHA}"

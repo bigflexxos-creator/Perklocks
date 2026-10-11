@@ -68,7 +68,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, Optional
 
 
 # ─── Pinned constants (do NOT change at runtime) ────────────────────
@@ -78,6 +78,27 @@ PINNED_SHA256:      str   = ("4adc99890885e7b712adfd491124c2ef68"
                              "1715996167d19719ddb04f8eb1e9d7")
 DEFAULT_CHKP_PATH:  str   = (f"/app/reconcile_workspace/checkpoints/"
                               f"{PINNED_TARBALL}")
+
+# Phase-6 overlay tarball — required to re-derive the EXPECTED payload
+# for the three repaired collections (player_game_actuals,
+# player_game_logs, soccer_matches) using the operator-approved
+# P5-valid ∪ P6-valid merge contract. The 18 untouched collections
+# continue to use the P5-only ``_audit_sources`` logic.
+PINNED_P6_TARBALL:  str   = "phase6_20261003_192150Z.tar.gz"
+PINNED_P6_SHA256:   str   = ("327a38903daf3bd910ab50b68f69415cfc"
+                              "f181624655b42fb791af43042b6c22")
+DEFAULT_P6_PATH:    str   = (f"/app/reconcile_workspace/checkpoints/"
+                              f"{PINNED_P6_TARBALL}")
+
+# Collections whose EXPECTED is derived from the merged P5+P6 contract.
+# Mirrors reconcile_workspace/scripts/r3_phase8_repair_3_collections.py
+# TARGET_COLLECTIONS. Everything else keeps the certified P5-only
+# expectation logic that already PASSes for 19/21 collections.
+REPAIRED_COLLECTIONS: tuple[str, ...] = (
+    "player_game_actuals",
+    "player_game_logs",
+    "soccer_matches",
+)
 
 # Byte-identical to resume_r3_no_reset.py:RECONCILED_21.
 RECONCILED_21: tuple[str, ...] = (
@@ -183,20 +204,32 @@ def _sha256_of(path: pathlib.Path, chunk: int = 1 << 20) -> str:
 
 # ─── Source-audit logic — PRESERVED verbatim from resume_r3_no_reset ─
 # resume_r3_no_reset._audit_sources covers Phase-5 AND Phase-6
-# tarballs.  For this Phase-8-only wrapper we use ONLY the pinned
-# Phase-5 tarball (per the directive); the loop below is identical
-# in math and selection order, just with the Phase-6 branch removed.
-def _audit_sources(tar_path: pathlib.Path) -> dict[str, dict]:
+# tarballs.  For this Phase-8-only wrapper the P5-only pass is used
+# UNCHANGED for the 18 untouched collections.  The three operator-
+# repaired collections (player_game_actuals, player_game_logs,
+# soccer_matches) have their EXPECTED re-derived from the approved
+# P5-valid ∪ P6-valid merge contract — see ``_merged_expected_for``
+# below.  This is strictly certification-side; no Mongo write
+# occurs anywhere in this driver.
+def _audit_sources(tar_path: pathlib.Path,
+                    p6_tar_path: Optional[pathlib.Path] = None,
+                    ) -> dict[str, dict]:
     """Parse the pinned Phase-5 tarball and emit the exact expected-
     counts payload the certification endpoint will compare against.
 
-    Returns a mapping ``{collection: {source_rows, unique_logical_
-    identities, excluded_rows, quarantined_rows,
-    null_logical_key_rows, expected_canonical_rows}}``.
-    ``expected_canonical_rows`` is the logical-key-unique count —
-    i.e. the row count the dedupe-collapsed canonical collection is
-    expected to hold.  This is the intended comparison for the 11
-    dedup-collapsed collections (per Support).
+    For the 18 untouched collections, the P5-only logic is preserved
+    byte-identical to the original ``resume_r3_no_reset._audit_sources``.
+
+    For the three repaired collections, ``expected_canonical_rows``
+    is re-derived from the operator-approved ``valid-P5 ∪ valid-P6
+    (P6-wins)`` merge contract — the EXACT same filter the targeted
+    repair uses (``r3_phase8_repair_3_collections.build_merged``), so
+    certification cannot drift from the Production write path.
+
+    Returns a mapping ``{collection: {source_rows,
+    unique_logical_identities, excluded_rows, quarantined_rows,
+    null_logical_key_rows, expected_canonical_rows,
+    expected_derivation}}``.
     """
     tmp_root = pathlib.Path(os.environ.get("RECONCILE_TMP")
                              or tempfile.gettempdir())
@@ -205,14 +238,21 @@ def _audit_sources(tar_path: pathlib.Path) -> dict[str, dict]:
         shutil.rmtree(tmp)
     tmp.mkdir(parents=True, exist_ok=True)
 
-    with tarfile.open(tar_path) as tf:
-        for m in tf.getmembers():
-            if (m.isfile()
-                    and "/canonical/" in m.name
-                    and m.name.endswith(".ndjson")):
-                tf.extract(m, path=tmp)
+    def _extract(tar: pathlib.Path, phase_dir: str) -> None:
+        prefix = f"{phase_dir}/canonical/"
+        with tarfile.open(tar) as tf:
+            for m in tf.getmembers():
+                if (m.isfile()
+                        and prefix in m.name
+                        and m.name.endswith(".ndjson")):
+                    tf.extract(m, path=tmp)
+
+    _extract(tar_path, "v2_phase5")
+    if p6_tar_path is not None and p6_tar_path.exists():
+        _extract(p6_tar_path, "v2_phase6")
 
     p5 = tmp / "v2_phase5" / "canonical"
+    p6 = tmp / "v2_phase6" / "canonical"
     expected: dict[str, dict] = {}
     for coll in RECONCILED_21:
         p5f = p5 / f"{coll}.ndjson"
@@ -220,7 +260,7 @@ def _audit_sources(tar_path: pathlib.Path) -> dict[str, dict]:
             continue
         keys = LOGICAL_KEYS[coll]
         total = excluded = quarantined = null_lk = 0
-        seen: set[tuple] = set()
+        p5_seen: set[tuple] = set()
         with open(p5f) as f:
             for ln in f:
                 try:
@@ -239,14 +279,54 @@ def _audit_sources(tar_path: pathlib.Path) -> dict[str, dict]:
                 if any(v is None for v in lk):
                     null_lk += 1
                     continue
-                seen.add(lk)
+                p5_seen.add(lk)
+
+        # Default: P5-only expectation (unchanged for 18 collections).
+        expected_count = len(p5_seen)
+        derivation = "p5_only"
+        p6_overrides = 0
+        p6_new       = 0
+        p6_null_lk   = 0
+
+        # Repaired-collection branch: merge valid P6 overlay in.
+        if coll in REPAIRED_COLLECTIONS and p6_tar_path is not None:
+            p6f = p6 / f"{coll}.ndjson"
+            if p6f.exists():
+                merged_set = set(p5_seen)
+                with open(p6f) as f:
+                    for ln in f:
+                        try:
+                            r = json.loads(ln)
+                        except Exception:
+                            continue
+                        d = r.get("doc", r)
+                        if d.get("excluded_from_canonical_runtime") is True:
+                            continue
+                        if d.get("status") == "UNRESOLVED_IMMUTABLE_CONFLICT":
+                            continue
+                        lk = tuple(d.get(f) for f in keys)
+                        if any(v is None for v in lk):
+                            p6_null_lk += 1
+                            continue
+                        if lk in merged_set:
+                            p6_overrides += 1
+                        else:
+                            p6_new += 1
+                        merged_set.add(lk)      # P6 wins (set membership)
+                expected_count = len(merged_set)
+                derivation = "p5_valid_union_p6_valid_p6_wins"
+
         expected[coll] = {
-            "source_rows":               total,
-            "unique_logical_identities": len(seen),
-            "excluded_rows":             excluded,
-            "quarantined_rows":          quarantined,
-            "null_logical_key_rows":     null_lk,
-            "expected_canonical_rows":   len(seen),
+            "source_rows":                total,
+            "unique_logical_identities":  len(p5_seen),
+            "excluded_rows":              excluded,
+            "quarantined_rows":           quarantined,
+            "null_logical_key_rows":      null_lk,
+            "p6_overrides":               p6_overrides,
+            "p6_new_keys":                p6_new,
+            "p6_null_logical_key_rows":   p6_null_lk,
+            "expected_canonical_rows":    expected_count,
+            "expected_derivation":        derivation,
         }
     return expected
 
@@ -265,6 +345,8 @@ def main() -> int:
 
     tar_path = pathlib.Path(
         os.environ.get("P8_CHECKPOINT_TAR") or DEFAULT_CHKP_PATH)
+    p6_tar_path = pathlib.Path(
+        os.environ.get("P8_CHECKPOINT_TAR_P6") or DEFAULT_P6_PATH)
     report_path = pathlib.Path(
         os.environ.get("P8_REPORT_PATH")
         or "/app/reconcile_workspace/logs/phase8_only_report.json")
@@ -274,20 +356,32 @@ def main() -> int:
         print(f"ERROR: pinned Phase-5 tarball missing: {tar_path}",
               file=sys.stderr)
         return EXIT_TARBALL_MISSING
+    if not p6_tar_path.exists():
+        print(f"ERROR: pinned Phase-6 tarball missing: {p6_tar_path}",
+              file=sys.stderr)
+        return EXIT_TARBALL_MISSING
 
-    # ── FAIL-CLOSED CHECK 2: tarball SHA matches pinned constant ────
+    # ── FAIL-CLOSED CHECK 2: both SHAs match pinned constants ───────
     actual_sha = _sha256_of(tar_path)
-    print(f"[preflight] tarball        = {tar_path}")
-    print(f"[preflight] actual sha256  = {actual_sha}")
-    print(f"[preflight] pinned sha256  = {PINNED_SHA256}")
+    print(f"[preflight] P5 tarball     = {tar_path}")
+    print(f"[preflight] P5 actual sha  = {actual_sha}")
+    print(f"[preflight] P5 pinned sha  = {PINNED_SHA256}")
     if actual_sha != PINNED_SHA256:
         print("ERROR: pinned Phase-5 tarball SHA mismatch — aborting",
               file=sys.stderr)
         return EXIT_TARBALL_SHA_MISMATCH
+    actual_p6_sha = _sha256_of(p6_tar_path)
+    print(f"[preflight] P6 tarball     = {p6_tar_path}")
+    print(f"[preflight] P6 actual sha  = {actual_p6_sha}")
+    print(f"[preflight] P6 pinned sha  = {PINNED_P6_SHA256}")
+    if actual_p6_sha != PINNED_P6_SHA256:
+        print("ERROR: pinned Phase-6 tarball SHA mismatch — aborting",
+              file=sys.stderr)
+        return EXIT_TARBALL_SHA_MISMATCH
 
-    # ── Run the source audit ────────────────────────────────────────
-    print("[source-audit] parsing pinned Phase-5 NDJSONs …")
-    expected = _audit_sources(tar_path)
+    # ── Run the source audit (P5 for 18 colls, merged for 3 repaired) ─
+    print("[source-audit] parsing pinned Phase-5 + Phase-6 NDJSONs …")
+    expected = _audit_sources(tar_path, p6_tar_path)
     print(f"[source-audit] {len(expected)}/21 collections audited")
 
     # ── FAIL-CLOSED CHECK 3: expected payload is non-empty ──────────
@@ -314,17 +408,20 @@ def main() -> int:
         return EXIT_AUDIT_ZERO_COUNTS
 
     # ── Diagnostic dump of the audited counts ───────────────────────
-    print("\n[audit] Expected payload (summary — same math as "
-          "resume_r3_no_reset._audit_sources):")
-    print(f"{'collection':<30} {'src':>10} {'uniq_lk':>10} "
-          f"{'excl':>6} {'quar':>6} {'nulllk':>7}")
-    print("-" * 80)
+    print("\n[audit] Expected payload (18 collections = P5-only; 3 "
+          "repaired = valid-P5 ∪ valid-P6, P6-wins):")
+    print(f"{'collection':<30} {'src':>8} {'uniq_lk':>8} {'nulllk':>7} "
+          f"{'p6ovr':>6} {'p6new':>6} {'expected':>10}  derivation")
+    print("-" * 110)
     for coll in RECONCILED_21:
         e = expected[coll]
-        print(f"{coll:<30} {e['source_rows']:>10} "
-              f"{e['unique_logical_identities']:>10} "
-              f"{e['excluded_rows']:>6} {e['quarantined_rows']:>6} "
-              f"{e['null_logical_key_rows']:>7}")
+        print(f"{coll:<30} {e['source_rows']:>8} "
+              f"{e['unique_logical_identities']:>8} "
+              f"{e['null_logical_key_rows']:>7} "
+              f"{e.get('p6_overrides', 0):>6} "
+              f"{e.get('p6_new_keys', 0):>6} "
+              f"{e['expected_canonical_rows']:>10}  "
+              f"{e.get('expected_derivation', 'p5_only')}")
 
     # ── Login ───────────────────────────────────────────────────────
     print(f"\n[auth] POST {_redact_host(api_base)}/api/auth/login")
