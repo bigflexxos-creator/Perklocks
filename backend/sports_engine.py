@@ -2241,6 +2241,20 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
         # when we have NO real sportsbook price; canonical barrier
         # blocks these rows from the Locks board.
         **({"no_real_book_line": True} if _no_real_book_line else {}),
+        # 2026-10-03 SYNTHETIC_BOOK_ODDS fix — every ``price`` entering
+        # ``_build_pick`` originates from The Odds API bookmaker payload
+        # walk (``_consensus_market`` / ``_median_price`` / individual
+        # bookmaker ``price``).  When the final price survived cleaning
+        # (``final_odds is not None``), stamp the honest provenance so
+        # the canonical publication boundary classifies the row as
+        # REAL (``_REAL_ODDS_SOURCES``).  Omit the field entirely when
+        # ``book_odds`` is None — that path is already covered by
+        # ``no_real_book_line=True``.  Do NOT fabricate a bookmaker key
+        # here: ``price`` is often a median across books, so the
+        # single-bookmaker provenance would be dishonest.  Downstream
+        # producers that know the exact bookmaker (e.g. tennis real-
+        # odds branch) may stamp ``bookmaker`` themselves.
+        **({"odds_source": "the_odds_api"} if final_odds is not None else {}),
         "implied_probability": round(book_implied * 100, 1),
         "edge_percent": edge,
         # PHASE 2A — canonical-edge provenance (Part 8)
@@ -4182,7 +4196,17 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             for side_obj in (home_sp, away_sp):
                 side = side_obj.get("name")
                 line = side_obj.get("point")
-                price = int(side_obj.get("price")) if isinstance(side_obj.get("price"), (int, float)) else -110
+                # 2026-10-03 SYNTHETIC_BOOK_ODDS fix — do NOT fall back
+                # to a generic ``-110`` when the sportsbook has no price
+                # on this spread side.  Previously the loop fabricated a
+                # ``-110`` and that fake price flowed into ``book_odds``
+                # with no provenance → canonical boundary rejected the
+                # pick as SYNTHETIC_BOOK_ODDS and the Board blanked for
+                # that sport/game.  Fail-closed: skip the side.
+                _raw_price = side_obj.get("price")
+                if not isinstance(_raw_price, (int, float)):
+                    continue
+                price = int(_raw_price)
                 implied = _implied_prob(price)
                 # 2026-07-21 FINAL PHASE — deterministic book-anchored
                 # seed. Was `implied + 0.04 + rng.random() * 0.08` which

@@ -337,6 +337,17 @@ async def fetch_extra_tennis_picks(
             is_extra_flag       = False
             fair_only_flag      = False
             source_label        = "tennis_real_odds"
+            # 2026-10-03 SYNTHETIC_BOOK_ODDS fix — the real-odds branch
+            # pulls the price from ``lookup_real_odds_for_match`` which
+            # queries The Odds API's bookmaker payload.  Stamp the
+            # canonical ``odds_source`` so the publication boundary
+            # (_REAL_ODDS_SOURCES) classifies the row as REAL instead
+            # of SYNTHETIC.  Previously only ``source="tennis_real_odds"``
+            # was set (a different key the boundary does not read),
+            # causing real-odds tennis picks to be rejected when the
+            # ``bookmaker`` string did not happen to lowercase-match
+            # the small whitelist (``draftkings``/``fanduel``/...).
+            odds_source_final   = "the_odds_api"
             no_edge_model_flag  = False
             no_real_book_line   = False
             coverage_note       = f"Real book odds via {bookmaker_final}."
@@ -365,6 +376,14 @@ async def fetch_extra_tennis_picks(
             fair_only_flag      = is_model_pick
             source_label        = ("tennis_extra_model"
                                     if is_model_pick else "tennis_extra")
+            # 2026-10-03 — fallback branch has NO real sportsbook line,
+            # so we deliberately do NOT stamp a ``odds_source`` that
+            # would be mistaken for real provenance.  The pick is also
+            # ``no_real_book_line=True`` + ``book_odds=None``, which is
+            # the fail-closed MODEL_ONLY shape (contract 1b) the
+            # publication boundary already accepts, but the row is
+            # routed to Extended Coverage (``hide_from_main_board``).
+            odds_source_final   = None
             no_edge_model_flag  = not is_model_pick
             no_real_book_line   = True
             coverage_note       = (
@@ -453,6 +472,14 @@ async def fetch_extra_tennis_picks(
             "no_edge_model": no_edge_model_flag,
             "no_real_book_line": no_real_book_line,
             "bookmaker": bookmaker_final,
+            # 2026-10-03 SYNTHETIC_BOOK_ODDS fix — only stamp
+            # ``odds_source`` when we actually observed a real
+            # sportsbook price (``using_real=True`` branch above).
+            # Omit the key entirely for the fallback branch so the
+            # publication boundary classifies by ``no_real_book_line``
+            # instead of a misleading odds-provenance label.
+            **({"odds_source": odds_source_final}
+               if odds_source_final else {}),
             # ── P0.1 (2026-06) — mandatory timestamp contract ──────
             "created_at":        datetime.now(timezone.utc).isoformat(),
             "updated_at":        datetime.now(timezone.utc).isoformat(),
