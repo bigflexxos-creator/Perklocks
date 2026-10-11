@@ -1910,7 +1910,20 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
                 is_alt_prop: bool = False, is_long_shot: bool = False,
                 home_team_name: str | None = None,
                 away_team_name: str | None = None,
-                opposing_prices: list | None = None):
+                opposing_prices: list | None = None,
+                # 2026-10-03 PROVENANCE-REQUIRED stamping (SYNTHETIC_BOOK_ODDS
+                # root-cause fix).  ``_build_pick`` NEVER infers that a
+                # price is a real sportsbook observation from the mere
+                # presence of ``book_odds`` — the caller must positively
+                # pass ``odds_source``/``bookmaker`` when (and only when)
+                # the input is traceable to a direct book observation
+                # from The Odds API payload (e.g. a per-bookmaker outcome
+                # dict).  Median/consensus-reconstruction paths pass
+                # neither and fall through to the publication boundary's
+                # fail-closed SYNTHETIC_BOOK_ODDS rejection — the
+                # canonical contract.
+                odds_source: str | None = None,
+                bookmaker: str | None = None):
     # Filter out malformed prices outside realistic American odds range.
     # Alt prop picks are legitimately chalky but capped at -1000 max.
     # Long-shot picks (anytime goal scorer, etc.) can have huge plus prices.
@@ -2241,20 +2254,22 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
         # when we have NO real sportsbook price; canonical barrier
         # blocks these rows from the Locks board.
         **({"no_real_book_line": True} if _no_real_book_line else {}),
-        # 2026-10-03 SYNTHETIC_BOOK_ODDS fix — every ``price`` entering
-        # ``_build_pick`` originates from The Odds API bookmaker payload
-        # walk (``_consensus_market`` / ``_median_price`` / individual
-        # bookmaker ``price``).  When the final price survived cleaning
-        # (``final_odds is not None``), stamp the honest provenance so
-        # the canonical publication boundary classifies the row as
-        # REAL (``_REAL_ODDS_SOURCES``).  Omit the field entirely when
-        # ``book_odds`` is None — that path is already covered by
-        # ``no_real_book_line=True``.  Do NOT fabricate a bookmaker key
-        # here: ``price`` is often a median across books, so the
-        # single-bookmaker provenance would be dishonest.  Downstream
-        # producers that know the exact bookmaker (e.g. tennis real-
-        # odds branch) may stamp ``bookmaker`` themselves.
-        **({"odds_source": "the_odds_api"} if final_odds is not None else {}),
+        # 2026-10-03 SYNTHETIC_BOOK_ODDS fix — PROVENANCE-REQUIRED.
+        # Stamp ``odds_source``/``bookmaker`` ONLY when
+        #   (a) the caller positively passed explicit provenance
+        #       (``odds_source=...`` kwarg — i.e. the input is a direct
+        #       book observation from The Odds API payload), AND
+        #   (b) a real price survived cleaning (``final_odds is not
+        #       None`` — otherwise we have ``no_real_book_line=True``
+        #       and NOT a real sportsbook row).
+        # We never infer provenance from ``book_odds`` presence alone:
+        # median / consensus reconstructions pass ``odds_source=None``
+        # and are correctly fail-closed by the publication boundary as
+        # SYNTHETIC_BOOK_ODDS (user-approved behaviour).
+        **({"odds_source": odds_source}
+           if (odds_source and final_odds is not None) else {}),
+        **({"bookmaker": bookmaker}
+           if (bookmaker and final_odds is not None) else {}),
         "implied_probability": round(book_implied * 100, 1),
         "edge_percent": edge,
         # PHASE 2A — canonical-edge provenance (Part 8)
@@ -4454,6 +4469,17 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     # PHASE 2A — same spread line, opposite side
                     opposing_prices=[((away_sp if side == home else home_sp)
                                       or {}).get("price")],
+                    # 2026-10-03 SYNTHETIC_BOOK_ODDS fix — PROVENANCE-REQUIRED.
+                    # ``price`` traces to ``side_obj.get("price")`` where
+                    # ``side_obj`` is a per-bookmaker outcome dict returned
+                    # by ``_consensus_market(game, "spreads")`` which walks
+                    # ``game.get("bookmakers")[*].markets[*].outcomes[*]``
+                    # from The Odds API payload.  Each outcome is a direct
+                    # sportsbook observation (bookmaker key lost during
+                    # flattening — so we stamp only ``odds_source`` and
+                    # not ``bookmaker``, honouring the "where available"
+                    # qualifier of the provenance contract).
+                    odds_source="the_odds_api",
                 )
                 if _sp_pick and _nfl_plat_sp and _nfl_plat_sp.get("available"):
                     from services.platinum_nfl.game_runtime import (
@@ -6666,6 +6692,14 @@ def _build_tennis_alt_picks(
                     ],
                     external_id=f"Tennis-{event_id}-alt-spread-{side}-{line}",
                     is_alt_prop=True,
+                    # 2026-10-03 SYNTHETIC_BOOK_ODDS fix — PROVENANCE-REQUIRED.
+                    # ``price`` traces to ``pick_obj.get("price")`` where
+                    # ``pick_obj`` is a per-bookmaker outcome returned by
+                    # ``_pick_sweet_spot_alts(spread_outs, ...)`` filtering
+                    # over ``_alt_outcomes_for_market(alt_payload,
+                    # "alternate_spreads")`` which walks the Odds API alt
+                    # payload bookmakers.  Direct book observation.
+                    odds_source="the_odds_api",
                 ))
 
     # ── Alt totals (2026-06-30 user mandate — NO SYNTHETIC LINES) ──────
@@ -6795,6 +6829,14 @@ def _build_tennis_alt_picks(
                     ],
                     external_id=f"Tennis-{event_id}-alt-total-{side}-{line}{synth_tag}",
                     is_alt_prop=True,
+                    # 2026-10-03 SYNTHETIC_BOOK_ODDS fix — PROVENANCE-REQUIRED.
+                    # ``price`` traces to ``pick_obj.get("price")`` where
+                    # ``pick_obj`` is a per-bookmaker outcome from
+                    # ``_pick_sweet_spot_alts(total_outs, ...)`` filtering
+                    # over ``_alt_outcomes_for_market(alt_payload,
+                    # "alternate_totals")`` — The Odds API alt payload
+                    # bookmakers.  Direct book observation.
+                    odds_source="the_odds_api",
                 ))
 
     return [p for p in out_picks if p is not None]
@@ -7056,6 +7098,14 @@ def _build_mlb_alt_picks(
             external_id=f"MLB-{event_id}-altrunline-{team}-{point_f}",
             is_alt_prop=True,
             home_team_name=home, away_team_name=away,
+            # 2026-10-03 SYNTHETIC_BOOK_ODDS fix — PROVENANCE-REQUIRED.
+            # ``price`` traces to ``o.get("price")`` where ``o`` is a
+            # per-bookmaker outcome dict from
+            # ``_alt_outcomes_for_market(alt_payload, "alternate_spreads")``
+            # which walks ``alt_payload.get("bookmakers")[*].markets[*]
+            # .outcomes[*]`` from The Odds API event-level alt payload.
+            # Each outcome is a direct sportsbook observation.
+            odds_source="the_odds_api",
         )
         if pick:
             pick["is_alt"] = True
