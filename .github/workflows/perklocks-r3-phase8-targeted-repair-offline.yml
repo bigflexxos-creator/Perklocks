@@ -1,0 +1,189 @@
+name: Perklocks R3 Phase-8 Targeted Repair (OFFLINE direct-Mongo)
+
+# Operator-approved repair for the three canonical collections — see
+# `.github/workflows/perklocks-r3-phase8-targeted-repair.yml` for the
+# full merge contract.  This workflow is identical in intent but
+# connects directly to Production Mongo from the GH Actions runner
+# instead of posting through the Cloudflare-fronted deployed backend,
+# so the write path is not subject to Cloudflare / HTTP request
+# timeouts.  Idempotent: safe to re-run from batch 1 against the
+# partially-populated player_game_actuals already in Production.
+#
+# This workflow MUST NEVER call:
+#   * Phase 5 / 6 / 7 / dedupe / divergence-patch / create-indexes
+#   * canonical-import (deployed buggy pipeline)
+#   * reset / soft-reset / drop-collection / new session
+#   * any collection other than the three targets
+#
+# ─── REQUIRED NEW SECRETS (direct-Mongo variant) ────────────────────
+# Operator must add two secrets to the GitHub repository before
+# dispatching this workflow:
+#
+#   PROD_MONGO_URL          — mongodb+srv://… direct canonical URI
+#                             (same URI the deployed backend uses for
+#                              get_canonical_database() — i.e. the
+#                              value of MONGO_URL in the deploy env)
+#   PROD_CANONICAL_DB_NAME  — (optional) canonical database name
+#                             (defaults to "lockscore_canonical"
+#                              inside the driver)
+#
+# All other secrets (PREVIEW_BASE_URL, MIGRATION_DOWNLOAD_TOKEN) are
+# only used by the composite action that downloads the pinned
+# tarballs and are unchanged from previous R3 workflows.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'DRY_RUN (default, no writes) or APPLY'
+        required: true
+        default: 'DRY_RUN'
+        type: choice
+        options: [DRY_RUN, APPLY]
+      confirm_phrase:
+        description: 'For APPLY only — must equal APPLY_PERKLOCKS_R3_PHASE8_REPAIR_V1'
+        required: false
+        default: ''
+        type: string
+      start_collection:
+        description: 'Resume from this collection (leave blank to run all 3 in order)'
+        required: false
+        default: ''
+        type: choice
+        options: ['', 'player_game_actuals', 'player_game_logs', 'soccer_matches']
+      log_every:
+        description: 'Progress log cadence in rows (default 5000)'
+        required: false
+        default: '5000'
+        type: string
+      session_id:
+        description: 'R3 canonical cutover session ID (do NOT change)'
+        required: false
+        default: 'perklocks-cutover-20261003-r3'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group:  perklocks-r3-phase8-offline-repair
+  cancel-in-progress: false
+
+jobs:
+  repair-offline:
+    name: R3 Phase-8 offline repair (${{ inputs.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      CHKP_DIR:   /tmp/perklocks-checkpoints
+      P8R_CHKP_P5: /tmp/perklocks-checkpoints/phase5_20261003_190628Z.tar.gz
+      P8R_CHKP_P6: /tmp/perklocks-checkpoints/phase6_20261003_192150Z.tar.gz
+      P8R_REPORT_PATH: /tmp/perklocks-logs/phase8_repair_offline_report.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install direct-Mongo dependencies
+        run: |
+          python -m pip install --quiet 'motor>=3.3' 'pymongo>=4.6' 'dnspython>=2.4'
+
+      - name: Validate session_id input
+        env:
+          SID: ${{ inputs.session_id }}
+        run: |
+          if [ "$SID" != "perklocks-cutover-20261003-r3" ]; then
+            echo "::error::session_id must equal perklocks-cutover-20261003-r3 (got $SID)"
+            exit 1
+          fi
+
+      - name: Validate APPLY requires confirm phrase
+        if: ${{ inputs.mode == 'APPLY' }}
+        env:
+          CP: ${{ inputs.confirm_phrase }}
+        run: |
+          if [ "$CP" != "APPLY_PERKLOCKS_R3_PHASE8_REPAIR_V1" ]; then
+            echo "::error::APPLY mode requires confirm_phrase=APPLY_PERKLOCKS_R3_PHASE8_REPAIR_V1 (got '$CP')"
+            exit 1
+          fi
+
+      - name: Validate PROD_MONGO_URL is set
+        env:
+          MURL: ${{ secrets.PROD_MONGO_URL }}
+        run: |
+          if [ -z "$MURL" ]; then
+            echo "::error::GH secret PROD_MONGO_URL is not set — add it before dispatching."
+            exit 1
+          fi
+
+      - name: Download + verify phase5 checkpoint
+        uses: ./.github/actions/perklocks-checkpoint-download
+        with:
+          phase:             phase5
+          preview_base_url:  ${{ secrets.PREVIEW_BASE_URL }}
+          download_token:    ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+          checkpoint_dir:    ${{ env.CHKP_DIR }}
+          fallback_filename: phase5_20261003_190628Z.tar.gz
+          fallback_bytes:    "337143523"
+          fallback_sha:      4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
+          max_attempts:      "10"
+          curl_max_time_seconds: "1800"
+
+      - name: Download + verify phase6 checkpoint
+        uses: ./.github/actions/perklocks-checkpoint-download
+        with:
+          phase:             phase6
+          preview_base_url:  ${{ secrets.PREVIEW_BASE_URL }}
+          download_token:    ${{ secrets.MIGRATION_DOWNLOAD_TOKEN }}
+          checkpoint_dir:    ${{ env.CHKP_DIR }}
+          fallback_filename: phase6_20261003_192150Z.tar.gz
+          fallback_bytes:    "1606247"
+          fallback_sha:      327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22
+          max_attempts:      "10"
+          curl_max_time_seconds: "900"
+
+      - name: Preflight — belt+braces SHA re-verification
+        env:
+          P5_EXPECT: 4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
+          P6_EXPECT: 327a38903daf3bd910ab50b68f69415cfcf181624655b42fb791af43042b6c22
+        run: |
+          set -euo pipefail
+          for pair in "${P8R_CHKP_P5}:${P5_EXPECT}" "${P8R_CHKP_P6}:${P6_EXPECT}"; do
+            tar=${pair%:*}; exp=${pair#*:}
+            [ -f "$tar" ] || { echo "::error::missing $tar"; exit 1; }
+            act=$(sha256sum "$tar" | awk '{print $1}')
+            echo "$tar  sha=$act"
+            [ "$act" = "$exp" ] || { echo "::error::SHA mismatch for $tar (expected $exp)"; exit 1; }
+          done
+
+      - name: Run OFFLINE Phase-8 repair driver (${{ inputs.mode }})
+        env:
+          PROD_MONGO_URL:           ${{ secrets.PROD_MONGO_URL }}
+          PROD_CANONICAL_DB_NAME:   ${{ secrets.PROD_CANONICAL_DB_NAME }}
+          CANONICAL_IMPORT_SESSION: ${{ inputs.session_id }}
+          P8R_MODE:                 ${{ inputs.mode }}
+          P8R_CONFIRM_PHRASE:       ${{ inputs.confirm_phrase }}
+          P8R_START_COLLECTION:     ${{ inputs.start_collection }}
+          P8R_LOG_EVERY:            ${{ inputs.log_every }}
+          RECONCILE_TMP:            /tmp/perklocks-work
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "${P8R_REPORT_PATH}")"
+          mkdir -p "${RECONCILE_TMP}"
+          # Mask credentials in logs — belt + braces.
+          echo "::add-mask::${PROD_MONGO_URL}"
+          echo "::add-mask::${PROD_CANONICAL_DB_NAME}"
+          python reconcile_workspace/scripts/r3_phase8_repair_offline.py
+
+      - name: Upload Phase-8 offline repair report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name:        perklocks-r3-phase8-offline-repair-report-${{ inputs.mode }}
+          path:        /tmp/perklocks-logs/phase8_repair_offline_report.json
+          if-no-files-found: warn
+          retention-days: 30
