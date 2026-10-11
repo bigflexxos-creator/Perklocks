@@ -1,0 +1,11 @@
+[auth] POST *.emergent.host/api/auth/login
+[auth] OK role=admin
+[preflight] GET /api/admin/data-authority/status
+[preflight] env_flags OK = {"BACKGROUND_WORKERS_ENABLED": false, "CANONICAL_FALLBACK_MODE": true, "CANONICAL_IMPORT_ENABLED": true, "CANONICAL_WRITE_ENABLED": false, "DATA_AUTHORITY": "preview", "USE_CANONICAL_DB": false}
+[source-audit] parsing SHA-verified checkpoints …
+[source-audit] 21/21 collections audited
+
+==================== PHASE 4.5 — SKIPPED (NO RESET DIRECTIVE) ====================
+[phase4.5] skipped: preserving all 655 succeeded batches and current session bookkeeping
+
+==================== PHASE 5 — R3 IMPORT (RESUME, SAME SESSION) ====================

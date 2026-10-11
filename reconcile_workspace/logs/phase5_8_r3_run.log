@@ -1,0 +1,57 @@
+[auth] POST *.emergent.host/api/auth/login
+[auth] OK role=admin
+[preflight] GET /api/admin/data-authority/status
+[preflight] env_flags = {"BACKGROUND_WORKERS_ENABLED": false, "CANONICAL_FALLBACK_MODE": true, "CANONICAL_IMPORT_ENABLED": true, "CANONICAL_WRITE_ENABLED": false, "DATA_AUTHORITY": "preview", "USE_CANONICAL_DB": false}
+[preflight] all required flags OK
+[source-audit] parsing SHA-verified checkpoints …
+[source-audit] 21/21 collections audited
+  games                               src_rows=   17401  unique_lk=   17401  excluded=    0  quarantined=    0  null_lk=    0
+  historical_ingestion_state          src_rows=      20  unique_lk=      20  excluded=    0  quarantined=    0  null_lk=    0
+  nfl_ingest_meta                     src_rows=       1  unique_lk=       1  excluded=    0  quarantined=    0  null_lk=    0
+  nfl_player_weekly                   src_rows=  133077  unique_lk=  133077  excluded=    0  quarantined=    0  null_lk=    0
+  parlay_history                      src_rows=    2286  unique_lk=    2286  excluded=    0  quarantined=    0  null_lk=    0
+  picks                               src_rows=  325190  unique_lk=  325190  excluded=    0  quarantined=    0  null_lk=    0
+  player_game_actuals                 src_rows=    7353  unique_lk=    7353  excluded=    0  quarantined=    0  null_lk=    0
+  player_game_logs                    src_rows=   26569  unique_lk=   26569  excluded=    0  quarantined=    0  null_lk=    0
+  player_identities                   src_rows=   62985  unique_lk=   62985  excluded=    0  quarantined=    0  null_lk=    0
+  prediction_snapshots                src_rows=  232089  unique_lk=  232089  excluded=    0  quarantined=    0  null_lk=    0
+  pregame_snapshots                   src_rows=   13601  unique_lk=   13601  excluded=    0  quarantined=    0  null_lk=    0
+  publication_events                  src_rows=  157333  unique_lk=  157333  excluded=    0  quarantined=    0  null_lk=    0
+  rollover_slate_events               src_rows=      32  unique_lk=      32  excluded=    0  quarantined=    0  null_lk=    0
+  rollover_slates                     src_rows=      14  unique_lk=      14  excluded=    0  quarantined=    0  null_lk=    0
+  settlement_events                   src_rows=  497047  unique_lk=  496996  excluded=    0  quarantined=    0  null_lk=   51
+  soccer_matches                      src_rows=       2  unique_lk=       2  excluded=    0  quarantined=    0  null_lk=    0
+  soccer_player_game_logs             src_rows=  100025  unique_lk=  100025  excluded=    0  quarantined=    0  null_lk=    0
+  team_game_actuals                   src_rows=   60206  unique_lk=   60204  excluded=    0  quarantined=    0  null_lk=    2
+  tennis_matches_history              src_rows=   38380  unique_lk=   38379  excluded=    0  quarantined=    0  null_lk=    1
+  user_bets                           src_rows=      14  unique_lk=      10  excluded=    0  quarantined=    0  null_lk=    4
+  users                               src_rows=     242  unique_lk=     242  excluded=    0  quarantined=    0  null_lk=    0
+
+==================== PHASE 4.5 — SCOPED CANONICAL RESET ====================
+[reset] fallback_mode = True
+   games                               physical=canonical_games                                before=   7918  after=  0  dropped=True
+   historical_ingestion_state          physical=canonical_historical_ingestion_state           before=      0  after=  0  dropped=True
+   nfl_ingest_meta                     physical=canonical_nfl_ingest_meta                      before=      0  after=  0  dropped=True
+   nfl_player_weekly                   physical=canonical_nfl_player_weekly                    before=      0  after=  0  dropped=True
+   parlay_history                      physical=canonical_parlay_history                       before=      0  after=  0  dropped=True
+   picks                               physical=canonical_picks                                before=      0  after=  0  dropped=True
+   player_game_actuals                 physical=canonical_player_game_actuals                  before=      0  after=  0  dropped=True
+   player_game_logs                    physical=canonical_player_game_logs                     before=      0  after=  0  dropped=True
+   player_identities                   physical=canonical_player_identities                    before=      0  after=  0  dropped=True
+   prediction_snapshots                physical=canonical_prediction_snapshots                 before=      0  after=  0  dropped=True
+   pregame_snapshots                   physical=canonical_pregame_snapshots                    before=      0  after=  0  dropped=True
+   publication_events                  physical=canonical_publication_events                   before=      0  after=  0  dropped=True
+   rollover_slate_events               physical=canonical_rollover_slate_events                before=      0  after=  0  dropped=True
+   rollover_slates                     physical=canonical_rollover_slates                      before=      0  after=  0  dropped=True
+   settlement_events                   physical=canonical_settlement_events                    before=      0  after=  0  dropped=True
+   soccer_matches                      physical=canonical_soccer_matches                       before=      0  after=  0  dropped=True
+   soccer_player_game_logs             physical=canonical_soccer_player_game_logs              before=      0  after=  0  dropped=True
+   team_game_actuals                   physical=canonical_team_game_actuals                    before=      0  after=  0  dropped=True
+   tennis_matches_history              physical=canonical_tennis_matches_history               before=      0  after=  0  dropped=True
+   user_bets                           physical=canonical_user_bets                            before=      0  after=  0  dropped=True
+   users                               physical=canonical_users                                before=      0  after=  0  dropped=True
+[reset] bookkeeping_cleared = {'batches_deleted': 4, 'sessions_deleted': 1}
+
+==================== PHASE 5 — R3 IMPORT ====================
+[phase5] exit=1  log=/app/reconcile_workspace/logs/push_canonical_r3_1791088398.log
+STOP: push driver failed

@@ -1,0 +1,100 @@
+
+========================================================================
+[PREFLIGHT] Checking Phase 2 overlay state
+========================================================================
+  canonical: 21 NDJSONs
+  conflicts: 21 NDJSONs
+  review: 21 NDJSONs
+
+========================================================================
+[PHASE 2 reports] Rebuilding conflict_report.json
+========================================================================
+  wrote /app/reconcile_workspace/reconciliation_v2/conflict_report.json (105,958,870 bytes)
+  phase2 totals: {'SAFE': 8, 'CONFLICTS_RESOLVED': 6, 'REVIEW_REQUIRED': 6, 'ABORTED': 1}
+
+========================================================================
+[PHASE 3] rules R1..R7 (V2 — count assertions downgraded)
+========================================================================
+{
+  "applied": {
+    "R1": 49793,
+    "R2": 7200,
+    "R3a": 30029,
+    "R3b": 281,
+    "R4": 26568,
+    "R5": 2,
+    "R6": 1,
+    "R7": 1
+  },
+  "unresolved_total": 204,
+  "integrity_pass": true
+}
+  phase3 duration: 126.2s
+  phase3 resolved: 113875
+  phase3 unresolved: 204
+  phase3 integrity all_pass (V2): True
+
+========================================================================
+[CHECKPOINT] phase3
+========================================================================
+  compressing /opt/reconcile_tmp/v2_phase3 → /app/reconcile_workspace/checkpoints/phase3_20261003_190513Z.tar.gz
+  size: 338,098,934 bytes
+  sha:  c45b9f7db7a2a6a4b5dab0952567b1ee01201278a608a9cd43d81d7257317099
+
+========================================================================
+[PHASE 5] R8/R9/R10/R11 external authority closure (V2)
+========================================================================
+  phase5 FAILED: [Errno 2] No such file or directory: '/tmp/production_reconcile_input/games_part1.json'
+Traceback (most recent call last):
+  File "/app/reconcile_workspace/scripts/resume_v2_phase35.py", line 217, in run_phase5
+    rc = p5.main() if hasattr(p5, "main") else 0
+         ^^^^^^^^^
+  File "/app/backend/scripts/phase5_external_authority.py", line 477, in main
+    report = integrity_and_manifest(summary)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/backend/scripts/phase5_external_authority.py", line 398, in integrity_and_manifest
+    with open(p,"rb") as f:
+         ^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/tmp/production_reconcile_input/games_part1.json'
+
+========================================================================
+[CHECKPOINT] phase5
+========================================================================
+  compressing /opt/reconcile_tmp/v2_phase5 → /app/reconcile_workspace/checkpoints/phase5_20261003_190628Z.tar.gz
+  size: 337,143,523 bytes
+  sha:  4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7
+
+========================================================================
+[CLEANUP] purging overlay working trees (checkpoints persisted)
+========================================================================
+  purged: /opt/reconcile_tmp/v2_phase2
+  purged: /opt/reconcile_tmp/v2_phase3
+  purged: /opt/reconcile_tmp/v2_phase5
+
+========================================================================
+[V2 RECONCILIATION CHECKPOINT COMPLETE]
+========================================================================
+  Report: /app/reconcile_workspace/reconciliation_v2/v2_reconciliation_checkpoint_report.json
+  Overall: 245.2s
+
+────────────────────────────────────────────────────────────────────────
+{
+  "production_files_pass": 147,
+  "baseline_collections": 21,
+  "baseline_sha": "26cd67d0648ef62f495807c5303fdc1acafb28a3015e249718a7b47a3728d78b",
+  "baseline_total_documents": 1736907,
+  "post_run_free_app_mb": 522.1,
+  "identical": 542393,
+  "production_only": 796335,
+  "preview_only": 842514,
+  "deterministic_resolved": 113875,
+  "review_required": 64284,
+  "immutable_quarantined": 49795,
+  "remaining_unresolved": null,
+  "checkpoint_phase2": "/app/reconcile_workspace/checkpoints/phase2_20261003_182401Z.tar.gz",
+  "checkpoint_phase2_sha": "f75fc40f4a7fbd6486daed281cdbb453747693a0f5f78652402200fa84d213f0",
+  "checkpoint_phase3": "/app/reconcile_workspace/checkpoints/phase3_20261003_190513Z.tar.gz",
+  "checkpoint_phase3_sha": "c45b9f7db7a2a6a4b5dab0952567b1ee01201278a608a9cd43d81d7257317099",
+  "checkpoint_phase5": "/app/reconcile_workspace/checkpoints/phase5_20261003_190628Z.tar.gz",
+  "checkpoint_phase5_sha": "4adc99890885e7b712adfd491124c2ef681715996167d19719ddb04f8eb1e9d7"
+}

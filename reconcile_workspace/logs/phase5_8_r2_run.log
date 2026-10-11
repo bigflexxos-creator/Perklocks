@@ -1,0 +1,178 @@
+[auth] POST *.emergent.host/api/auth/login (admin creds in-memory, not logged)
+[auth] login OK   role=admin   jwt_len=244
+[preflight] GET /api/admin/data-authority/status
+[preflight] env_flags = {"BACKGROUND_WORKERS_ENABLED": false, "CANONICAL_FALLBACK_MODE": true, "CANONICAL_IMPORT_ENABLED": true, "CANONICAL_WRITE_ENABLED": false, "DATA_AUTHORITY": "preview", "USE_CANONICAL_DB": false}
+[preflight] active_db_name = bet-edge-ai-1-lockscore_db
+[preflight] legacy_fp  = d1e64dfb9387f400
+[preflight] canon_fp   = 0cc0de2b894262c6
+[preflight] ✓ all required env flags in expected state
+
+==================== PHASE 5 — IMPORT 21 COLLECTIONS ====================
+[phase5] push driver exit=0, log=/app/reconcile_workspace/logs/push_canonical_phase5_1791073087.log
+
+----- phase5 push driver tail -----
+      batch #35: accepted=2000 rejected=0 replay=True
+      batch #36: accepted=2000 rejected=0 replay=True
+      batch #37: accepted=2000 rejected=0 replay=True
+      batch #38: accepted=2000 rejected=0 replay=True
+      batch #39: accepted=2000 rejected=0 replay=True
+      batch #40: accepted=2000 rejected=0 replay=True
+      batch #41: accepted=2000 rejected=0 replay=True
+      batch #42: accepted=2000 rejected=0 replay=True
+      batch #43: accepted=2000 rejected=0 replay=True
+      batch #44: accepted=2000 rejected=0 replay=True
+      batch #45: accepted=2000 rejected=0 replay=True
+      batch #46: accepted=2000 rejected=0 replay=True
+      batch #47: accepted=2000 rejected=0 replay=True
+      batch #48: accepted=2000 rejected=0 replay=True
+      batch #49: accepted=2000 rejected=0 replay=True
+      batch #50: accepted=25 rejected=0 replay=False
+  → team_game_actuals: source=team_game_actuals.ndjson (size=39308625)
+      batch #0: accepted=2000 rejected=0 replay=False
+      batch #1: accepted=2000 rejected=0 replay=False
+      batch #2: accepted=2000 rejected=0 replay=True
+      batch #3: accepted=2000 rejected=0 replay=True
+      batch #4: accepted=2000 rejected=0 replay=True
+      batch #5: accepted=2000 rejected=0 replay=True
+      batch #6: accepted=2000 rejected=0 replay=True
+      batch #7: accepted=2000 rejected=0 replay=True
+      batch #8: accepted=2000 rejected=0 replay=True
+      batch #9: accepted=2000 rejected=0 replay=True
+      batch #10: accepted=2000 rejected=0 replay=True
+      batch #11: accepted=2000 rejected=0 replay=True
+      batch #12: accepted=2000 rejected=0 replay=True
+      batch #13: accepted=2000 rejected=0 replay=True
+      batch #14: accepted=2000 rejected=0 replay=True
+      batch #15: accepted=2000 rejected=0 replay=True
+      batch #16: accepted=2000 rejected=0 replay=True
+      batch #17: accepted=2000 rejected=0 replay=True
+      batch #18: accepted=2000 rejected=0 replay=True
+      batch #19: accepted=2000 rejected=0 replay=True
+      batch #20: accepted=2000 rejected=0 replay=True
+      batch #21: accepted=2000 rejected=0 replay=True
+      batch #22: accepted=2000 rejected=0 replay=True
+      batch #23: accepted=2000 rejected=0 replay=True
+      batch #24: accepted=2000 rejected=0 replay=True
+      batch #25: accepted=2000 rejected=0 replay=True
+      batch #26: accepted=2000 rejected=0 replay=True
+      batch #27: accepted=2000 rejected=0 replay=True
+      batch #28: accepted=2000 rejected=0 replay=True
+      batch #29: accepted=2000 rejected=0 replay=True
+      batch #30: accepted=206 rejected=2 replay=False
+  → tennis_matches_history: source=tennis_matches_history.ndjson (size=36343971)
+      batch #0: accepted=2000 rejected=0 replay=False
+      batch #1: accepted=2000 rejected=0 replay=False
+      batch #2: accepted=2000 rejected=0 replay=True
+      batch #3: accepted=2000 rejected=0 replay=True
+      batch #4: accepted=2000 rejected=0 replay=True
+      batch #5: accepted=2000 rejected=0 replay=True
+      batch #6: accepted=2000 rejected=0 replay=True
+      batch #7: accepted=2000 rejected=0 replay=True
+      batch #8: accepted=2000 rejected=0 replay=True
+      batch #9: accepted=2000 rejected=0 replay=True
+      batch #10: accepted=2000 rejected=0 replay=True
+      batch #11: accepted=2000 rejected=0 replay=True
+      batch #12: accepted=2000 rejected=0 replay=True
+      batch #13: accepted=2000 rejected=0 replay=True
+      batch #14: accepted=2000 rejected=0 replay=True
+      batch #15: accepted=2000 rejected=0 replay=True
+      batch #16: accepted=2000 rejected=0 replay=True
+      batch #17: accepted=2000 rejected=0 replay=True
+      batch #18: accepted=2000 rejected=0 replay=True
+      batch #19: accepted=380 rejected=1 replay=False
+  → user_bets: source=user_bets.ndjson (size=42369)
+      batch #0: accepted=14 rejected=4 replay=False
+  → users: source=users.ndjson (size=98424)
+      batch #0: accepted=242 rejected=0 replay=False
+[5/5] fetching session status …
+[+]  creating canonical indexes …
+     indexes all_ok = True
+[+]  requesting pre-cutover certification …
+     certification overall_pass = True
+
+Final report: /app/reconcile_workspace/logs/push_canonical_report_perklocks-cutover-20261003-r2.json
+----- /tail -----
+
+[phase5] session aggregated batches:
+   games                               batches=  9  accepted=  17401  rejected=    0
+   historical_ingestion_state          batches=  1  accepted=     20  rejected=    0
+   nfl_ingest_meta                     batches=  1  accepted=      1  rejected=    0
+   nfl_player_weekly                   batches= 67  accepted= 133077  rejected=    0
+   parlay_history                      batches=  2  accepted=   2286  rejected=    0
+   picks                               batches=163  accepted= 325190  rejected=    0
+   player_game_actuals                 batches=  4  accepted=   7353  rejected=    0
+   player_game_logs                    batches= 14  accepted=  26569  rejected=    0
+   player_identities                   batches= 32  accepted=  62985  rejected=    0
+   prediction_snapshots                batches=117  accepted= 232089  rejected=    0
+   pregame_snapshots                   batches=  7  accepted=  13601  rejected=    0
+   publication_events                  batches= 79  accepted= 157333  rejected=    0
+   rollover_slate_events               batches=  1  accepted=     32  rejected=    0
+   rollover_slates                     batches=  1  accepted=     14  rejected=    0
+   settlement_events                   batches=249  accepted= 497047  rejected=    0
+   soccer_matches                      batches=  1  accepted=      2  rejected=    0
+   soccer_player_game_logs             batches= 51  accepted= 100025  rejected=    0
+   team_game_actuals                   batches= 31  accepted=  60206  rejected=    0
+   tennis_matches_history              batches= 20  accepted=  38380  rejected=    0
+   user_bets                           batches=  1  accepted=     14  rejected=    0
+   users                               batches=  1  accepted=    242  rejected=    0
+[phase5] current canonical counts:
+   games                               count=12365
+   historical_ingestion_state          count=20
+   nfl_ingest_meta                     count=1
+   nfl_player_weekly                   count=40892
+   parlay_history                      count=2286
+   picks                               count=54116
+   player_game_actuals                 count=7353
+   player_game_logs                    count=19642
+   player_identities                   count=28893
+   prediction_snapshots                count=49771
+   pregame_snapshots                   count=10575
+   publication_events                  count=41265
+   rollover_slate_events               count=32
+   rollover_slates                     count=14
+   settlement_events                   count=77836
+   soccer_matches                      count=2
+   soccer_player_game_logs             count=29577
+   team_game_actuals                   count=23698
+   tennis_matches_history              count=20573
+   user_bets                           count=10
+   users                               count=242
+
+==================== PHASE 6 — COPY APPROVED LEGACY COLLECTIONS ====================
+[phase6] no approved out-of-scope collections supplied via PHASE6_APPROVED_COLLECTIONS; skipping (safe no-op)
+
+==================== PHASE 7 — CREATE CANONICAL INDEXES ====================
+[phase7] all_ok = True
+   ✓ games                               indexes=[]
+   ✓ historical_ingestion_state          indexes=[]
+   ✓ nfl_ingest_meta                     indexes=[]
+   ✓ nfl_player_weekly                   indexes=[]
+   ✓ parlay_history                      indexes=[]
+   ✓ picks                               indexes=[]
+   ✓ player_game_actuals                 indexes=[]
+   ✓ player_game_logs                    indexes=[]
+   ✓ player_identities                   indexes=[]
+   ✓ prediction_snapshots                indexes=[]
+   ✓ pregame_snapshots                   indexes=[]
+   ✓ publication_events                  indexes=[]
+   ✓ rollover_slate_events               indexes=[]
+   ✓ rollover_slates                     indexes=[]
+   ✓ settlement_events                   indexes=[]
+   ✓ soccer_matches                      indexes=[]
+   ✓ soccer_player_game_logs             indexes=[]
+   ✓ team_game_actuals                   indexes=[]
+   ✓ tennis_matches_history              indexes=[]
+   ✓ user_bets                           indexes=[]
+   ✓ users                               indexes=[]
+
+==================== PHASE 8 — PRE-CUTOVER CERTIFICATION ====================
+[phase8] overall_pass                  = True
+[phase8] duplicate_logical_identities  = 0
+[phase8] excluded/quarantined leaked   = 0
+[phase8] import_endpoint_disabled      = False
+[phase8] legacy_fp_before=d1e64dfb9387f400  legacy_fp_after=9e76fdf683eb02cf
+[phase8] legacy_intact                 = False
+
+[report] /app/reconcile_workspace/logs/phase5_8_report.json
+
+❌ SAFETY GATES FAILED: {'duplicates_zero': True, 'excluded_leaked_zero': True, 'legacy_intact': False, 'overall_pass': True, 'indexes_all_ok': True}

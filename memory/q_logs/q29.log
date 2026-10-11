@@ -1,0 +1,26 @@
+[Q29] scanning 120504 picks for lock-score drift…
+[Q29] progress: scanned=10000/120504  pure=591  pick-fix=0  snap-fix=9409  legacy=0  err=0
+[Q29] progress: scanned=20000/120504  pure=8102  pick-fix=351  snap-fix=11461  legacy=86  err=0
+[Q29] progress: scanned=30000/120504  pure=16981  pick-fix=1455  snap-fix=11461  legacy=103  err=0
+[Q29] progress: scanned=40000/120504  pure=26901  pick-fix=1456  snap-fix=11461  legacy=182  err=0
+[Q29] progress: scanned=50000/120504  pure=36571  pick-fix=1494  snap-fix=11539  legacy=396  err=0
+[Q29] progress: scanned=60000/120504  pure=46567  pick-fix=1494  snap-fix=11539  legacy=400  err=0
+[Q29] progress: scanned=70000/120504  pure=56431  pick-fix=1494  snap-fix=11634  legacy=441  err=0
+[Q29] progress: scanned=80000/120504  pure=66404  pick-fix=1494  snap-fix=11634  legacy=468  err=0
+[Q29] progress: scanned=90000/120504  pure=76370  pick-fix=1494  snap-fix=11634  legacy=502  err=0
+[Q29] progress: scanned=100000/120504  pure=86370  pick-fix=1494  snap-fix=11634  legacy=502  err=0
+[Q29] progress: scanned=110000/120504  pure=96365  pick-fix=1494  snap-fix=11634  legacy=507  err=0
+[Q29] progress: scanned=120000/120504  pure=106257  pick-fix=1494  snap-fix=11691  legacy=558  err=0
+[Q29] progress: scanned=120509/120504  pure=106724  pick-fix=1494  snap-fix=11730  legacy=561  err=0
+
+── Q29 SUMMARY ──────────────────────────────────────────
+{
+  "scanned": 120509,
+  "already_pure": 106724,
+  "repaired_from_pick_pub": 1494,
+  "repaired_from_snapshot": 11730,
+  "legacy_unreconstructable": 561,
+  "errors": 0,
+  "started_at": "2026-09-02T20:44:59.166313+00:00",
+  "finished_at": "2026-09-02T20:46:12.670912+00:00"
+}

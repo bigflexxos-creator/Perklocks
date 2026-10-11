@@ -1,0 +1,15 @@
+[1/5] inventorying Preview DB …
+      129 collections · 7,262,057 documents
+[2/5] mongodump --gzip → /app/reconcile_workspace/preview_baseline_v2/baseline_v2_20261003_180843Z/dump …
+mongodump: mongodump --uri ***redacted*** --db lockscore_db --gzip --out /app/reconcile_workspace/preview_baseline_v2/baseline_v2_20261003_180843Z/dump
+Traceback (most recent call last):
+  File "/app/reconcile_workspace/scripts/preview_baseline_v2_backup.py", line 151, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/app/reconcile_workspace/scripts/preview_baseline_v2_backup.py", line 61, in main
+    dump_log = _run_mongodump(dump_dir)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/app/backend/scripts/preview_full_backup.py", line 129, in _run_mongodump
+    raise RuntimeError(f"mongodump failed: {proc.stderr[-800:]}")
+RuntimeError: mongodump failed: 2026-10-03T18:09:29.907+0000	Failed: error dumping metadata: error creating directory for metadata file /app/reconcile_workspace/preview_baseline_v2/baseline_v2_20261003_180843Z/dump/lockscore_db: mkdir /app/reconcile_workspace/preview_baseline_v2/baseline_v2_20261003_180843Z/dump: no space left on device
+
