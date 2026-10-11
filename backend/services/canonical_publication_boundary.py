@@ -181,6 +181,15 @@ _REAL_ODDS_SOURCES: frozenset[str] = frozenset({
                   # sportsbook price).  When ESPN has no odds the
                   # producer MUST set odds_source to MODEL_ONLY or
                   # HFA_BASELINE and no_real_book_line=True instead.
+    # Soccer real-line scorer ingest (services.real_line_scorer_ingest)
+    # stamps odds_source="real_book_line" when a FanDuel/DraftKings
+    # price was observed via the live odds ingest.  The label is a
+    # verified real-sportsbook provenance tag — add it here so the
+    # boundary accepts the Soccer rows that satisfy real-line
+    # integrity.  2026-10-03 cutover support (SYNTHETIC_BOOK_ODDS
+    # root-cause fix: Soccer flicker was caused by this label being
+    # unrecognized).
+    "real_book_line",
 })
 
 # Producer-generated labels that DO NOT satisfy real-line integrity.
