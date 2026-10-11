@@ -228,3 +228,101 @@ def test_no_real_book_line_with_null_odds_is_published_model_only():
     verdict = evaluate_publication(pick)
     assert verdict.state == PublicationState.PUBLISHED, verdict.reasons
     assert verdict.meta.get("line_state") == "MODEL_ONLY"
+
+
+# ─────────────────── H. _build_pick provenance plumbing ────────────
+# Direct unit tests on ``sports_engine._build_pick`` prove that:
+#   (1) a call WITHOUT ``odds_source`` yields a pick that OMITS
+#       ``odds_source`` entirely (fail-closed at the boundary) — even
+#       when ``book_odds`` is real.
+#   (2) a call WITH ``odds_source='the_odds_api'`` stamps the field
+#       exactly when ``final_odds`` survived cleaning.
+#   (3) a call where ``book_odds`` was nulled by cleaning (``None``)
+#       NEVER carries ``odds_source`` even if the caller passed one —
+#       no_real_book_line=True is the only state stamped.
+def test_build_pick_without_odds_source_omits_field_and_is_rejected():
+    import sys, pathlib
+    sys.path.insert(0, str(pathlib.Path("/app/backend").resolve()))
+    from sports_engine import _build_pick
+
+    out = _build_pick(
+        sport="MLB", league="MLB", event="Yankees @ Red Sox",
+        event_time="2026-10-03T23:00:00Z",
+        market="Yankees Moneyline", pick_side="Yankees",
+        model_win_prob=0.58, book_odds=-140,
+        lock=90.0, factors={}, insights=[],
+        external_id="MLB-TEST-ML",
+        home_team_name="Red Sox", away_team_name="Yankees",
+    )
+    # odds_source MUST be absent — caller did not pass evidence.
+    assert "odds_source" not in out, out
+    assert out["book_odds"] == -140
+    assert out.get("no_real_book_line") is not True
+
+    # Now feed the row through the boundary — it must be REJECTED
+    # as SYNTHETIC_BOOK_ODDS because provenance is missing.
+    out.update({
+        "id": "MLB-TEST-ML",
+        "model_probability": 0.58,
+        "identity_class": "AUTHORITATIVE",
+    })
+    verdict = evaluate_publication(out)
+    assert verdict.state == PublicationState.REJECTED
+    assert RejectionReason.SYNTHETIC_BOOK_ODDS.value in verdict.reasons
+
+
+def test_build_pick_with_explicit_odds_source_stamps_and_is_published():
+    import sys, pathlib
+    sys.path.insert(0, str(pathlib.Path("/app/backend").resolve()))
+    from sports_engine import _build_pick
+
+    out = _build_pick(
+        sport="CFB", league="NCAAF", event="Alabama @ Georgia",
+        event_time="2026-10-03T23:00:00Z",
+        market="Alabama -6.5 Spread", pick_side="Alabama",
+        model_win_prob=0.62, book_odds=-110,
+        lock=90.0, factors={}, insights=[],
+        external_id="CFB-TEST-SP",
+        home_team_name="Georgia", away_team_name="Alabama",
+        odds_source="the_odds_api",
+    )
+    assert out.get("odds_source") == "the_odds_api"
+    assert out["book_odds"] == -110
+
+    out.update({
+        "id": "CFB-TEST-SP",
+        "market_family": "spread",
+        "model_probability": 0.62,
+        "identity_class": "AUTHORITATIVE",
+    })
+    verdict = evaluate_publication(out)
+    assert verdict.state == PublicationState.PUBLISHED, verdict.reasons
+    assert verdict.meta.get("line_state") == "REAL"
+
+
+def test_build_pick_nulled_price_never_carries_odds_source():
+    """When ``book_odds`` is nulled by sanity cleaning (e.g. absurd
+    chalk ``-5000``), the final pick MUST carry ``book_odds=None``
+    AND ``no_real_book_line=True`` AND NO ``odds_source`` key — even
+    if the caller passed ``odds_source='the_odds_api'``.  This proves
+    the clamping is honest: a real-provenance-tagged pick that fails
+    the sanity bound is NOT laundered as a real-line row.
+    """
+    import sys, pathlib
+    sys.path.insert(0, str(pathlib.Path("/app/backend").resolve()))
+    from sports_engine import _build_pick
+
+    out = _build_pick(
+        sport="MLB", league="MLB", event="A @ B",
+        event_time="2026-10-03T23:00:00Z",
+        market="A Moneyline", pick_side="A",
+        model_win_prob=0.90, book_odds=-5000,   # over -1000 → nulled
+        lock=90.0, factors={}, insights=[],
+        external_id="MLB-TEST-ML-ABSURD",
+        home_team_name="B", away_team_name="A",
+        odds_source="the_odds_api",             # provenance passed
+    )
+    # Even with provenance passed, nulled price → no odds_source stamp.
+    assert out["book_odds"] is None
+    assert out.get("no_real_book_line") is True
+    assert "odds_source" not in out, out
