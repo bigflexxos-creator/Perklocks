@@ -1717,8 +1717,22 @@ async def _refresh_picks(
     # under its own timeout.  One hung or failing sport can never block
     # another; every outcome is recorded in `refresh_health` for audit.
     if sport_filter is None:
+        # 2026-10-03 P0-B Block 1 — refresh parity.  Default sport
+        # list previously omitted NHL, so the generic ALL-sport
+        # refresh (triggered from health-recovery, cron ticks, and the
+        # ``_refresh_picks(today)`` orchestrator entry) never gave NHL
+        # a chance to produce picks even when NHL games were on the
+        # slate.  Add NHL back to the default.  NBA is deliberately
+        # EXCLUDED here — NBA families are currently
+        # ``MODEL_UNAVAILABLE`` in the Universal Market Contract (see
+        # ``services/universal_market_contract.py:311-365``); forcing
+        # NBA generation would just burn provider quota producing
+        # picks that are correctly rejected at the publication
+        # boundary.  NBA will be re-added once its families clear the
+        # P0-B Block 10 capability audit.
         sports = [s.strip() for s in os.environ.get(
-            "PERKLOCKS_REFRESH_SPORTS", "NFL,MLB,CFB,Soccer,Tennis").split(",") if s.strip()]
+            "PERKLOCKS_REFRESH_SPORTS",
+            "NFL,MLB,CFB,Soccer,Tennis,NHL").split(",") if s.strip()]
         per_sport_timeout = float(os.environ.get("PERKLOCKS_REFRESH_SPORT_TIMEOUT_SEC", "420"))
         # 2026-09-18 MLB PROP BOARD RECOVERY — the 420s cap was killing the
         # MLB cycle ~80s BEFORE its insert step (fetch ~150s + BvP ~165s +
