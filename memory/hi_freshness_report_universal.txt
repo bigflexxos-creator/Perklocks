@@ -1,0 +1,87 @@
+========================================================================
+HI FRESHNESS REPORT — Preview MongoDB
+MONGO_URL=mongodb://localhost:27017  DB_NAME=lockscore_db
+========================================================================
+ sport              status   lag_seconds         provider_latest_final         consumer_latest_final
+----------------------------------------------------------------------------------------------------
+   nfl       INGESTION_LAG             -     2026-09-22T00:00:00+00:00                             -
+   mlb    COVERAGE_LIMITED             -                             -                             -
+   nba    COVERAGE_LIMITED             -                             -                             -
+   nhl    COVERAGE_LIMITED             -                             -                             -
+soccer               STALE             -                             -  2026-08-25T07:53:19.576026+00:00
+tennis    COVERAGE_LIMITED             -                             -                             -
+   cfb    COVERAGE_LIMITED             -                             -                             -
+
+Full per-sport payload (JSON) ↓
+{
+  "nfl": {
+    "sport": "nfl",
+    "provider_latest_final": "2026-09-22T00:00:00+00:00",
+    "raw_ingestion_latest": "2026-09-22T00:00:00+00:00",
+    "consumer_store_latest": null,
+    "HI_visible_latest": null,
+    "lag_seconds": null,
+    "stale_threshold_hours": 36,
+    "status": "INGESTION_LAG"
+  },
+  "mlb": {
+    "sport": "mlb",
+    "provider_latest_final": null,
+    "raw_ingestion_latest": null,
+    "consumer_store_latest": null,
+    "HI_visible_latest": null,
+    "lag_seconds": null,
+    "stale_threshold_hours": 24,
+    "status": "COVERAGE_LIMITED"
+  },
+  "nba": {
+    "sport": "nba",
+    "provider_latest_final": null,
+    "raw_ingestion_latest": null,
+    "consumer_store_latest": null,
+    "HI_visible_latest": null,
+    "lag_seconds": null,
+    "stale_threshold_hours": 24,
+    "status": "COVERAGE_LIMITED"
+  },
+  "nhl": {
+    "sport": "nhl",
+    "provider_latest_final": null,
+    "raw_ingestion_latest": null,
+    "consumer_store_latest": null,
+    "HI_visible_latest": null,
+    "lag_seconds": null,
+    "stale_threshold_hours": 24,
+    "status": "COVERAGE_LIMITED"
+  },
+  "soccer": {
+    "sport": "soccer",
+    "provider_latest_final": null,
+    "raw_ingestion_latest": null,
+    "consumer_store_latest": "2026-08-25T07:53:19.576026+00:00",
+    "HI_visible_latest": "2026-08-25T07:53:19.576026+00:00",
+    "lag_seconds": null,
+    "stale_threshold_hours": 36,
+    "status": "STALE"
+  },
+  "tennis": {
+    "sport": "tennis",
+    "provider_latest_final": null,
+    "raw_ingestion_latest": null,
+    "consumer_store_latest": null,
+    "HI_visible_latest": null,
+    "lag_seconds": null,
+    "stale_threshold_hours": 36,
+    "status": "COVERAGE_LIMITED"
+  },
+  "cfb": {
+    "sport": "cfb",
+    "provider_latest_final": null,
+    "raw_ingestion_latest": null,
+    "consumer_store_latest": null,
+    "HI_visible_latest": null,
+    "lag_seconds": null,
+    "stale_threshold_hours": 48,
+    "status": "COVERAGE_LIMITED"
+  }
+}
