@@ -749,6 +749,31 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
             if ags_needs_refresh(_soccer_fresh):
                 logger.info("Soccer AGS family requires refresh: %s",
                             _soccer_fresh.get("goalscorer_anytime", {}))
+                # ── 2026-06 CHEAP WIRING: actually trigger AGS acquisition ──
+                # Score-or-Assist independence preserved — we only call
+                # the AGS-specific injector.  The existing injector is
+                # idempotent and fail-closed; a provider silence just
+                # means no new rows are written this cycle.
+                try:
+                    from services.soccer_prop_inject import run_once as _soccer_run_once
+                    _ags_result = await _soccer_run_once()
+                    globals()["_last_ags_refresh"] = {
+                        "triggered": True,
+                        "result": _ags_result if isinstance(_ags_result, dict) else {"ok": True},
+                    }
+                except (ImportError, AttributeError) as _agse:
+                    # Legacy injector may not expose a one-shot entry
+                    # point.  Fail-closed: freshness isolator still
+                    # reports the stale state so ops/telemetry sees it.
+                    globals()["_last_ags_refresh"] = {
+                        "triggered": False,
+                        "reason": f"injector_entrypoint_missing:{_agse}",
+                    }
+                except Exception as _ags_err:
+                    globals()["_last_ags_refresh"] = {
+                        "triggered": False,
+                        "reason": f"injector_error:{_ags_err}",
+                    }
         except Exception as _ags_err:
             logger.debug("Soccer AGS freshness wiring skipped: %s", _ags_err)
         logger.info(
@@ -1646,6 +1671,26 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
     # zero regression surface.  SYNTHETIC_BOOK_ODDS lineage is closed
     # at the producer layer rather than only at the canonical boundary.
     try:
+        # ── 2026-06 CHEAP WIRING: post-emission ObservedQuote attach ──
+        # Attach observed_quotes to MLB / NHL / Tennis picks ONCE per
+        # cycle using the cached per-event provider payload.  Then the
+        # universal lineage pass below upgrades book_odds/bookmaker.
+        try:
+            from services.observed_quote_attach_pass import (
+                attach_observed_quotes as _attach_oq,
+            )
+            _attach_summary: dict[str, dict] = {}
+            for _attach_sport in ("MLB", "NHL", "Tennis"):
+                try:
+                    _attach_summary[_attach_sport] = await _attach_oq(
+                        _classify_source, sport=_attach_sport)
+                except Exception as _ase:
+                    _attach_summary[_attach_sport] = {
+                        "sport": _attach_sport, "attached": 0,
+                        "reason": f"attach_error:{_ase}"}
+            globals()["_last_attach_summary"] = _attach_summary
+        except Exception as _oqe:
+            logger.debug("post-emission attach pass skipped: %s", _oqe)
         from services.prepublication_lineage_pass import (
             prepublication_lineage_pass as _lineage_pass,
         )
