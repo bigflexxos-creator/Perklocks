@@ -72,7 +72,7 @@ INTERNAL_TO_ODDSAPI_MARKET: dict[str, str] = {
     "alt passing yards":      "player_pass_yds_alternate",
     "rushing yards over":     "player_rush_yds_alternate",
     "alt rushing yards":      "player_rush_yds_alternate",
-    "receiving yards over":   "player_reception_alternate",
+    "receiving yards over":   "player_reception_yds_alternate",
     "anytime touchdown":      "player_anytime_td",
     "anytime td":             "player_anytime_td",
     # Tennis alt

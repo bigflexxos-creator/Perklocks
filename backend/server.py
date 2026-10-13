@@ -5015,6 +5015,20 @@ async def on_startup():
     except Exception as _atd_warm_err:
         logger.debug("ATD universe warm skipped: %s", _atd_warm_err)
 
+    # 2026-10-03 P0-B Layer B — seed known-invalid Odds API market
+    # keys as GLOBAL bad markers so even if a developer re-adds the
+    # typo somewhere Layer A missed, the registry filters it before
+    # the first request.  Fail-safe: never raises; Layer A + Layer C
+    # still cover the gap if seeding is unavailable.
+    try:
+        from services.odds_api_market_catalog import (
+            seed_known_invalid_markers,
+        )
+        asyncio.create_task(seed_known_invalid_markers(db))
+    except Exception as _seed_err:
+        logger.debug(
+            "odds_api_market_catalog seed skipped: %s", _seed_err)
+
     # PHASE E ROOT CLOSURE (2026-06) — register the live Soccer history
     # provider adapters against the universal history registry so
     # ``services.soccer_universal_history`` hydrates real multi-league

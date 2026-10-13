@@ -6144,6 +6144,23 @@ async def _fetch_event_props_payload(sport: str, sport_key: str, event_id: str) 
     if not markets:
         return {}
 
+    # ── 2026-10-03 P0-B Layer A — pre-flight catalogue validation ──
+    # Drop any market key not in the verified Odds API per-sport
+    # whitelist before any provider request.  This is additive to the
+    # existing event-scoped ``_isolate_and_merge_event_props`` 422
+    # bisector downstream — Layer A kills the typo pre-flight so no
+    # quota is burned; the bisector remains the last line of defense.
+    try:
+        from services.odds_api_market_catalog import validate_markets
+        markets, _unknown_dropped = validate_markets(
+            sport_key, markets,
+            caller="sports_engine._fetch_event_props_payload",
+        )
+        if not markets:
+            return {}
+    except Exception:
+        pass   # fail-open — the bisector still protects us.
+
     # ── MLB Prop Cache-First μ-closure (2026-06) ──────────────────
     # Before making a network request, check if we already retain
     # fresh REAL sportsbook rows for this event's MLB prop markets
