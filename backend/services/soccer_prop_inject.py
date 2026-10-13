@@ -186,6 +186,72 @@ async def _fetch_event_book_odds(sport_key: str, event_id: str
     return out
 
 
+async def _fetch_event_book_quotes(sport_key: str, event_id: str
+                                    ) -> dict[tuple[str, str], list[dict]]:
+    """Return {(provider_market_key, normalized_player): [observed_quotes]}.
+
+    Root-closure wiring (Blocks 1-4): preserve FULL per-bookmaker
+    lineage so the publication path can call ``harden_lineage`` and
+    attach an EXACT observed sportsbook quote (FanDuel → DK → BetMGM
+    → …).  Replaces the legacy median-only collapse that caused
+    SYNTHETIC_BOOK_ODDS rejections at the canonical boundary.
+    """
+    try:
+        from sports_engine import _fetch_event_props_payload
+        payload = await _fetch_event_props_payload(
+            "Soccer", sport_key, event_id)
+    except Exception as _e:
+        try:
+            logger.debug("event props fetch failed for %s/%s: %s",
+                         sport_key, event_id, _e)
+        except Exception:
+            pass
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    from collections import defaultdict
+    out: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    observed_at = (payload.get("last_update")
+                   or payload.get("commence_time")
+                   or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+    for bm in (payload.get("bookmakers") or []):
+        book_key = (bm.get("key") or bm.get("title") or "").lower()
+        if not book_key:
+            continue
+        for m in (bm.get("markets") or []):
+            mk = m.get("key") or ""
+            if mk not in _MARKET_ROUTE_TO_PROVIDER.values():
+                continue
+            for o in (m.get("outcomes") or []):
+                side = (o.get("name") or "").lower()
+                if side != "yes":
+                    if not o.get("description"):
+                        continue
+                raw_player = o.get("description") or o.get("name") or ""
+                if not raw_player or raw_player.lower() in ("yes", "no"):
+                    continue
+                try:
+                    price = int(o.get("price"))
+                except (TypeError, ValueError):
+                    continue
+                out[(mk, _norm(raw_player))].append({
+                    "sport": "soccer",
+                    "event_id": str(event_id),
+                    "provider_event_id": str(event_id),
+                    "provider_market_key": mk,
+                    "market_family": mk,
+                    "line": None,
+                    "side": "yes",
+                    "bookmaker": book_key,
+                    "price": price,
+                    "odds_source": "the_odds_api",
+                    "observed_at": observed_at,
+                    "player_name": raw_player,
+                })
+    return dict(out)
+
+
+
 async def _fetch_events(cx: httpx.AsyncClient, sport_key: str) -> list[dict]:
     key = os.getenv("THE_ODDS_API_KEY", "")
     if not key:
@@ -275,6 +341,13 @@ async def _generate_for_event(ev: dict, sport_key: str,
     # the median book price when the provider offers one.  Empty map
     # (provider silence) means we legitimately emit book_odds=None.
     _book_odds_lookup = await _fetch_event_book_odds(sport_key, event_id)
+    # ── 2026-06 ROOT-CLOSURE WIRING ─────────────────────────────────
+    # Fetch per-bookmaker observations (lineage preserved) so the
+    # publication path can call harden_lineage() and attach an EXACT
+    # observed sportsbook quote (FanDuel → DK → BetMGM → …).  Falls
+    # back to the median-only lookup above when no survivors remain —
+    # fail-closed semantics preserved.
+    _book_quotes_lookup = await _fetch_event_book_quotes(sport_key, event_id)
 
     async def _emit_for(entry: dict, opp: str, is_home: bool) -> list[dict]:
         from deps import db
@@ -341,14 +414,58 @@ async def _generate_for_event(ev: dict, sport_key: str,
             # ='MODEL_ONLY'.  Zero math changes, zero synthetic odds.
             provider_mk = _MARKET_ROUTE_TO_PROVIDER.get(route.market)
             _real_odds = None
+            _hardened: Optional[dict] = None
             if provider_mk:
+                # ── 2026-06 ROOT-CLOSURE WIRING ─────────────────────
+                # Try lineage-preserving selection first.  If a
+                # trusted-bookmaker observation survives the shared
+                # validator, we attach EXACT bookmaker + price (NOT a
+                # median) and tag odds_source="the_odds_api".  This
+                # closes the SYNTHETIC_BOOK_ODDS root at the producer
+                # layer rather than at the canonical boundary.
+                try:
+                    from services.quote_lineage_guard import harden_lineage
+                    _quotes = _book_quotes_lookup.get(
+                        (provider_mk, _norm(name))) or []
+                    if _quotes:
+                        _hardened = harden_lineage(
+                            _quotes,
+                            market_family=provider_mk,
+                            event_id=str(event_id),
+                            sport="soccer",
+                        )
+                except Exception as _hle:
+                    logger.debug("harden_lineage failed: %s", _hle)
+                    _hardened = None
+                # Fallback to legacy median lookup only if the
+                # lineage selector returned no survivors.
                 _real_odds = _book_odds_lookup.get(
                     (provider_mk, _norm(name)))
-            if _real_odds is not None:
+            if _hardened and not _hardened.get("no_real_book_line"):
+                book_odds = int(_hardened["book_odds"])
+                no_real_book_line_val = False
+                odds_status_val = "book_line"
+                odds_source_val = _hardened["odds_source"]
+                _bookmaker_val = _hardened["bookmaker"]
+                # Derive implied probability from the real book price.
+                try:
+                    _o = int(book_odds)
+                    if _o > 0:
+                        _book_implied = round(100.0 / (_o + 100.0), 4)
+                    else:
+                        _book_implied = round((-_o) / ((-_o) + 100.0), 4)
+                except (TypeError, ValueError):
+                    _book_implied = None
+                try:
+                    edge_val = round((p - float(_book_implied)) * 100, 2) if _book_implied is not None else None
+                except (TypeError, ValueError):
+                    edge_val = None
+            elif _real_odds is not None:
                 book_odds = int(_real_odds)
                 no_real_book_line_val = False
                 odds_status_val = "book_line"
                 odds_source_val = "provider_median"
+                _bookmaker_val = None
                 # Derive implied probability from the real book price.
                 try:
                     _o = int(book_odds)
@@ -368,6 +485,7 @@ async def _generate_for_event(ev: dict, sport_key: str,
                 no_real_book_line_val = True
                 odds_status_val = "no_book_line"
                 odds_source_val = "MODEL_ONLY"
+                _bookmaker_val = None
                 _book_implied = None
                 edge_val = None
 
@@ -432,6 +550,7 @@ async def _generate_for_event(ev: dict, sport_key: str,
                 "model_probability": p,
                 "win_probability": round(p * 100, 2),
                 "book_odds": book_odds,
+                "bookmaker": _bookmaker_val,
                 "no_real_book_line": no_real_book_line_val,
                 "book_implied_prob": _book_implied,
                 "lock_score": lock,
