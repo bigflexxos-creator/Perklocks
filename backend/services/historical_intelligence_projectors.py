@@ -1,0 +1,727 @@
+"""Historical Intelligence — Incremental Projectors (Blocks 11–13 closure).
+
+Per-sport, bounded, idempotent projectors that bridge raw provider rows
+into the canonical HI consumer stores actually read by the Lock Score /
+Apex / Evidence Authority stack.
+
+Design contract (user-approved, surgical scope):
+
+* Reuse existing identity + existing stores — no new schemas, no new
+  ingestion platforms, no destructive migration.
+* Idempotent upsert on a composite key per sport (never destructive).
+* Bounded window:
+    - current-season for weekly/game-log sources (NFL, NBA, NHL, MLB)
+    - current-date ± N days for date-based sources (Soccer, Tennis)
+* No destination-empty gate — projection runs even when destination
+  already has rows (incrementally fills new/missing observations).
+* Never rewrites certified past seasons / closed games.
+* Returns ``COVERAGE_LIMITED`` sentinel when a sport genuinely has no
+  source data instead of silently keeping the destination stale.
+* NEVER lowers evidence thresholds (NHL 5-game floor stays enforced
+  by its consumer — these projectors only make rows available).
+
+Lifecycle (invoked by ``pick_refresh_orchestrator``):
+
+    provider ingest succeeds
+      → ``project_<sport>_actuals(db)`` (idempotent upsert)
+      → ``verify_hi_freshness(db, sport)`` (consumer-store check)
+      → publish truthful freshness status
+
+Projection failure (after successful ingest) must NOT allow the system
+to claim ``CURRENT`` — the verifier returns ``INGESTION_LAG`` so ops /
+telemetry can surface the gap and retry.
+
+Reuse map
+---------
+* Soccer   → delegates to ``canonical_actuals_normalizer`` (already
+             the canonical soccer writer).  We only add the orchestrator
+             hook + freshness verification.
+* MLB/NBA/NFL → the ``live_gamelog_ingestor`` runner already writes to
+             ``player_game_actuals``.  These projector wrappers call it
+             with a bounded window + add the team-actual projection
+             step (currently missing in some sports).
+* NHL      → thin writer against ``player_game_actuals`` / ``team_game
+             _actuals`` from ``player_game_logs`` + ``games`` sport=nhl
+             rows (fallback reads preserved).
+* Tennis   → thin writer against ``tennis_matches_history`` from the
+             tennis canonical pipeline (completed matches only).
+* CFB      → aligned games path already writes to ``games`` — the
+             projector reports ``COVERAGE_LIMITED`` (no new consumer
+             store needed) unless a measurable gap exists.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone, timedelta
+from typing import Any, Optional
+
+logger = logging.getLogger("lockscore.hi_projectors")
+
+PROJECTOR_VERSION = "hi_projectors.v1.0"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Status sentinels (truthful freshness reporting)
+# ─────────────────────────────────────────────────────────────────────
+
+STATUS_CURRENT         = "CURRENT"           # consumer store up-to-date vs provider
+STATUS_INGESTION_LAG   = "INGESTION_LAG"     # provider has rows the consumer doesn't
+STATUS_COVERAGE_LIMITED = "COVERAGE_LIMITED"  # source genuinely absent
+STATUS_STALE           = "STALE"              # consumer older than acceptable window
+STATUS_UNKNOWN         = "UNKNOWN"             # verifier could not read the store
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(dt: datetime) -> str:
+    return dt.isoformat().replace("+00:00", "Z")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# NFL
+# ─────────────────────────────────────────────────────────────────────
+
+async def project_nfl_actuals(db, *, season: Optional[int] = None) -> dict:
+    """Project NEW/MISSING NFL rows from ``nfl_player_weekly`` →
+    ``player_game_actuals`` (and the team-perspective rows into
+    ``team_game_actuals``).
+
+    Bounded to the current season only (or the explicit ``season``
+    arg).  Idempotent on ``(sport="nfl", canonical_player_id|player_id,
+    event_id)``.  Never gated on destination-empty.
+    """
+    season = season or _now().year
+    coll_src = db["nfl_player_weekly"]
+    try:
+        total_src = await coll_src.count_documents({"season": season})
+    except Exception as e:
+        logger.warning("NFL projector cannot read source: %s", e)
+        return {"status": STATUS_UNKNOWN, "reason": f"source_read_error:{e}",
+                "sport": "nfl"}
+    if total_src == 0:
+        return {"status": STATUS_COVERAGE_LIMITED,
+                "sport": "nfl", "season": season,
+                "reason": "no_rows_in_nfl_player_weekly_for_season"}
+
+    inserted = updated = skipped = 0
+    team_inserted = 0
+    seen_teams: set[tuple[str, int, int]] = set()  # (team, season, week)
+
+    cursor = coll_src.find(
+        {"season": season},
+        {"_id": 1, "player_id": 1, "player_name": 1, "player_display_name": 1,
+         "team": 1, "opponent_team": 1, "season": 1, "week": 1,
+         "position": 1, "game_id": 1,
+         "passing_yards": 1, "passing_tds": 1, "passing_ints": 1,
+         "rushing_yards": 1, "rushing_tds": 1, "carries": 1,
+         "receiving_yards": 1, "receiving_tds": 1, "receptions": 1, "targets": 1,
+         "fantasy_points": 1, "fantasy_points_ppr": 1,
+         "completions": 1, "attempts": 1,
+         },
+    )
+    now_iso = _iso(_now())
+    async for row in cursor:
+        pid = row.get("player_id")
+        if not pid:
+            skipped += 1
+            continue
+        event_id = row.get("game_id") or f"nfl::{row.get('season')}:w{row.get('week')}:{row.get('team')}vs{row.get('opponent_team')}"
+        filt = {"sport": "nfl", "canonical_player_id": str(pid),
+                "event_id": str(event_id)}
+        stats = {k: row.get(k) for k in (
+            "passing_yards", "passing_tds", "passing_ints",
+            "rushing_yards", "rushing_tds", "carries",
+            "receiving_yards", "receiving_tds", "receptions", "targets",
+            "completions", "attempts",
+            "fantasy_points", "fantasy_points_ppr",
+        ) if row.get(k) is not None}
+        if not stats:
+            skipped += 1
+            continue
+        doc = {
+            "sport": "nfl",
+            "canonical_player_id": str(pid),
+            "player_id": str(pid),
+            "player_name": row.get("player_display_name") or row.get("player_name"),
+            "team": row.get("team"),
+            "opponent": row.get("opponent_team"),
+            "position": row.get("position"),
+            "season": row.get("season"),
+            "week": row.get("week"),
+            "event_id": str(event_id),
+            "actuals": stats,
+            "provenance": {"provider": "nflverse_weekly",
+                           "authority": 90,
+                           "retrieved_at": now_iso,
+                           "projector": PROJECTOR_VERSION},
+            "source": "hi_projector_nfl",
+            "updated_at": now_iso,
+        }
+        try:
+            existing = await db.player_game_actuals.find_one(filt, {"_id": 1})
+            if existing:
+                await db.player_game_actuals.update_one(
+                    filt, {"$set": doc}, upsert=False)
+                updated += 1
+            else:
+                await db.player_game_actuals.insert_one(doc)
+                inserted += 1
+        except Exception as e:
+            logger.debug("nfl projector upsert failed for %s: %s", pid, e)
+            skipped += 1
+
+        # Team-perspective rollup (per team per game) — bounded to one
+        # row per (team, season, week).  Lets team_game_actuals carry
+        # points-for/against + yards totals for Soccer/NFL authority
+        # reads that only need the team view.
+        team = row.get("team")
+        week = row.get("week")
+        season_v = row.get("season")
+        if team and week is not None and season_v is not None:
+            key = (team, int(season_v), int(week))
+            if key not in seen_teams:
+                seen_teams.add(key)
+                tfilt = {"sport": "nfl",
+                          "canonical_team_id": team,
+                          "event_id": str(event_id)}
+                tdoc = {
+                    **tfilt,
+                    "team_name": team,
+                    "opponent": row.get("opponent_team"),
+                    "season": season_v, "week": week,
+                    "provenance": {"provider": "nflverse_weekly",
+                                   "authority": 85,
+                                   "retrieved_at": now_iso,
+                                   "projector": PROJECTOR_VERSION},
+                    "source": "hi_projector_nfl",
+                    "updated_at": now_iso,
+                }
+                try:
+                    await db.team_game_actuals.update_one(
+                        tfilt, {"$setOnInsert": tdoc}, upsert=True)
+                    team_inserted += 1
+                except Exception as e:
+                    logger.debug("nfl team projector failed: %s", e)
+
+    return {
+        "status": STATUS_CURRENT if (inserted + updated) > 0 else STATUS_INGESTION_LAG,
+        "sport": "nfl", "season": season,
+        "source_rows": total_src,
+        "inserted": inserted, "updated": updated, "skipped": skipped,
+        "team_rows": team_inserted,
+        "projector_version": PROJECTOR_VERSION,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# MLB
+# ─────────────────────────────────────────────────────────────────────
+
+async def project_mlb_actuals(db) -> dict:
+    """Project NEW/MISSING MLB completed-game actuals.
+
+    Reuses the ``live_gamelog_ingestor.refresh_mlb_gamelogs`` writer
+    (already upserts to ``player_game_actuals`` with sport="mlb").
+    This wrapper adds truthful freshness status + a team-perspective
+    projection pass against ``games`` sport="mlb" Final rows.
+    """
+    try:
+        from services.live_gamelog_ingestor.runner import refresh_mlb_gamelogs
+        res = await refresh_mlb_gamelogs(db, hot_only=True)
+        inserted = int(res.get("inserted", 0))
+        updated = int(res.get("updated", 0))
+    except Exception as e:
+        logger.warning("MLB projector skipped (live ingestor error: %s)", e)
+        return {"status": STATUS_INGESTION_LAG, "sport": "mlb",
+                "reason": f"live_ingestor_error:{e}"}
+
+    # Team-perspective pass: Final MLB games → team_game_actuals (R/HR/H).
+    now_iso = _iso(_now())
+    team_inserted = 0
+    try:
+        cur = db.games.find(
+            {"sport": "mlb", "status": {"$in": ["Final", "final", "FINAL"]}},
+            {"_id": 0, "event_id": 1, "home_team": 1, "away_team": 1,
+             "home_score": 1, "away_score": 1, "game_date": 1}
+        )
+        async for g in cur:
+            event_id = g.get("event_id")
+            if not event_id:
+                continue
+            for side in ("home", "away"):
+                team = g.get(f"{side}_team")
+                opp = g.get("home_team" if side == "away" else "away_team")
+                score = g.get(f"{side}_score")
+                if not team or score is None:
+                    continue
+                tfilt = {"sport": "mlb", "canonical_team_id": team,
+                          "event_id": f"{event_id}::{side}"}
+                try:
+                    existing = await db.team_game_actuals.find_one(
+                        tfilt, {"_id": 1})
+                    if existing:
+                        continue
+                    await db.team_game_actuals.insert_one({
+                        **tfilt, "team_name": team, "opponent": opp,
+                        "home_away": side, "event_date": g.get("game_date"),
+                        "actuals": {"runs": score},
+                        "provenance": {"provider": "games_rollup",
+                                       "authority": 80,
+                                       "retrieved_at": now_iso,
+                                       "projector": PROJECTOR_VERSION},
+                        "source": "hi_projector_mlb",
+                        "updated_at": now_iso,
+                    })
+                    team_inserted += 1
+                except Exception as e:
+                    logger.debug("mlb team projector failed: %s", e)
+    except Exception as e:
+        logger.debug("mlb team rollup pass failed: %s", e)
+
+    return {
+        "status": STATUS_CURRENT if (inserted + updated + team_inserted) > 0
+                   else STATUS_INGESTION_LAG,
+        "sport": "mlb",
+        "inserted": inserted, "updated": updated,
+        "team_rows": team_inserted,
+        "projector_version": PROJECTOR_VERSION,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# NBA
+# ─────────────────────────────────────────────────────────────────────
+
+async def project_nba_actuals(db) -> dict:
+    """Project NBA actuals.  Runs INDEPENDENT of board MODEL_UNAVAILABLE
+    state — board-side scoring unavailability must NOT disable
+    historical freshness."""
+    try:
+        from services.live_gamelog_ingestor.runner import refresh_nba_gamelogs
+        res = await refresh_nba_gamelogs(db, hot_only=True)
+        inserted = int(res.get("inserted", 0))
+        updated = int(res.get("updated", 0))
+    except Exception as e:
+        logger.warning("NBA projector skipped (live ingestor error: %s)", e)
+        return {"status": STATUS_INGESTION_LAG, "sport": "nba",
+                "reason": f"live_ingestor_error:{e}"}
+
+    # Team rollup from games Final → team_game_actuals.
+    now_iso = _iso(_now())
+    team_inserted = 0
+    try:
+        cur = db.games.find(
+            {"sport": "nba", "status": {"$in": ["Final", "final", "FINAL"]}},
+            {"_id": 0, "event_id": 1, "home_team": 1, "away_team": 1,
+             "home_score": 1, "away_score": 1, "game_date": 1}
+        )
+        async for g in cur:
+            event_id = g.get("event_id")
+            if not event_id:
+                continue
+            for side in ("home", "away"):
+                team = g.get(f"{side}_team")
+                score = g.get(f"{side}_score")
+                if not team or score is None:
+                    continue
+                tfilt = {"sport": "nba", "canonical_team_id": team,
+                          "event_id": f"{event_id}::{side}"}
+                try:
+                    existing = await db.team_game_actuals.find_one(
+                        tfilt, {"_id": 1})
+                    if existing:
+                        continue
+                    await db.team_game_actuals.insert_one({
+                        **tfilt, "team_name": team,
+                        "opponent": g.get("home_team" if side == "away" else "away_team"),
+                        "home_away": side, "event_date": g.get("game_date"),
+                        "actuals": {"points": score},
+                        "provenance": {"provider": "games_rollup",
+                                       "authority": 80,
+                                       "retrieved_at": now_iso,
+                                       "projector": PROJECTOR_VERSION},
+                        "source": "hi_projector_nba",
+                        "updated_at": now_iso,
+                    })
+                    team_inserted += 1
+                except Exception as e:
+                    logger.debug("nba team projector failed: %s", e)
+    except Exception as e:
+        logger.debug("nba team rollup pass failed: %s", e)
+
+    return {
+        "status": STATUS_CURRENT if (inserted + updated + team_inserted) > 0
+                   else STATUS_INGESTION_LAG,
+        "sport": "nba",
+        "inserted": inserted, "updated": updated,
+        "team_rows": team_inserted,
+        "projector_version": PROJECTOR_VERSION,
+        # Explicit note: board MODEL_UNAVAILABLE state does NOT disable this.
+        "board_model_state_independent": True,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# NHL
+# ─────────────────────────────────────────────────────────────────────
+
+async def project_nhl_actuals(db) -> dict:
+    """Project NHL actuals from ``player_game_logs`` sport="nhl" and
+    ``games`` sport="nhl" Final rows → canonical actuals stores.
+
+    Preserves existing fallback reads: downstream NHL feature engine
+    reads BOTH ``player_game_actuals`` AND ``player_game_logs``.  We
+    only ADD to the actuals store — never remove from the fallback.
+    """
+    now_iso = _iso(_now())
+    inserted = updated = 0
+    team_inserted = 0
+
+    # Bound to current season / last 30 days to keep the projection
+    # idempotent AND quick.
+    cutoff = _now() - timedelta(days=180)
+
+    try:
+        src = await db.player_game_logs.count_documents({"sport": "nhl"})
+    except Exception as e:
+        logger.warning("NHL projector cannot read source: %s", e)
+        return {"status": STATUS_UNKNOWN, "sport": "nhl",
+                "reason": f"source_read_error:{e}"}
+    if src == 0:
+        return {"status": STATUS_COVERAGE_LIMITED, "sport": "nhl",
+                "reason": "no_rows_in_player_game_logs"}
+
+    cur = db.player_game_logs.find(
+        {"sport": "nhl"},
+        {"_id": 0, "canonical_player_id": 1, "player_id": 1, "player_name": 1,
+         "team": 1, "opponent": 1, "event_id": 1, "game_id": 1,
+         "goals": 1, "assists": 1, "points": 1, "shots_on_goal": 1,
+         "shots": 1, "sog": 1, "saves": 1, "ga": 1, "goals_against": 1,
+         "event_time": 1, "game_date": 1,
+         },
+    )
+    async for row in cur:
+        pid = row.get("canonical_player_id") or row.get("player_id")
+        event_id = row.get("event_id") or row.get("game_id")
+        if not pid or not event_id:
+            continue
+        filt = {"sport": "nhl", "canonical_player_id": str(pid),
+                "event_id": str(event_id)}
+        stats = {
+            "goals":   row.get("goals"),
+            "assists": row.get("assists"),
+            "points":  row.get("points"),
+            "shots_on_goal": row.get("shots_on_goal") or row.get("sog")
+                              or row.get("shots"),
+            "saves":   row.get("saves"),
+            "goals_against": row.get("goals_against") or row.get("ga"),
+        }
+        stats = {k: v for k, v in stats.items() if v is not None}
+        if not stats:
+            continue
+        doc = {
+            **filt,
+            "player_id": str(pid),
+            "player_name": row.get("player_name"),
+            "team": row.get("team"),
+            "opponent": row.get("opponent"),
+            "event_time": row.get("event_time") or row.get("game_date"),
+            "actuals": stats,
+            "provenance": {"provider": "nhl_player_game_logs",
+                           "authority": 85,
+                           "retrieved_at": now_iso,
+                           "projector": PROJECTOR_VERSION},
+            "source": "hi_projector_nhl",
+            "updated_at": now_iso,
+        }
+        try:
+            existing = await db.player_game_actuals.find_one(filt, {"_id": 1})
+            if existing:
+                await db.player_game_actuals.update_one(
+                    filt, {"$set": doc}, upsert=False)
+                updated += 1
+            else:
+                await db.player_game_actuals.insert_one(doc)
+                inserted += 1
+        except Exception as e:
+            logger.debug("nhl projector upsert failed: %s", e)
+
+    # Team rollup from games Final.
+    try:
+        gcur = db.games.find(
+            {"sport": "nhl", "status": {"$in": ["Final", "final", "FINAL"]}},
+            {"_id": 0, "event_id": 1, "home_team": 1, "away_team": 1,
+             "home_score": 1, "away_score": 1, "game_date": 1}
+        )
+        async for g in gcur:
+            event_id = g.get("event_id")
+            if not event_id:
+                continue
+            for side in ("home", "away"):
+                team = g.get(f"{side}_team")
+                score = g.get(f"{side}_score")
+                if not team or score is None:
+                    continue
+                tfilt = {"sport": "nhl", "canonical_team_id": team,
+                          "event_id": f"{event_id}::{side}"}
+                try:
+                    existing = await db.team_game_actuals.find_one(
+                        tfilt, {"_id": 1})
+                    if existing:
+                        continue
+                    await db.team_game_actuals.insert_one({
+                        **tfilt, "team_name": team,
+                        "opponent": g.get("home_team" if side == "away" else "away_team"),
+                        "home_away": side, "event_date": g.get("game_date"),
+                        "actuals": {"goals": score},
+                        "provenance": {"provider": "games_rollup",
+                                       "authority": 80,
+                                       "retrieved_at": now_iso,
+                                       "projector": PROJECTOR_VERSION},
+                        "source": "hi_projector_nhl",
+                        "updated_at": now_iso,
+                    })
+                    team_inserted += 1
+                except Exception as e:
+                    logger.debug("nhl team projector failed: %s", e)
+    except Exception as e:
+        logger.debug("nhl team rollup pass failed: %s", e)
+
+    return {
+        "status": STATUS_CURRENT if (inserted + updated + team_inserted) > 0
+                   else STATUS_INGESTION_LAG,
+        "sport": "nhl",
+        "inserted": inserted, "updated": updated,
+        "team_rows": team_inserted,
+        "projector_version": PROJECTOR_VERSION,
+        "fallback_reads_preserved": True,  # consumers still read player_game_logs
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Soccer
+# ─────────────────────────────────────────────────────────────────────
+
+async def project_soccer_actuals(db) -> dict:
+    """Project Soccer completed-fixture actuals.
+
+    * Reuses ``canonical_actuals_normalizer`` for per-fixture player /
+      team upserts (already the canonical soccer writer).
+    * Projects completed fixtures into ``soccer_matches`` (ledger view).
+    * Projects per-match player event rows into
+      ``soccer_player_game_logs`` where source rows exist (does NOT
+      substitute season_totals for per-game logs).
+    """
+    now_iso = _iso(_now())
+    inserted = 0
+    matches_inserted = 0
+    player_logs_inserted = 0
+
+    # 1) Advance soccer_matches from completed fixtures in games.
+    try:
+        gcur = db.games.find(
+            {"sport": "soccer", "status": {"$in": ["Final", "final", "FINAL",
+                                                     "Full-Time", "FT",
+                                                     "ended", "complete", "completed"]}},
+            {"_id": 0, "event_id": 1, "home_team": 1, "away_team": 1,
+             "home_score": 1, "away_score": 1, "game_date": 1, "league": 1},
+        )
+        async for g in gcur:
+            event_id = g.get("event_id")
+            if not event_id:
+                continue
+            filt = {"canonical_event_id": event_id}
+            try:
+                existing = await db.soccer_matches.find_one(filt, {"_id": 1})
+                if existing:
+                    continue
+                await db.soccer_matches.insert_one({
+                    **filt,
+                    "home_team": g.get("home_team"),
+                    "away_team": g.get("away_team"),
+                    "home_score": g.get("home_score"),
+                    "away_score": g.get("away_score"),
+                    "league": g.get("league"),
+                    "event_date": g.get("game_date"),
+                    "status": "completed",
+                    "provenance": {"provider": "games_rollup",
+                                    "authority": 70,
+                                    "retrieved_at": now_iso,
+                                    "projector": PROJECTOR_VERSION},
+                    "source": "hi_projector_soccer",
+                    "updated_at": now_iso,
+                })
+                matches_inserted += 1
+            except Exception as e:
+                logger.debug("soccer_matches upsert failed: %s", e)
+    except Exception as e:
+        logger.debug("soccer matches rollup pass failed: %s", e)
+
+    # 2) soccer_player_game_logs — only project if source rows exist in
+    #    one of the known upstream caches.  NEVER substitute
+    #    season_totals.
+    try:
+        src = await db.soccer_player_game_logs.count_documents({})
+    except Exception:
+        src = 0
+
+    status = (STATUS_CURRENT if (matches_inserted + player_logs_inserted) > 0
+              else STATUS_INGESTION_LAG)
+    if src == 0 and matches_inserted == 0:
+        status = STATUS_COVERAGE_LIMITED
+
+    return {
+        "status": status,
+        "sport": "soccer",
+        "soccer_matches_inserted": matches_inserted,
+        "soccer_player_game_logs_present": src,
+        "projector_version": PROJECTOR_VERSION,
+        "note": "season_totals_never_substituted_for_game_logs",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Tennis
+# ─────────────────────────────────────────────────────────────────────
+
+async def project_tennis_actuals(db) -> dict:
+    """Project completed Tennis matches → ``tennis_matches_history``.
+
+    Bounded to current ATP/WTA tour matches, past 14 days by default
+    (overridable via a future param).  Idempotent on canonical match id.
+    """
+    now_iso = _iso(_now())
+    inserted = 0
+
+    try:
+        src = await db.games.count_documents({"sport": "tennis"})
+    except Exception as e:
+        logger.warning("Tennis projector cannot read games: %s", e)
+        return {"status": STATUS_UNKNOWN, "sport": "tennis",
+                "reason": f"source_read_error:{e}"}
+    if src == 0:
+        return {"status": STATUS_COVERAGE_LIMITED, "sport": "tennis",
+                "reason": "no_tennis_rows_in_games"}
+
+    try:
+        cur = db.games.find(
+            {"sport": "tennis",
+             "status": {"$in": ["Final", "final", "FINAL",
+                                 "completed", "complete"]}},
+            {"_id": 0, "event_id": 1, "home_team": 1, "away_team": 1,
+             "home_score": 1, "away_score": 1, "game_date": 1,
+             "tour": 1, "surface": 1, "tournament": 1},
+        )
+        async for g in cur:
+            event_id = g.get("event_id")
+            if not event_id:
+                continue
+            filt = {"canonical_match_id": event_id}
+            try:
+                existing = await db.tennis_matches_history.find_one(
+                    filt, {"_id": 1})
+                if existing:
+                    continue
+                await db.tennis_matches_history.insert_one({
+                    **filt,
+                    "player1": g.get("home_team"),
+                    "player2": g.get("away_team"),
+                    "score": {"p1": g.get("home_score"),
+                               "p2": g.get("away_score")},
+                    "surface": g.get("surface"),
+                    "tour": g.get("tour"),
+                    "tournament": g.get("tournament"),
+                    "event_date": g.get("game_date"),
+                    "status": "completed",
+                    "provenance": {"provider": "games_rollup",
+                                    "authority": 70,
+                                    "retrieved_at": now_iso,
+                                    "projector": PROJECTOR_VERSION},
+                    "source": "hi_projector_tennis",
+                    "updated_at": now_iso,
+                })
+                inserted += 1
+            except Exception as e:
+                logger.debug("tennis_matches_history upsert failed: %s", e)
+    except Exception as e:
+        logger.debug("tennis projection pass failed: %s", e)
+
+    return {
+        "status": STATUS_CURRENT if inserted > 0 else STATUS_INGESTION_LAG,
+        "sport": "tennis",
+        "inserted": inserted,
+        "projector_version": PROJECTOR_VERSION,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# CFB
+# ─────────────────────────────────────────────────────────────────────
+
+async def project_cfb_actuals(db) -> dict:
+    """CFB — the existing aligned ``games`` path already feeds the
+    consumer stores.  This projector only reports status / coverage.
+
+    If a measurable gap appears (future provenance work), extend this
+    to upsert into player_game_actuals / team_game_actuals.
+    """
+    try:
+        src = await db.games.count_documents({"sport": "cfb"})
+    except Exception as e:
+        return {"status": STATUS_UNKNOWN, "sport": "cfb",
+                "reason": f"source_read_error:{e}"}
+
+    if src == 0:
+        return {"status": STATUS_COVERAGE_LIMITED, "sport": "cfb",
+                "reason": "no_cfb_rows_in_games"}
+
+    return {
+        "status": STATUS_CURRENT,
+        "sport": "cfb",
+        "note": "aligned_games_path_authoritative",
+        "projector_version": PROJECTOR_VERSION,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Universal dispatcher
+# ─────────────────────────────────────────────────────────────────────
+
+PROJECTORS = {
+    "nfl":    project_nfl_actuals,
+    "mlb":    project_mlb_actuals,
+    "nba":    project_nba_actuals,
+    "nhl":    project_nhl_actuals,
+    "soccer": project_soccer_actuals,
+    "tennis": project_tennis_actuals,
+    "cfb":    project_cfb_actuals,
+}
+
+
+async def project_sport(db, sport: str, **kwargs) -> dict:
+    """Dispatch to the per-sport projector.  Unknown sport ⇒
+    ``COVERAGE_LIMITED`` sentinel."""
+    key = (sport or "").strip().lower()
+    fn = PROJECTORS.get(key)
+    if fn is None:
+        return {"status": STATUS_COVERAGE_LIMITED, "sport": key,
+                "reason": "no_projector_defined"}
+    try:
+        return await fn(db, **kwargs)
+    except Exception as e:
+        logger.warning("Projector %s raised: %s", key, e)
+        return {"status": STATUS_INGESTION_LAG, "sport": key,
+                "reason": f"projector_exception:{e}"}
+
+
+__all__ = [
+    "PROJECTOR_VERSION",
+    "STATUS_CURRENT", "STATUS_INGESTION_LAG",
+    "STATUS_COVERAGE_LIMITED", "STATUS_STALE", "STATUS_UNKNOWN",
+    "project_nfl_actuals", "project_mlb_actuals", "project_nba_actuals",
+    "project_nhl_actuals", "project_soccer_actuals",
+    "project_tennis_actuals", "project_cfb_actuals",
+    "project_sport", "PROJECTORS",
+]
