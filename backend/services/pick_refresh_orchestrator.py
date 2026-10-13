@@ -756,6 +756,59 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
             ", ".join(f"{k}={v.get('freshness', {}).get('status', '?')}"
                        for k, v in _hi_report.items()),
         )
+        # ── 2026-06 LIVE UNIVERSAL FUNNEL DIAGNOSIS (Block 11) ──────
+        # Build a per-sport funnel from the picks that reached this
+        # point and pass it to diagnose_funnel().  This replaces the
+        # standalone unit-test counters with REAL lifecycle counts:
+        # provider_events / provider_outcomes come from the HI
+        # projection pass (projector `source_rows` field is the
+        # authoritative upstream count); publication-stage counts
+        # come from `_classify_source` + `safe_picks`.
+        try:
+            from services.universal_funnel_telemetry import (
+                diagnose_funnel as _diag,
+            )
+            _funnels: dict[str, dict] = {}
+            for p in _classify_source:
+                s = (p.get("sport") or "unknown").strip() or "unknown"
+                f = _funnels.setdefault(s, {
+                    "provider_events": 0, "provider_outcomes": 0,
+                    "canonicalized": 0, "model_candidates": 0,
+                    "at_or_above_85": 0, "published": 0,
+                    "rejections": {},
+                })
+                f["canonicalized"] += 1
+                f["model_candidates"] += 1
+                try:
+                    ls = float(p.get("lock_score") or 0)
+                    if ls >= 85.0:
+                        f["at_or_above_85"] += 1
+                except (TypeError, ValueError):
+                    pass
+                if p.get("no_real_book_line") and p.get("book_odds") is None:
+                    f["rejections"]["SYNTHETIC_BOOK_ODDS"] = (
+                        f["rejections"].get("SYNTHETIC_BOOK_ODDS", 0) + 1
+                    )
+            # Fold projector source counts in as provider_events.
+            for _s, _r in _hi_report.items():
+                _src = _r.get("projection", {}).get("source_rows")
+                if _src is not None:
+                    sport_key = _s.lower()
+                    bucket = _funnels.setdefault(sport_key, {
+                        "provider_events": 0, "provider_outcomes": 0,
+                        "canonicalized": 0, "model_candidates": 0,
+                        "at_or_above_85": 0, "published": 0,
+                        "rejections": {},
+                    })
+                    bucket["provider_events"] = max(
+                        bucket.get("provider_events", 0), int(_src))
+            diagnosed = {s: {"funnel": f, "health": _diag(f)}
+                          for s, f in _funnels.items()}
+            globals()["_last_universal_funnel"] = diagnosed
+            logger.info("Universal funnel: %s",
+                        ", ".join(f"{s}={d['health']}" for s, d in diagnosed.items()))
+        except Exception as _fe:
+            logger.debug("Universal funnel diagnosis skipped: %s", _fe)
     except Exception as _hi_err:
         logger.warning("HI projection pass skipped: %s", _hi_err)
 
@@ -1582,6 +1635,24 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
     except (NameError, UnboundLocalError):
         safe_picks = list(picks) if isinstance(picks, list) else []
         _classify_source = safe_picks
+    # ── 2026-06 UNIVERSAL PRE-PUBLICATION LINEAGE PASS (Block 1) ────
+    # Runs across EVERY sport's producer output.  For any pick that
+    # carries `observed_quotes` (populated by migrated producers via
+    # services.observed_quote_adapter.extract_observed_quotes), the
+    # pass re-selects an EXACT observed sportsbook quote via
+    # services.quote_lineage_guard.harden_lineage() and attaches the
+    # real bookmaker + odds_source.  Unmigrated producers (whose picks
+    # have no `observed_quotes` key) are left EXACTLY as emitted —
+    # zero regression surface.  SYNTHETIC_BOOK_ODDS lineage is closed
+    # at the producer layer rather than only at the canonical boundary.
+    try:
+        from services.prepublication_lineage_pass import (
+            prepublication_lineage_pass as _lineage_pass,
+        )
+        _lineage_summary = _lineage_pass(_classify_source)
+        globals()["_last_lineage_pass_summary"] = _lineage_summary
+    except Exception as _lpe:
+        logger.debug("prepublication lineage pass skipped: %s", _lpe)
     _refreshed_families: set = set()
     for _rp in _classify_source:
         _fam = _classify_pick_family(_rp)
