@@ -1,5 +1,26 @@
 # PRD — Perklocks Master Surgical Build
 
+## 2026-06 · MASTER SURGICAL FIX BUILD — BLOCKS 11-13 CLOSURE (local commit `c719afdf`, no push, no deploy)
+
+### What shipped
+* `services/historical_intelligence_projectors.py` — per-sport bounded, idempotent HI projectors for NFL, MLB, NBA, NHL, Soccer, Tennis, CFB. Writes to the actual consumer stores (`player_game_actuals`, `team_game_actuals`, `soccer_matches`, `soccer_player_game_logs`, `tennis_matches_history`). `project_nba_actuals` runs independent of board MODEL_UNAVAILABLE and advertises `board_model_state_independent=True`.
+* `services/hi_freshness_verifier.py` — measures the ACTUAL HI consumer-store freshness per sport; returns `provider_latest_final / consumer_store_latest / lag_seconds / status` with sentinels CURRENT | INGESTION_LAG | COVERAGE_LIMITED | STALE | UNKNOWN.
+* `services/pick_refresh_orchestrator.py` — hook: after each ingest, invokes the projectors then the verifier. Projector exceptions NEVER break publication; they downgrade status to INGESTION_LAG so ops/telemetry sees the gap.
+* `tests/test_apex_reachability_constant_model_probability.py` — proves Apex gating is evidence-driven: holds `independent_model_probability` constant across -500..+150; inverse control holds price constant and varies evidence.
+* `tests/test_full_evidence_bypass_real_path.py` — 6 required scenarios on the real contract path: elite@+150, elite@-110, elite@-500 (all Apex-reachable), weak@-500 (blocked), implied-only (rejected), full-evidence-stripped (legacy cap re-applies).
+* `tests/test_nba_universal_apex_reachability_harness.py` — enumerates every NBA family and asserts MODEL_UNAVAILABLE / NOT TESTABLE / NOT ELIGIBLE; 13 families, 4/4 tests pass.
+* `tests/run_hi_freshness_report.py` — produces the user-required HI freshness block against the real Preview MongoDB.
+* `memory/production_smoke_plan.md` — split PUBLIC/API vs INTERNAL/SUPPORT smoke plan with pre-cutover checklist.
+* `memory/hi_freshness_report.txt`, `memory/surgical_tests_output.txt` — captured run outputs.
+
+### Guardrails honored
+No Lock Score weight / 85+ threshold / NFL alt ladder / NHL 5-game floor / evidence-threshold changes. No NBA model activation. No Phase 7 / Phase 8 moves. No certified historical rewrites. No push. No deploy.
+
+### Verification
+`pytest tests/test_apex_reachability_constant_model_probability.py tests/test_full_evidence_bypass_real_path.py tests/test_nba_universal_apex_reachability_harness.py` → 12/12 pass. `python -m tests.run_hi_freshness_report` → produces per-sport canonical status against real Preview MongoDB.
+
+
+
 ## 2026-10-02 · DISTRIBUTED CANONICAL WORKER LEASE — PASS (code-only, no DB cutover)
 
 ### What shipped

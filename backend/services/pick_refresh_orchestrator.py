@@ -651,6 +651,65 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
         except Exception as e:
             logger.warning("Tennis Extra scrape skipped: %s", e)
 
+    # ── Blocks 11–13 · Historical Intelligence incremental projection ─
+    # After every sport-level ingest/refresh pass, run the bounded,
+    # idempotent HI projectors so the ACTUAL consumer stores
+    # (player_game_actuals, team_game_actuals, soccer_matches,
+    # soccer_player_game_logs, tennis_matches_history) advance in
+    # lockstep with raw provider rows.  A successful ingest alone is
+    # NEVER sufficient for a CURRENT claim — the freshness verifier
+    # measures each HI consumer collection and returns INGESTION_LAG /
+    # COVERAGE_LIMITED / CURRENT accordingly.
+    #
+    # Lifecycle:
+    #   ingest succeeds → bounded projector → consumer-store upsert →
+    #   freshness verification → truthful status emission.
+    #
+    # Failure handling: a projector exception does NOT propagate into
+    # the refresh pipeline (never breaks publication).  It downgrades
+    # the freshness status to INGESTION_LAG so ops/telemetry sees the
+    # gap — the system can never falsely claim CURRENT.
+    try:
+        from services.historical_intelligence_projectors import (
+            PROJECTORS as _HI_PROJECTORS, project_sport as _hi_project_sport,
+        )
+        from services.hi_freshness_verifier import (
+            verify_hi_freshness as _hi_verify,
+        )
+        _sports_to_project = (
+            [sport_filter.lower()] if sport_filter and sport_filter.lower() in _HI_PROJECTORS
+            else list(_HI_PROJECTORS.keys())
+        )
+        _hi_report: dict[str, dict] = {}
+        for _s in _sports_to_project:
+            try:
+                _proj_res = await _hi_project_sport(db, _s)
+            except Exception as _proj_err:
+                _proj_res = {
+                    "status": "INGESTION_LAG",
+                    "sport": _s,
+                    "reason": f"projector_exception:{_proj_err}",
+                }
+            try:
+                _fresh = await _hi_verify(db, _s)
+            except Exception as _ver_err:
+                _fresh = {"sport": _s, "status": "UNKNOWN",
+                          "reason": f"verifier_exception:{_ver_err}"}
+            _hi_report[_s] = {"projection": _proj_res, "freshness": _fresh}
+        # Stash on module-global stash so ops endpoints / tests can
+        # retrieve the last freshness report without re-running.
+        try:
+            globals().setdefault("_last_hi_projection_report", {}).update(_hi_report)
+        except Exception:
+            pass
+        logger.info(
+            "HI projection pass: %s",
+            ", ".join(f"{k}={v.get('freshness', {}).get('status', '?')}"
+                       for k, v in _hi_report.items()),
+        )
+    except Exception as _hi_err:
+        logger.warning("HI projection pass skipped: %s", _hi_err)
+
     if not picks:
         if sport_filter:
             logger.info(

@@ -1,0 +1,56 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.17, pytest-9.0.3, pluggy-1.6.0 -- /root/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /app/backend
+configfile: pytest.ini
+plugins: anyio-4.13.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 12 items
+
+tests/test_apex_reachability_constant_model_probability.py::test_apex_reachability_constant_independent_model_probability 
+=== APEX REACHABILITY MATRIX (constant model_prob=0.90) ===
+book_odds  implied  model_p  calib_p    uea  legacy_cap  eff_ceil    base   final    apex
+    +200    0.333    0.900    0.880   0.85       96.00    100.00    97.0   100.0     YES
+    +150    0.400    0.900    0.880   0.85       96.00    100.00    97.0   100.0     YES
+    +100    0.500    0.900    0.880   0.85       96.00    100.00    97.0   100.0     YES
+    -110    0.524    0.900    0.880   0.85       96.00    100.00    97.0   100.0     YES
+    -150    0.600    0.900    0.880   0.85       96.00    100.00    97.0   100.0     YES
+    -200    0.667    0.900    0.880   0.85       96.00    100.00    97.0   100.0     YES
+    -300    0.750    0.900    0.880   0.85       96.00    100.00    97.0   100.0     YES
+    -400    0.800    0.900    0.880   0.85       96.00    100.00    97.0   100.0     YES
+    -500    0.833    0.900    0.880   0.85       96.00    100.00    97.0   100.0     YES
+    -600    0.857    0.900    0.880   0.85       96.00    100.00    97.0   100.0     YES
+PASSED
+tests/test_apex_reachability_constant_model_probability.py::test_apex_inverse_control_price_constant_evidence_varies 
+=== INVERSE CONTROL (price=-500 constant) ===
+  weak evidence  → apex_eligible=False reason=magic_tier_not_aligned_strong:NEUTRAL
+  elite evidence → apex_eligible=True reason=None
+PASSED
+tests/test_full_evidence_bypass_real_path.py::test_1_3_elite_fixture_apex_reachable_across_odds[150] PASSED
+tests/test_full_evidence_bypass_real_path.py::test_1_3_elite_fixture_apex_reachable_across_odds[-110] PASSED
+tests/test_full_evidence_bypass_real_path.py::test_1_3_elite_fixture_apex_reachable_across_odds[-500] PASSED
+tests/test_full_evidence_bypass_real_path.py::test_4_weak_fixture_apex_blocked_at_minus_500 PASSED
+tests/test_full_evidence_bypass_real_path.py::test_5_sportsbook_implied_only_fixture_rejected PASSED
+tests/test_full_evidence_bypass_real_path.py::test_6_remove_full_evidence_legacy_cap_applies PASSED
+tests/test_nba_universal_apex_reachability_harness.py::test_universal_harness_nba_capability_is_model_unavailable PASSED
+tests/test_nba_universal_apex_reachability_harness.py::test_universal_harness_nba_starvation_reports_model_unavailable PASSED
+tests/test_nba_universal_apex_reachability_harness.py::test_universal_harness_nba_apex_report_is_not_testable 
+=== UNIVERSAL APEX HARNESS — NBA REPORT ===
+ sport                  family              capability                          report
+   NBA               moneyline       MODEL_UNAVAILABLE     NOT TESTABLE / NOT ELIGIBLE
+   NBA            point_spread       MODEL_UNAVAILABLE     NOT TESTABLE / NOT ELIGIBLE
+   NBA              game_total       MODEL_UNAVAILABLE     NOT TESTABLE / NOT ELIGIBLE
+   NBA              nba_points       MODEL_UNAVAILABLE     NOT TESTABLE / NOT ELIGIBLE
+   NBA            nba_rebounds       MODEL_UNAVAILABLE     NOT TESTABLE / NOT ELIGIBLE
+   NBA             nba_assists       MODEL_UNAVAILABLE     NOT TESTABLE / NOT ELIGIBLE
+   NBA              nba_threes       MODEL_UNAVAILABLE     NOT TESTABLE / NOT ELIGIBLE
+   NBA                 nba_pra       MODEL_UNAVAILABLE     NOT TESTABLE / NOT ELIGIBLE
+   NBA             nba_pts_reb       MODEL_UNAVAILABLE     NOT TESTABLE / NOT ELIGIBLE
+   NBA             nba_pts_ast       MODEL_UNAVAILABLE     NOT TESTABLE / NOT ELIGIBLE
+   NBA             nba_reb_ast       MODEL_UNAVAILABLE     NOT TESTABLE / NOT ELIGIBLE
+   NBA              nba_steals       MODEL_UNAVAILABLE     NOT TESTABLE / NOT ELIGIBLE
+   NBA              nba_blocks       MODEL_UNAVAILABLE     NOT TESTABLE / NOT ELIGIBLE
+PASSED
+tests/test_nba_universal_apex_reachability_harness.py::test_universal_harness_nba_historical_projection_independent PASSED
+
+============================== 12 passed in 0.11s ==============================
