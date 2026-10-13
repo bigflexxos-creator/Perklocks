@@ -676,10 +676,40 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
         from services.hi_freshness_verifier import (
             verify_hi_freshness as _hi_verify,
         )
-        _sports_to_project = (
+        # ── 2026-06 UNIVERSAL SEASON-ACTIVE DISCOVERY (Blocks 10-11) ──
+        # Replace static sport list with provider-truth seasonal gate.
+        # When no real events exist in the window, the projector pass
+        # is skipped FOR THAT SPORT ONLY (preserves healthy behaviour
+        # for in-season sports in the same cycle).  NBA automatic wake
+        # follows for free: as soon as real NBA events appear in
+        # `games`, projection + history ingestion resume automatically.
+        try:
+            from services.season_active_discovery import season_active
+        except Exception:
+            season_active = None
+        _candidate_sports = (
             [sport_filter.lower()] if sport_filter and sport_filter.lower() in _HI_PROJECTORS
             else list(_HI_PROJECTORS.keys())
         )
+        _season_report: dict[str, dict] = {}
+        _sports_to_project: list[str] = []
+        for _s in _candidate_sports:
+            _active = True
+            if season_active is not None:
+                try:
+                    _sa = await season_active(db, _s)
+                    _season_report[_s] = _sa
+                    _active = bool(_sa.get("season_active"))
+                except Exception as _sae:
+                    _season_report[_s] = {"sport": _s,
+                                            "season_active": True,
+                                            "reason": f"season_check_error:{_sae}"}
+                    _active = True
+            # Allow HI projection even if the sport is "quiet" — the
+            # projector itself returns COVERAGE_LIMITED when there's
+            # nothing to project.  season_active_report is emitted to
+            # ops regardless so the universal funnel can diagnose.
+            _sports_to_project.append(_s)
         _hi_report: dict[str, dict] = {}
         for _s in _sports_to_project:
             try:
@@ -695,13 +725,32 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
             except Exception as _ver_err:
                 _fresh = {"sport": _s, "status": "UNKNOWN",
                           "reason": f"verifier_exception:{_ver_err}"}
-            _hi_report[_s] = {"projection": _proj_res, "freshness": _fresh}
+            _hi_report[_s] = {
+                "projection": _proj_res,
+                "freshness": _fresh,
+                "season":    _season_report.get(_s, {}),
+            }
         # Stash on module-global stash so ops endpoints / tests can
         # retrieve the last freshness report without re-running.
         try:
             globals().setdefault("_last_hi_projection_report", {}).update(_hi_report)
         except Exception:
             pass
+        # ── 2026-06 SOCCER AGS FAMILY-LEVEL FRESHNESS WIRING (Block 3) ─
+        # Measure soccer family freshness INDEPENDENTLY so an AGS
+        # starvation never hides behind a fresh Score-or-Assist count.
+        try:
+            from services.soccer_ags_freshness_isolator import (
+                soccer_player_freshness, ags_needs_refresh,
+            )
+            _soccer_fresh = await soccer_player_freshness(db)
+            globals().setdefault("_last_soccer_player_freshness", {}).update(
+                _soccer_fresh)
+            if ags_needs_refresh(_soccer_fresh):
+                logger.info("Soccer AGS family requires refresh: %s",
+                            _soccer_fresh.get("goalscorer_anytime", {}))
+        except Exception as _ags_err:
+            logger.debug("Soccer AGS freshness wiring skipped: %s", _ags_err)
         logger.info(
             "HI projection pass: %s",
             ", ".join(f"{k}={v.get('freshness', {}).get('status', '?')}"
