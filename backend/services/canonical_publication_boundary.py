@@ -203,6 +203,17 @@ _SYNTHETIC_ODDS_SOURCES: frozenset[str] = frozenset({
                           # that computed book_odds from _prob_to_american.
                           # Post-Session-A those producers must set
                           # book_odds=None + no_real_book_line=True.
+    # 2026-10-03 P0-B Block 7 — defense-in-depth.  The soccer_prop_
+    # inject writer stamps odds_source="provider_median" when it
+    # collapses multi-book quotes into a median.  That label was
+    # ALREADY not in _REAL_ODDS_SOURCES (so the boundary already
+    # rejected it as SYNTHETIC), but adding it EXPLICITLY here is
+    # defense-in-depth: it classifies as SYNTHETIC via the first-
+    # match branch rather than falling through to the generic
+    # "unknown provenance" branch — the result is the same
+    # SYNTHETIC_BOOK_ODDS rejection, but the funnel-telemetry
+    # reason is now explicit.
+    "provider_median", "provider-median",
 })
 
 # Sentinel labels that signal an explicit "no sportsbook line" state.
