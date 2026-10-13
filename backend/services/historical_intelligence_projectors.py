@@ -390,6 +390,33 @@ async def project_nhl_actuals(db) -> dict:
         return {"status": STATUS_UNKNOWN, "sport": "nhl",
                 "reason": f"source_read_error:{e}"}
     if src == 0:
+        # ── 2026-06 CHEAP WIRING: ESPN backbone normalizer ─────────
+        # When the primary NHL player_game_logs source is empty, try
+        # to seed the games collection from any ESPN-shaped rows that
+        # may already have been fetched by the orchestrator's existing
+        # ingestion loop.  This is a NON-SYNCHRONOUS enrichment path
+        # — ESPN is NEVER sportsbook truth, NEVER model probability.
+        try:
+            from services.espn_enrichment_backbone import (
+                normalize_espn_completed_game,
+            )
+            espn_raw_cur = db.espn_scoreboard_cache.find({"sport": "nhl"})
+            seeded = 0
+            async for row in espn_raw_cur:
+                norm = normalize_espn_completed_game("nhl", row)
+                if not norm.get("event_id"):
+                    continue
+                try:
+                    await db.games.update_one(
+                        {"event_id": norm["event_id"], "sport": "nhl"},
+                        {"$setOnInsert": norm}, upsert=True)
+                    seeded += 1
+                except Exception:
+                    continue
+            if seeded > 0:
+                logger.info("ESPN NHL backbone seeded %d games", seeded)
+        except Exception:
+            pass
         return {"status": STATUS_COVERAGE_LIMITED, "sport": "nhl",
                 "reason": "no_rows_in_player_game_logs"}
 
