@@ -4839,8 +4839,20 @@ LEAGUE_LABELS: dict[str, str] = {
 async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
     await _load_active_sports()
     all_picks: list[dict] = []
-    # Soccer needs UK region to get the Draw outcome in the h2h market.
-    region = "uk" if sport == "Soccer" else "us"
+    # 2026-10-03 P0-B Block 5 — Soccer region contradiction resolved.
+    # Soccer previously requested ``regions=uk`` only (needed for the
+    # Draw outcome on 3-way h2h markets), but the game-market
+    # preferred-book policy (`_PREFERRED_BOOKS = fanduel > draftkings
+    # > betmgm > caesars > pointsbet`) is a US-books order.  Result:
+    # Provider returned real UK sportsbook quotes, selector found
+    # NONE of the preferred US books, ML/total/spread paths fail-
+    # closed, Soccer board collapsed even though provider had events.
+    # Fix: request BOTH regions (``us,uk``).  Provider still returns
+    # the Draw outcome (UK region supplies it); US region additionally
+    # supplies FanDuel/DraftKings/etc. so the preferred-book selector
+    # finds a REAL trusted sportsbook quote.  No median synthesis, no
+    # new policy, no publication-boundary weakening.
+    region = "us,uk" if sport == "Soccer" else "us"
     # ── 2026-08-23 PASS 1 — Universal active provider discovery ──
     # Static ``SPORT_KEYS[sport]`` is FALLBACK only; the authoritative
     # league/tournament set is ``_ACTIVE_KEYS`` filtered by prefix.
@@ -6537,7 +6549,7 @@ def _merge_event_odds_payloads(payloads: list[dict]) -> dict:
 # (one favored-side spread + one Over total) at the SWEET SPOT implied
 # probability so we surface true high-confidence locks without going
 # absurdly chalky (≤95% implied = -1900 American).
-TENNIS_GAME_ALT_MARKETS = ["alternate_spreads", "alternate_totals"]
+TENNIS_GAME_ALT_MARKETS = ["alternate_spreads_games", "alternate_totals_games"]
 # Implied-probability window for alt-line picks. Widened to 55-97% so
 # we capture both the safe-bet chalkiest tier (e.g. Over 19.5 priced
 # at -1500/-3000 = 94-97% implied) AND moderate alts down to ~-122.
@@ -6718,7 +6730,10 @@ def _build_tennis_alt_picks(
     # 2 for the underdog. Yields a "chalk ladder" so the user sees
     # multiple risk tiers (e.g., -833, -500, -300) per match —
     # user spec: "you can get lower odds up -500".
-    spread_outs = _alt_outcomes_for_market(alt_payload, "alternate_spreads")
+    # 2026-10-03 P0-B Block 6 — Tennis provider migrated the alt-key
+    # vocabulary to the ``_games`` suffix family.  ``alternate_spreads``
+    # and ``alternate_totals`` no longer return Tennis alt data.
+    spread_outs = _alt_outcomes_for_market(alt_payload, "alternate_spreads_games")
     if not spread_outs:
         logger.debug(
             "Tennis alt spreads: empty outcomes for %s vs %s (event %s)",
@@ -6845,7 +6860,7 @@ def _build_tennis_alt_picks(
     # live sportsbook board. The validation gate in `quality_gate.py`
     # cross-checks every alt pick against `live_alt_lines` — synthesized
     # lines would fail validation and get rejected anyway.
-    api_total_outs = _alt_outcomes_for_market(alt_payload, "alternate_totals")
+    api_total_outs = _alt_outcomes_for_market(alt_payload, "alternate_totals_games")
     if api_total_outs:
         # REAL book outcomes only — no `_synthesize_chalk_alt_totals` call.
         total_outs = list(api_total_outs)
