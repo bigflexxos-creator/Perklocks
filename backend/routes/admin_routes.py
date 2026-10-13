@@ -2472,7 +2472,11 @@ async def _fetch_game_market_alt_lines(
         allow = {
             "alternate_spreads", "alternate_spreads_games",
             "alternate_run_lines", "alternate_runs_lines",
-            "alternate_puck_lines",
+            # 2026-10-03 P0-B — removed ``alternate_puck_lines`` (not
+            # in Odds API catalogue; NHL alt puck lines are returned
+            # under ``alternate_spreads`` and the NHL spread→puck_line
+            # family remap at canonical_publication_boundary.py:112-117
+            # already handles the semantic translation).
         }
     else:
         allow = {"alternate_totals", "alternate_totals_games"}

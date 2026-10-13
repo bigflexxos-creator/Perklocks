@@ -98,10 +98,18 @@ SPORT_CONFIG: dict[str, tuple[str, list[str]]] = {
     ),
     "nfl": (
         "americanfootball_nfl",
+        # 2026-10-03 P0-B — removed ``player_reception_alternate``.
+        # That key is NOT in the Odds API catalogue; it was a typo
+        # duplicate of ``player_receptions_alternate`` (same bundle)
+        # and ``player_reception_yds_alternate`` (also in bundle),
+        # causing 422 on every NFL event's first fetch and burning
+        # ~10× quota via the event-scoped fan-out.  Pre-flight
+        # validator in ``services.odds_api_market_catalog`` now
+        # drops the key before request even if it is re-introduced.
         ["player_pass_yds_alternate", "player_rush_yds_alternate",
          "player_reception_yds_alternate",
          "player_anytime_td", "player_pass_tds_alternate",
-         "player_reception_alternate", "player_receptions_alternate",
+         "player_receptions_alternate",
          "alternate_spreads", "alternate_totals"],
     ),
     # MAIN 40 · Item #P0-C (2026-06-06) — CFB was entirely missing
@@ -110,10 +118,12 @@ SPORT_CONFIG: dict[str, tuple[str, list[str]]] = {
     # with the same families as NFL.
     "cfb": (
         "americanfootball_ncaaf",
+        # 2026-10-03 P0-B — removed ``player_reception_alternate``
+        # (same typo as NFL above; was copied over when CFB was added).
         ["player_pass_yds_alternate", "player_rush_yds_alternate",
          "player_reception_yds_alternate",
          "player_anytime_td", "player_pass_tds_alternate",
-         "player_reception_alternate", "player_receptions_alternate",
+         "player_receptions_alternate",
          "alternate_spreads", "alternate_totals"],
     ),
     "nba": (
@@ -124,7 +134,14 @@ SPORT_CONFIG: dict[str, tuple[str, list[str]]] = {
     ),
     "nhl": (
         "icehockey_nhl",
-        ["alternate_puck_lines", "alternate_totals"],
+        # 2026-10-03 P0-B — replaced ``alternate_puck_lines`` with
+        # ``alternate_spreads``.  Odds API catalogue removed the
+        # dedicated puck-lines key; NHL alt puck lines are now
+        # returned under ``alternate_spreads``.  Downstream NHL
+        # ``spread→puck_line`` family remap at
+        # ``canonical_publication_boundary.py:112-117`` handles the
+        # semantic translation without any producer change.
+        ["alternate_spreads", "alternate_totals"],
     ),
     # Tennis entries are inserted dynamically — see comment above.
 }
@@ -222,6 +239,21 @@ async def _fetch_event_odds(cx: httpx.AsyncClient, sport_key: str,
     """
     from services.odds_cache import cached_httpx_get
     from services.bad_market_registry import filter_markets, mark_bad
+    from services.odds_api_market_catalog import validate_markets
+
+    # (0) 2026-10-03 P0-B Layer A — pre-flight catalogue validation.
+    #     Drop any market key that is NOT in the verified Odds API
+    #     per-sport whitelist BEFORE constructing the request.  This
+    #     prevents a single typo (e.g. the historic
+    #     ``player_reception_alternate`` or ``alternate_puck_lines``)
+    #     from 422-ing the whole bundle and burning 10× quota via the
+    #     downstream fan-out.  Rejected keys are already logged +
+    #     funnel-telemetried inside ``validate_markets``.
+    markets, _unknown_dropped = validate_markets(
+        sport_key, markets, caller="alt_lines_feed._fetch_event_odds",
+    )
+    if not markets:
+        return None
 
     # (1) Drop any markets we already know are unsupported for this
     #     (sport_key, event_id) or globally for this sport.
