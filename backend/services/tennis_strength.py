@@ -199,24 +199,77 @@ def _cache_put(store: dict, key: tuple, val: Any) -> Any:
 async def _fetch_player_matches(db, name: str, as_of: str) -> list[dict]:
     """Return raw match rows for a player up to (exclusive) as_of.  Both
     winner_name and loser_name are queried.  Sorted by date ascending —
-    this order matters for Elo accumulation."""
+    this order matters for Elo accumulation.
+
+    2026-06 Universal canonical history wiring: canonical match rows
+    may use ``player1``/``player2`` (projector output) alongside
+    legacy ``winner_name``/``loser_name``.  Date may be stored as
+    ``date``, ``event_date``, or ``match_date``.  Query both shapes."""
     if not name: return []
     cursor = db.tennis_matches_history.find(
-        {"$or": [{"winner_name": name}, {"loser_name": name}],
-         "date": {"$lt": as_of}}
-    ).sort("date", 1).limit(400)
-    return [m async for m in cursor]
+        {"$or": [
+            {"winner_name": name}, {"loser_name": name},
+            {"player1": name},     {"player2": name},
+         ],
+         "$or": [
+             {"date":       {"$lt": as_of}},
+             {"event_date": {"$lt": as_of}},
+             {"match_date": {"$lt": as_of}},
+         ],
+         # The outer $or on names has been replaced by combining via $and below.
+        }
+    ).limit(400)
+    # The two $or at the top level override each other in Mongo; use $and.
+    cursor = db.tennis_matches_history.find({
+        "$and": [
+            {"$or": [{"winner_name": name}, {"loser_name": name},
+                      {"player1": name},     {"player2": name}]},
+            {"$or": [{"date":       {"$lt": as_of}},
+                      {"event_date": {"$lt": as_of}},
+                      {"match_date": {"$lt": as_of}}]},
+        ],
+    }).sort("date", 1).limit(400)
+    rows = [m async for m in cursor]
+    # Normalize canonical/legacy field aliases so downstream code
+    # sees ONE shape.
+    for r in rows:
+        if not r.get("winner_name") and r.get("player1"):
+            # Winner determination: prefer legacy winner_name; else
+            # use `winner` field if present; else fall back to player1.
+            r.setdefault("winner_name",
+                           r.get("winner") or r.get("player1"))
+            r.setdefault("loser_name",
+                           r.get("loser")  or r.get("player2"))
+        if not r.get("date"):
+            r["date"] = r.get("match_date") or r.get("event_date")
+    return rows
 
 
 async def _fetch_h2h_matches(db, a: str, b: str, as_of: str) -> list[dict]:
     if not a or not b: return []
-    cursor = db.tennis_matches_history.find(
-        {"$or": [
-            {"winner_name": a, "loser_name": b},
-            {"winner_name": b, "loser_name": a},
-        ], "date": {"$lt": as_of}}
-    ).sort("date", 1)
-    return [m async for m in cursor]
+    cursor = db.tennis_matches_history.find({
+        "$and": [
+            {"$or": [
+                {"winner_name": a, "loser_name": b},
+                {"winner_name": b, "loser_name": a},
+                {"player1": a, "player2": b},
+                {"player1": b, "player2": a},
+            ]},
+            {"$or": [{"date":       {"$lt": as_of}},
+                      {"event_date": {"$lt": as_of}},
+                      {"match_date": {"$lt": as_of}}]},
+        ],
+    }).sort("date", 1)
+    rows = [m async for m in cursor]
+    for r in rows:
+        if not r.get("winner_name") and r.get("player1"):
+            r.setdefault("winner_name",
+                           r.get("winner") or r.get("player1"))
+            r.setdefault("loser_name",
+                           r.get("loser")  or r.get("player2"))
+        if not r.get("date"):
+            r["date"] = r.get("match_date") or r.get("event_date")
+    return rows
 
 
 # ---------------------------------------------------------------------------

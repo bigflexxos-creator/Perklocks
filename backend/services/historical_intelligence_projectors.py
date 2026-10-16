@@ -572,6 +572,12 @@ async def project_soccer_actuals(db) -> dict:
                     "away_score": g.get("away_score"),
                     "league": g.get("league"),
                     "event_date": g.get("game_date"),
+                    # 2026-06 Universal date alias: write BOTH canonical
+                    # and legacy keys so the real soccer_game_model
+                    # consumer (sorting by `date`) sees projected rows
+                    # without a schema migration.
+                    "date":       g.get("game_date"),
+                    "game_date":  g.get("game_date"),
                     "status": "completed",
                     "provenance": {"provider": "games_rollup",
                                     "authority": 70,

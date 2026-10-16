@@ -112,9 +112,23 @@ def _stat_value(row: dict, stat_key: str) -> Optional[float]:
 # ═══════════════════════════════════════════════════════════════════
 async def _player_recent_logs(db, player_name: str, *,
                                  limit: int = 15) -> list[dict]:
-    """Recent gamelog rows for a player (most recent first)."""
+    """Recent gamelog rows for a player (most recent first).
+
+    2026-06 Universal canonical history wiring: canonical
+    ``player_game_actuals`` is consulted first; legacy
+    ``player_game_logs`` remains the fail-closed fallback.
+    """
     if not player_name:
         return []
+    # Canonical first via the shared resolver (zero formula change).
+    try:
+        from services.canonical_history_resolver import read_player_recent
+        resolved = await read_player_recent(
+            db, sport="nba", player_name=player_name, limit=limit)
+        if resolved:
+            return resolved
+    except Exception:
+        pass
     q = {"sport": "nba", "player_name": {"$regex": f"^{player_name}$",
                                             "$options": "i"}}
     cursor = db.player_game_logs.find(q, {"_id": 0}).sort("date", -1).limit(limit)
