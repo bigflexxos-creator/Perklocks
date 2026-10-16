@@ -67,6 +67,29 @@ async def aggregate_player_season(
             team = r.get("team_name")
         if not league:
             league = r.get("league")
+    # 2026-06 Universal canonical fallback: when soccer_player_game_logs
+    # is empty for this player (common for Champions League / non-Big-5
+    # scorers whose season aggregates sit in a different cache), consult
+    # the canonical `player_game_actuals` store via the resolver so AGS
+    # candidate discovery is not starved.
+    if games == 0:
+        try:
+            from services.canonical_history_resolver import read_player_recent
+            fallback = await read_player_recent(
+                db, sport="soccer", player_name=player_name_canonical,
+                limit=50)
+        except Exception:
+            fallback = []
+        for r in fallback or []:
+            minutes += int(r.get("minutes") or 0)
+            games += 1
+            starts += int(r.get("starts") or 0) if isinstance(r.get("starts"), (int, bool)) else 0
+            goals += float(r.get("goals") or 0)
+            shots += float(r.get("shots") or 0)
+            sot += float(r.get("shots_on_target") or 0)
+            assists += float(r.get("assists") or 0)
+            if not team:
+                team = r.get("team") or r.get("team_name")
     if games == 0:
         return None
     return {

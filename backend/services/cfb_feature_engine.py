@@ -71,10 +71,22 @@ async def _player_recent_averages(
     pid = await _fetch_cfb_player_id(db, player_name)
     if not pid:
         return None
-    cursor = db.player_game_logs.find(
-        {"player_id": pid, "sport": "cfb", stat: {"$exists": True}},
-    ).sort("_id", -1).limit(50)
-    rows = await cursor.to_list(length=50)
+    # 2026-06 Universal canonical history wiring: canonical
+    # ``player_game_actuals`` first with legacy fallback.  Resolver
+    # normalizes passing_yards↔pass_yds etc. so a stat key present
+    # in either collection is visible.
+    rows: list[dict] = []
+    try:
+        from services.canonical_history_resolver import read_player_recent
+        rows = await read_player_recent(
+            db, sport="cfb", canonical_player_id=pid, limit=50)
+    except Exception:
+        rows = []
+    if not rows:
+        cursor = db.player_game_logs.find(
+            {"player_id": pid, "sport": "cfb", stat: {"$exists": True}},
+        ).sort("_id", -1).limit(50)
+        rows = await cursor.to_list(length=50)
     if not rows:
         return None
     vals = [r.get(stat) for r in rows if isinstance(r.get(stat), (int, float))]
@@ -114,12 +126,22 @@ async def _player_hit_rate_vs_opp(
         gid = lg.get("game_id")
         if not gid:
             continue
-        game = await db.games.find_one({"game_id": gid, "sport": "cfb"})
+        # 2026-06 Universal event-identity resolution: canonical
+        # team-game rows may use ``event_id`` instead of ``game_id``,
+        # and ``home_team``/``away_team`` instead of ``home``/``away``.
+        game = (
+            await db.games.find_one({"game_id": gid, "sport": "cfb"})
+            or await db.games.find_one({"event_id": gid, "sport": "cfb"})
+            or await db.team_game_actuals.find_one({"event_id": gid, "sport": "cfb"})
+        )
         if not game:
             continue
-        # Opponent = the OTHER team in this game
-        home = game.get("home")
-        away = game.get("away")
+        # Opponent = the OTHER team in this game — canonical first,
+        # legacy aliases as compatibility fallback.
+        home = (game.get("home") or game.get("home_team")
+                or game.get("home_abbrev"))
+        away = (game.get("away") or game.get("away_team")
+                or game.get("away_abbrev"))
         my_team = lg.get("team")
         opp_in_game = away if my_team == home else home
         if not opp_in_game or opponent.lower() not in opp_in_game.lower() and opp_in_game.lower() not in opponent.lower():

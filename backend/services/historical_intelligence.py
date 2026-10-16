@@ -169,17 +169,35 @@ async def _enrich_event_time_from_team_actuals(
                    for d in docs if not d.get("event_time")]
     missing_ids = [x for x in missing_ids if x]
     if missing_ids:
+        # 2026-06 Universal MLB event-identity resolution.  Player
+        # rows typically use ``event_id = gamePk`` while team rows
+        # may use ``gamePk::home`` / ``gamePk::away``.  Expand the
+        # lookup set so the join succeeds without losing team
+        # context.
+        lookup_set: set[str] = set()
+        for eid in missing_ids:
+            lookup_set.add(eid)
+            if "::" not in eid:
+                lookup_set.add(f"{eid}::home")
+                lookup_set.add(f"{eid}::away")
+            else:
+                # Also tolerate upstream rows that wrote just gamePk.
+                lookup_set.add(eid.split("::")[0])
         ev_map: dict[str, str] = {}
         try:
             async for td in db.team_game_actuals.find(
                 {"sport": sport_key,
-                 "event_id": {"$in": list(set(missing_ids))},
+                 "event_id": {"$in": list(lookup_set)},
                  "event_time": {"$ne": None}},
                 {"event_id": 1, "event_time": 1},
             ):
                 eid = str(td.get("event_id") or "")
-                if eid and eid not in ev_map:
-                    ev_map[eid] = td.get("event_time")
+                # Normalize back to the player row's gamePk when the
+                # team row carries the suffixed form.
+                base_eid = eid.split("::")[0] if "::" in eid else eid
+                for key in (eid, base_eid):
+                    if key and key not in ev_map:
+                        ev_map[key] = td.get("event_time")
         except Exception:
             ev_map = {}
         for d in docs:
@@ -782,6 +800,34 @@ class NFLPlayerHistoricalAdapter(HistoricalAdapter):
                 actual = a if got_any else None
             else:
                 v = actuals.get(actuals_key)
+                # 2026-06 NFL HI alias fallback: canonical row may use
+                # legacy keys like `passing_yards` / `rushing_yards` /
+                # `receiving_yards`.  Try alias before giving up.
+                if v is None:
+                    _NFL_ALIAS = {
+                        "pass_yds":  ("passing_yards", "pass_yards"),
+                        "rush_yds":  ("rushing_yards", "rush_yards"),
+                        "rec_yds":   ("receiving_yards", "rec_yards",
+                                       "reception_yards"),
+                        "pass_tds":  ("passing_tds",),
+                        "rush_tds":  ("rushing_tds",),
+                        "rec_tds":   ("receiving_tds",),
+                        "receptions":("rec",),
+                    }
+                    for alt in _NFL_ALIAS.get(actuals_key, ()):
+                        if actuals.get(alt) is not None:
+                            v = actuals.get(alt)
+                            break
+                    # Also check if row carries flat fields outside `actuals`.
+                    if v is None:
+                        for alt in (
+                            (actuals_key,)
+                            + _NFL_ALIAS.get(actuals_key, ())
+                        ):
+                            fv = doc.get(alt)
+                            if fv is not None:
+                                v = fv
+                                break
                 actual = None
                 if v is not None:
                     try: actual = float(v)
