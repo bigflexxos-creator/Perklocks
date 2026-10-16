@@ -52,6 +52,15 @@ type FeedPrefs = { sport?: string; sortKey?: SortKey; lineType?: LineType };
 // slate from another backend / another publication can never be shown
 // as current.  Restored data is flagged STALE until a fresh read lands.
 const PICKS_CACHE_KEY = "locks_picks_cache_v2";
+// 2026-06 Block P fix — per-sport cache key.  The legacy single-key
+// cache meant switching from NFL→NHL overwrote the NFL last-good
+// slate, so a cold-start into NHL had nothing to paint even when a
+// perfectly valid NFL cache was still on disk.  Per-sport keys let
+// each sport restore ITS OWN last-good independently.  Falls back to
+// the legacy single key on read so no user loses their current cache
+// across the upgrade.
+const picksCacheKey = (sport: string): string =>
+  `locks_picks_cache_v2:${(sport || "").toUpperCase().trim() || "ALL"}`;
 const PICKS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 // GATE 3 P0 (2026-06) — truthful last-good persistence.
 // A persisted board projection MUST NOT claim complete-canonical-truth.
@@ -272,7 +281,12 @@ export default function LocksScreen() {
     let cancelled = false;
     (async () => {
       try {
-        const raw = await storage.getItem<string>(PICKS_CACHE_KEY, "");
+        // 2026-06 Block P fix — per-sport cache read with legacy fallback.
+        let raw = await storage.getItem<string>(picksCacheKey(sport), "");
+        if (!raw) {
+          // Legacy single-key fallback (one-time, until next write).
+          raw = await storage.getItem<string>(PICKS_CACHE_KEY, "");
+        }
         if (!raw || cancelled) return;
         const c: PicksCache = JSON.parse(raw as any);
         if (!c || !Array.isArray(c.picks)) return;
@@ -817,7 +831,10 @@ export default function LocksScreen() {
                 ? JSON.stringify(filters).length : 0,
             },
           } as PicksCache;
-          storage.setItem(PICKS_CACHE_KEY, JSON.stringify(cache));
+          // 2026-06 Block P fix — write to per-sport key so each
+          // sport retains its own last-good cache independently.
+          storage.setItem(picksCacheKey(requestedSport || sport),
+                           JSON.stringify(cache));
         } catch { /* storage full / serialize err — silent */ }
       }
       const altDiag: any = (picksRes as any).alt_availability;
@@ -1374,14 +1391,28 @@ export default function LocksScreen() {
           ) : (
             <View style={styles.emptyCard} testID="empty-board">
               <Ionicons
-                name={altUnavailable ? "information-circle-outline" : "lock-open-outline"}
+                name={
+                  loadError ? "cloud-offline-outline" :
+                  altUnavailable ? "information-circle-outline" :
+                  "lock-open-outline"
+                }
                 size={42}
                 color={COLORS.textMuted}
               />
               <Text style={styles.emptyTitle}>
-                {altUnavailable ? "Alt lines unavailable" : "No locks on the board"}
+                {loadError
+                  ? "Reconnecting"
+                  : altUnavailable
+                    ? "Alt lines unavailable"
+                    : "No 85+ locks right now"}
               </Text>
-              {altUnavailable ? (
+              {loadError ? (
+                <Text style={styles.emptyMsg} testID="empty-msg-connectivity">
+                  {loadError.includes("timed out") || loadError.includes("Network")
+                    ? "Sportsbook feed temporarily unavailable — showing last saved slate when it loads."
+                    : loadError}
+                </Text>
+              ) : altUnavailable ? (
                 <>
                   <Text style={styles.emptyMsg} testID="empty-msg-alt-unavailable">
                     {altUnavailable.message}
