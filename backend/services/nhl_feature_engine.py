@@ -194,16 +194,37 @@ async def _player_recent_stats(db, player_name: str, stat_key: str,
     if not fields:
         return {"recent_n": 0, "reason": f"unknown_stat:{stat_key}"}
     # Pull up to 40 most-recent logs for this player (identity by name).
+    # ── 2026-06 UNIVERSAL CANONICAL HISTORY RESOLVER ────────────────
+    # Canonical player_game_actuals first; falls back to the legacy
+    # player_game_logs collection (preserving every working behavior).
+    # The resolver normalizes field aliases ("actuals.g" → "goals"
+    # etc.) so new rows written by project_nhl_actuals are visible to
+    # this consumer immediately.  Zero formula / threshold change.
     try:
-        cur = db.player_game_logs.find(
-            {"sport": "nhl", "name": {"$regex": _init_last_pat, "$options": "i"}},
-            {"goals": 1, "assists": 1, "points": 1, "shots": 1,
-             "game_id": 1, "team": 1, "is_home": 1},
-        ).sort("game_id", -1).limit(40)
-        logs = [l async for l in cur]
+        from services.canonical_history_resolver import read_player_recent
+        resolved = await read_player_recent(
+            db, sport="nhl", player_name=player_name, limit=40,
+        )
+        if resolved:
+            logs = resolved
+        else:
+            cur = db.player_game_logs.find(
+                {"sport": "nhl", "name": {"$regex": _init_last_pat, "$options": "i"}},
+                {"goals": 1, "assists": 1, "points": 1, "shots": 1,
+                 "game_id": 1, "team": 1, "is_home": 1},
+            ).sort("game_id", -1).limit(40)
+            logs = [l async for l in cur]
     except Exception as e:
         logger.debug("nhl_feature_engine player stats failed for %s: %s", player_name, e)
-        return {"recent_n": 0}
+        try:
+            cur = db.player_game_logs.find(
+                {"sport": "nhl", "name": {"$regex": _init_last_pat, "$options": "i"}},
+                {"goals": 1, "assists": 1, "points": 1, "shots": 1,
+                 "game_id": 1, "team": 1, "is_home": 1},
+            ).sort("game_id", -1).limit(40)
+            logs = [l async for l in cur]
+        except Exception:
+            return {"recent_n": 0}
     if not logs:
         out = {"recent_n": 0, "season_n": 0}
         _PLAYER_CACHE[key] = out

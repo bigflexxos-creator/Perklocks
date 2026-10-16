@@ -178,8 +178,16 @@ def get_snapshot(params: dict[str, Any]) -> Optional[Snapshot]:
     # snapshot's version, it is fresh irrespective of wall-clock age.
     if committed is not None and snap.board_version == committed:
         return snap
-    # Otherwise fall back to the long safety TTL (failsafe only).
-    # This also covers the common case where the endpoint stamps a
+    # 2026-06 Block N fix: KNOWN mismatch → cache is STALE IMMEDIATELY.
+    # Previously we fell through to the TTL (served obsolete snapshot
+    # for up to 300 s even when a newer committed_version existed).
+    # TTL may ONLY be used as a fallback when committed-version is
+    # unavailable (committed is None).
+    if committed is not None and snap.board_version != committed:
+        return None
+    # Otherwise fall back to the long safety TTL (failsafe only when
+    # committed-version authority is unavailable).  This also covers
+    # the common case where the endpoint stamps a
     # ``compute_board_version(picks)`` fingerprint that intentionally
     # differs from ``board_generation._active.board_version`` — both
     # are legitimate freshness signals; version equality is a strong
