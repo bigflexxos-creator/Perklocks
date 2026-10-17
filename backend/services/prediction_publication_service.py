@@ -459,6 +459,22 @@ class PredictionPublicationService:
         ``publication_helpers``/orchestrator wrappers.
         """
         candidates_list = list(candidates)
+        # ── 2026-06 Commit B/4 (item 14) — REAL funnel instrumentation
+        # at publication_attempts.  Every candidate reaching this
+        # batch is a REAL publication attempt — recorded here, at the
+        # exact runtime stage, NOT inferred by a post-hoc summary loop.
+        try:
+            from services import stage_funnel as _sf
+            for _cp in candidates_list:
+                _sp = _cp.get("sport") or "unknown"
+                _mkf = (_cp.get("market_family")
+                         or _cp.get("provider_market_key")
+                         or _cp.get("market_key")
+                         or "*")
+                _sf.record_stage(_sp, _mkf,
+                                   _sf.STAGE_PUBLICATION_ATTEMPTS)
+        except Exception:
+            pass
 
         # ── Layer-B integrity gate (definitive barrier) ─────────────
         rejected_integrity: list[dict] = []
@@ -810,6 +826,43 @@ class PredictionPublicationService:
                 set_fields["publication_published_at"] = now_iso
                 set_fields["publication_rejection_reasons"] = None
                 set_fields["publication_last_error"] = None
+                # ── 2026-06 Commit B/4 (item 14) — stage: PUBLISHED.
+                try:
+                    from services import stage_funnel as _sf
+                    _sf.record_stage(
+                        pick.get("sport") or "unknown",
+                        (pick.get("market_family")
+                         or pick.get("provider_market_key") or "*"),
+                        _sf.STAGE_PUBLISHED)
+                except Exception:
+                    pass
+                # ── 2026-06 Commit B/4 (item 16) — publication-rejection
+                # lifecycle REAL ADOPTION on PUBLISH.  Clear ONLY
+                # publication-owned reasons from off_board_reasons /
+                # no_bet_reasons.  Independent blockers (SETTLED_FROZEN,
+                # LINEUP_SCRATCHED, PLAYER_TEAM_MISMATCH,
+                # CONTRADICTION_LOSER, FIRST_TD_DORMANT, MANUAL_BLOCK,
+                # MODEL_UNAVAILABLE, LINEUP_REJECTION) survive the
+                # publish — see services.publication_rejection_lifecycle.
+                try:
+                    from services.publication_rejection_lifecycle import (
+                        clear_publication_owned_reasons,
+                    )
+                    _ob_before = list(pick.get("off_board_reasons") or [])
+                    _nb_before = list(pick.get("no_bet_reasons") or [])
+                    clear_publication_owned_reasons(pick)
+                    set_fields["off_board_reasons"] = list(
+                        pick.get("off_board_reasons") or [])
+                    set_fields["no_bet_reasons"] = list(
+                        pick.get("no_bet_reasons") or [])
+                    set_fields["off_board"] = bool(pick.get("off_board"))
+                    set_fields["no_bet"]    = bool(pick.get("no_bet"))
+                    if not pick.get("off_board_reasons"):
+                        set_fields["off_board_reason"] = None
+                except Exception as _lcx:
+                    logger.debug(
+                        "publication-rejection lifecycle clear skipped: %s",
+                        _lcx)
             elif state_val == PublicationState.REJECTED.value:
                 set_fields["publication_rejected_at"] = now_iso
                 set_fields["publication_rejection_reasons"] = list(
@@ -818,6 +871,31 @@ class PredictionPublicationService:
                 # not surface a REJECTED pick.
                 set_fields["off_board"] = True
                 set_fields["no_bet"] = True
+                # ── 2026-06 Commit B/4 (item 16) — publication-rejection
+                # lifecycle REAL ADOPTION on REJECT.  Stamp each
+                # publication rejection reason onto the structured
+                # off_board_reasons / no_bet_reasons arrays with the
+                # PUBLICATION_REJECTED: prefix so a later publish
+                # can clear ONLY these entries without touching
+                # independent blockers.
+                try:
+                    from services.publication_rejection_lifecycle import (
+                        add_publication_rejection,
+                    )
+                    for _r in (rejection_reasons or []):
+                        add_publication_rejection(pick, reason=str(_r),
+                                                    set_no_bet=True)
+                    set_fields["off_board_reasons"] = list(
+                        pick.get("off_board_reasons") or [])
+                    set_fields["no_bet_reasons"] = list(
+                        pick.get("no_bet_reasons") or [])
+                    if pick.get("off_board_reason"):
+                        set_fields["off_board_reason"] = (
+                            pick["off_board_reason"])
+                except Exception as _lcx:
+                    logger.debug(
+                        "publication-rejection lifecycle add skipped: %s",
+                        _lcx)
                 # Mutate in-memory pick so downstream callers see it.
                 pick["off_board"] = True
                 pick["no_bet"] = True
