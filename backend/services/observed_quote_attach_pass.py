@@ -119,15 +119,38 @@ async def attach_observed_quotes(picks: Iterable[dict],
             continue
         if (p.get("sport") or "").upper() != sport.upper():
             continue
-        eid = (p.get("event_id") or p.get("provider_event_id")
-                or p.get("external_id"))
+        # ── 2026-06 Commit B/1 (item 11) — external_id MUST NOT be
+        # used as a provider_event_id fallback.  external_id is
+        # Perklocks internal identity.  Provider refetch requires the
+        # authentic provider event id.
+        eid = (p.get("provider_event_id") or p.get("event_id"))
         if not eid:
+            # Fail-closed telemetry — see return dict.
             continue
         by_event.setdefault(str(eid), []).append(p)
 
     attached_count = 0
     skipped_no_payload = 0
     skipped_no_match = 0
+    # ── 2026-06 Commit B/1 (item 12) — DEFENSE-IN-DEPTH telemetry ──
+    # The attach pass is now DEFENSE-IN-DEPTH only.  New rows should
+    # already be publishable with producer-level lineage.  Count:
+    #   producer_lineage_complete       — pick already has
+    #                                     provider_event_id +
+    #                                     provider_market_key +
+    #                                     bookmaker + book_odds (NO
+    #                                     repair needed).
+    #   attach_pass_repaired            — pick was missing lineage
+    #                                     but we found observed_quotes
+    #                                     and attached them.
+    #   attach_pass_missing_provider_event_id
+    #                                   — fail-closed when no event
+    #                                     identity is available.
+    #   attach_pass_failed              — any other repair failure.
+    producer_lineage_complete = 0
+    attach_pass_repaired = 0
+    attach_pass_missing_provider_event_id = 0
+    attach_pass_failed = 0
     try:
         from services.observed_quote_adapter import (
             extract_observed_quotes, quotes_for,
@@ -137,6 +160,13 @@ async def attach_observed_quotes(picks: Iterable[dict],
                 "reason": f"adapter_import_error:{e}"}
 
     for event_id, event_picks in by_event.items():
+        # ── 2026-06 Commit B/1 (item 11, 12) — fail-closed on missing
+        # provider_event_id.  external_id is PERKLOCKS internal and
+        # MUST NEVER feed provider refetch.
+        _pev = event_picks[0].get("provider_event_id") if event_picks else None
+        if not _pev and not event_id:
+            attach_pass_missing_provider_event_id += len(event_picks)
+            continue
         # Each event_id may have a sport-specific provider sport_key.
         _sport_key = sport_key or (event_picks[0].get("sport_key") if event_picks else None)
         payload = await _fetch_payload_safe(sport_label, _sport_key, event_id)
@@ -151,10 +181,18 @@ async def attach_observed_quotes(picks: Iterable[dict],
             skipped_no_match += len(event_picks)
             continue
         for p in event_picks:
+            # Producer-level lineage check (defense-in-depth
+            # telemetry — did the producer already stamp it?).
+            if (p.get("provider_event_id")
+                    and p.get("provider_market_key")
+                    and p.get("bookmaker")
+                    and p.get("book_odds") is not None):
+                producer_lineage_complete += 1
             market_key = (p.get("provider_market_key")
                            or p.get("market_key")
                            or _derive_market_key(p, sport))
             if not market_key:
+                attach_pass_failed += 1
                 continue
             player_name = (p.get("player_name") or p.get("player") or "")
             side = _match_pick_side(p)
@@ -171,6 +209,12 @@ async def attach_observed_quotes(picks: Iterable[dict],
             if quotes:
                 p["observed_quotes"] = quotes
                 attached_count += 1
+                if not (p.get("provider_event_id")
+                        and p.get("bookmaker")
+                        and p.get("book_odds") is not None):
+                    attach_pass_repaired += 1
+            else:
+                attach_pass_failed += 1
 
     return {
         "sport": sport,
@@ -178,6 +222,11 @@ async def attach_observed_quotes(picks: Iterable[dict],
         "attached": attached_count,
         "skipped_no_payload": skipped_no_payload,
         "skipped_no_match":  skipped_no_match,
+        # 2026-06 Commit B/1 (item 12) — defense-in-depth telemetry.
+        "producer_lineage_complete":            producer_lineage_complete,
+        "attach_pass_repaired":                 attach_pass_repaired,
+        "attach_pass_missing_provider_event_id": attach_pass_missing_provider_event_id,
+        "attach_pass_failed":                   attach_pass_failed,
     }
 
 
