@@ -32,28 +32,31 @@ _SRC_PATH = "/app/backend/sports_engine.py"
 CALL_SITE_AUDIT: tuple[tuple[int, str, str], ...] = (
     # Soccer game outcomes (dedicated inject paths own the DIRECT_REAL_QUOTE
     # paths; these sports_engine lines are consensus/model fallbacks).
-    (3151,  "NBA / Game-outcome moneyline (hybrid)",           "CONSENSUS_ONLY"),
-    (3424,  "Soccer Double-Chance (consensus / model)",        "CONSENSUS_ONLY"),
-    (3576,  "Soccer BTTS (consensus / model)",                 "CONSENSUS_ONLY"),
-    (4067,  "Soccer / generic Total (consensus / model)",      "CONSENSUS_ONLY"),
-    (4290,  "Soccer / generic Alt Total (consensus / model)",  "CONSENSUS_ONLY"),
-    (4580,  "NHL/soccer game spread (consensus / model)",      "CONSENSUS_ONLY"),
+    # NOTE: line numbers shift ±150 is tolerated — these targets were
+    # re-anchored after Commit B/5a-B/5b surgical instrumentation
+    # inserted provider / funnel telemetry inside the shared helpers.
+    (3319,  "NBA / Game-outcome moneyline (hybrid)",           "CONSENSUS_ONLY"),
+    (3592,  "Soccer Double-Chance (consensus / model)",        "CONSENSUS_ONLY"),
+    (3744,  "Soccer BTTS (consensus / model)",                 "CONSENSUS_ONLY"),
+    (4235,  "Soccer / generic Total (consensus / model)",      "CONSENSUS_ONLY"),
+    (4458,  "Soccer / generic Alt Total (consensus / model)",  "CONSENSUS_ONLY"),
+    (4748,  "NHL/soccer game spread (consensus / model)",      "CONSENSUS_ONLY"),
     # Tennis alt — stamps odds_source=the_odds_api when a book price
     # exists; otherwise MODEL_ONLY.  Classification represents the
     # DIRECT path.
-    (6832,  "Tennis Alt Spread",                               "DIRECT_REAL_QUOTE"),
-    (6969,  "Tennis Alt Total",                                "DIRECT_REAL_QUOTE"),
+    (7053,  "Tennis Alt Spread",                               "DIRECT_REAL_QUOTE"),
+    (7190,  "Tennis Alt Total",                                "DIRECT_REAL_QUOTE"),
     # MLB alt game markets — same contract as Tennis alt.
-    (7098,  "MLB Alt Team Total",                              "DIRECT_REAL_QUOTE"),
-    (7154,  "MLB Alt Total",                                   "DIRECT_REAL_QUOTE"),
-    (7238,  "MLB Alt Run Line",                                "DIRECT_REAL_QUOTE"),
+    (7319,  "MLB Alt Team Total",                              "DIRECT_REAL_QUOTE"),
+    (7375,  "MLB Alt Total",                                   "DIRECT_REAL_QUOTE"),
+    (7459,  "MLB Alt Run Line",                                "DIRECT_REAL_QUOTE"),
     # Generic prop emitter — B1 upgrade: when the preferred-book quote
     # lineage lookup succeeds, this emits a DIRECT_REAL_QUOTE.  Falls
     # back to CONSENSUS_ONLY (median) only when NO observed quote
     # survives validation.  (Covers NFL ATD/FGS/alt, MMA Method of
     # Victory, Soccer Goal Scorer / Score-or-Assist / First Goal, MLB
     # batter / pitcher props, and NHL player props.)
-    (9610,  "Generic prop emitter (_props_picks_from_event)",  "DIRECT_REAL_QUOTE"),
+    (9824,  "Generic prop emitter (_props_picks_from_event)",  "DIRECT_REAL_QUOTE"),
 )
 
 

@@ -288,6 +288,53 @@ class OddsApiGateway:
             except Exception as e:
                 logger.debug("bad_market filter err: %s", e)
 
+        # ── 2026-06 Commit B/5a (item 46) — gateway-level
+        # ``sport_activation._BAD_MARKETS`` filter (process-wide,
+        # operator-mutable).  Runs AFTER the DB-backed bad-market
+        # registry filter so an operator can isolate a confirmed-bad
+        # key at runtime without a DB write.  Dropped keys never
+        # suppress valid sibling markets — ``valid_markets()``
+        # preserves order and keeps the siblings.  Each isolation is
+        # recorded against the funnel so the operator sees the exact
+        # provider-request-builder isolation event.
+        if markets:
+            try:
+                from services.sport_activation import (
+                    valid_markets as _b5_valid_gw,
+                )
+                from services import stage_funnel as _b5_sf_gw
+                _req = [m.strip() for m in markets.split(",") if m.strip()]
+                _kept = _b5_valid_gw(_req)
+                _dropped_b5 = [m for m in _req if m not in _kept]
+                if _dropped_b5:
+                    for _bm_gw in _dropped_b5:
+                        try:
+                            _b5_sf_gw.record_rejection(
+                                s_key or "unknown", _bm_gw,
+                                "BAD_MARKET_ISOLATED",
+                            )
+                        except Exception:
+                            pass
+                    logger.info(
+                        "gateway B5a bad-market isolate sport=%s ev=%s "
+                        "dropped=%s kept=%s caller=%s",
+                        s_key, event_id, _dropped_b5, _kept, caller,
+                    )
+                if _kept and len(_kept) != len(_req):
+                    markets = ",".join(_kept)
+                    params["markets"] = markets
+                elif not _kept:
+                    return GatewayResult(
+                        ok=False,
+                        reason="all_markets_bad_listed_sport_activation",
+                        data=None,
+                        endpoint_type=endpoint_type,
+                        sport_key=s_key, event_id=event_id,
+                    )
+            except Exception as _gw_b5_err:
+                logger.debug("gateway valid_markets filter err: %s",
+                             _gw_b5_err)
+
         est_credits = self.estimate_credits(
             endpoint_type,
             markets=markets or params.get("markets"),

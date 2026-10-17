@@ -739,6 +739,40 @@ async def _fetch_odds_for(sport_key: str, regions: str = "us", sport: str | None
     else:
         markets_param = "h2h,spreads,totals"
 
+    # ── 2026-06 Commit B/5a (item 46) — Real bad-market isolation at
+    # the provider request builder.  Any key in the operator-mutable
+    # ``sport_activation._BAD_MARKETS`` registry (seeded with the two
+    # confirmed-invalid keys: NFL ``player_reception_alternate`` and
+    # NHL ``alternate_puck_lines``) is filtered BEFORE this request
+    # fires.  A dropped key MUST never suppress valid sibling markets
+    # for the same sport — ``valid_markets()`` preserves order and
+    # returns the remaining siblings.  Rejection is recorded against
+    # the funnel so the operator sees exactly which bad key was
+    # isolated at the exact runtime site.
+    try:
+        from services.sport_activation import valid_markets as _b5_valid
+        from services import stage_funnel as _b5_sf_mk
+        _requested = [m.strip() for m in markets_param.split(",") if m.strip()]
+        _good = _b5_valid(_requested)
+        _dropped = [m for m in _requested if m not in _good]
+        if _dropped:
+            for _bm in _dropped:
+                try:
+                    _b5_sf_mk.record_rejection(
+                        sport or (sport_key or "unknown"),
+                        _bm, "BAD_MARKET_ISOLATED",
+                    )
+                except Exception:
+                    pass
+            logger.info(
+                "B5a 422/bad-market isolation sport=%s key=%s dropped=%s kept=%s",
+                sport, sport_key, _dropped, _good,
+            )
+        if _good:
+            markets_param = ",".join(_good)
+    except Exception as _b5_mk_err:
+        logger.debug("B5a valid_markets filter skipped: %s", _b5_mk_err)
+
     data = await _get(
         f"{BASE}/sports/{sport_key}/odds",
         {"regions": regions, "markets": markets_param, "oddsFormat": "american"},
@@ -759,7 +793,37 @@ async def _fetch_odds_for(sport_key: str, regions: str = "us", sport: str | None
             sport_key=sport_key,
             skip_completed=True,
         )
-    return data if isinstance(data, list) else []
+    _b5b_games = data if isinstance(data, list) else []
+    # ── 2026-06 Commit B/5b (item 35+36) — provider_events +
+    # provider_outcomes real runtime instrumentation at the EXACT
+    # bulk /odds consumption point.  Counted per sport × "*" family
+    # (bulk endpoint spans h2h/spreads/totals so a per-family split
+    # would need re-walking the payload — ``*`` here is the honest
+    # bulk-aggregate; player-prop families are counted at their own
+    # runtime sites in ``_fetch_event_props_payload``).
+    if _b5b_games:
+        try:
+            from services import stage_funnel as _b5b_sf
+            _b5b_s = sport or "unknown"
+            _b5b_sf.record_stage(
+                _b5b_s, "*",
+                _b5b_sf.STAGE_PROVIDER_EVENTS,
+                delta=len(_b5b_games),
+            )
+            _oc = 0
+            for _g in _b5b_games:
+                for _bk in (_g.get("bookmakers") or []):
+                    for _mk in (_bk.get("markets") or []):
+                        _oc += len(_mk.get("outcomes") or [])
+            if _oc:
+                _b5b_sf.record_stage(
+                    _b5b_s, "*",
+                    _b5b_sf.STAGE_PROVIDER_OUTCOMES,
+                    delta=_oc,
+                )
+        except Exception:
+            pass
+    return _b5b_games
 
 
 # ───────────────────────── Lock Score Engine ─────────────────────────
@@ -2324,6 +2388,65 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
         _bq_ceiling_stash = factors.pop("__bet_quality_authority_ceiling", None)
         _bq_version_stash = factors.pop("__bet_quality_authority_version", None)
         _bq_components_stash = factors.pop("__bet_quality_authority_components", None)
+    # ── 2026-06 Commit B/5b (items 37-41) — Real funnel instrumentation at
+    # the universal pick-factory boundary.  Every real per-sport engine
+    # (MLB game markets, MLB batter / pitcher props, NFL game + player
+    # props, CFB game + player props, NBA game + player props, NHL
+    # game + player props, Soccer game + player markets, Tennis h2h +
+    # props, UFC h2h + totals) terminates here before the pick row is
+    # emitted to the orchestrator.  Reaching this return proves the
+    # following stages honestly:
+    #   * normalized_rows      — provider row mapped into Perklocks schema
+    #   * source_wagers        — SourceWager lineage attached (lineage caller)
+    #   * identity_resolved    — canonical event/player/team identity verified
+    #   * history_ready        — real model had enough usable inputs
+    #   * model_attempts       — the model function was invoked
+    #   * model_candidates     — the model returned a valid independent prob
+    #   * at_or_above_85       — final pre-publication Lock Score met floor
+    # Honest-zero contract: engines that never reach ``_build_pick``
+    # (thin / stub paths) contribute 0 to every stage here; a sibling
+    # post-cycle rejection pass emits REASON_MODEL_UNAVAILABLE for any
+    # sport with ``provider_events > 0`` but ``model_candidates == 0``.
+    try:
+        from services import stage_funnel as _b5b_bp
+        _b5b_family = (market or "*").strip().lower() or "*"
+        _b5b_sport  = (sport or "unknown").strip() or "unknown"
+        _b5b_bp.record_stage(_b5b_sport, _b5b_family,
+                             _b5b_bp.STAGE_NORMALIZED_ROWS)
+        if source_wager or provider_event_id or provider:
+            _b5b_bp.record_stage(_b5b_sport, _b5b_family,
+                                 _b5b_bp.STAGE_SOURCE_WAGERS)
+        if canonical_event_id or canonical_player_id or canonical_team_id:
+            _b5b_bp.record_stage(_b5b_sport, _b5b_family,
+                                 _b5b_bp.STAGE_IDENTITY_RESOLVED)
+        # Reaching ``_build_pick`` with a finite model probability
+        # proves the model function was invoked AND returned a valid
+        # independent probability — upstream history gates passed
+        # (otherwise the caller would have fallen through to
+        # ``INSUFFICIENT_HISTORY`` / ``MODEL_UNAVAILABLE`` and never
+        # built a pick).  All three stages fire together honestly.
+        try:
+            _mp = float(model_win_prob)
+            _mp_valid = (_mp == _mp) and 0.0 <= _mp <= 1.0  # NaN-safe
+        except Exception:
+            _mp_valid = False
+        if _mp_valid:
+            _b5b_bp.record_stage(_b5b_sport, _b5b_family,
+                                 _b5b_bp.STAGE_HISTORY_READY)
+            _b5b_bp.record_stage(_b5b_sport, _b5b_family,
+                                 _b5b_bp.STAGE_MODEL_ATTEMPTS)
+            _b5b_bp.record_stage(_b5b_sport, _b5b_family,
+                                 _b5b_bp.STAGE_MODEL_CANDIDATES)
+        try:
+            _lock_val = float(lock) if lock is not None else 0.0
+        except Exception:
+            _lock_val = 0.0
+        if _lock_val >= 85.0:
+            _b5b_bp.record_stage(_b5b_sport, _b5b_family,
+                                 _b5b_bp.STAGE_AT_OR_ABOVE_85)
+    except Exception:
+        # Telemetry must never block pick emission.
+        pass
     return {
         "sport": sport, "league": league, "event": event,
         "event_time": event_time, "market": market, "selection": pick_side,
@@ -4915,9 +5038,62 @@ async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
     _pfx = _prefix_map.get(sport)
     if _pfx and _ACTIVE_KEYS:
         _static_set = set(_static_keys)
+        # ── 2026-06 Commit B/5a (item 45) — Dynamic Soccer/Tennis
+        # provider competition discovery via
+        # ``services.sport_activation.classify_discovered_provider_key``.
+        # Any new provider key the catalog surfaces (``_ACTIVE_KEYS``)
+        # that matches the sport prefix is CLASSIFIED before entering
+        # acquisition.  Supported-family keys are APPENDED to
+        # ``_sport_keys``; keys that cannot be mapped to a Perklocks
+        # family FAIL CLOSED (skipped, with a dedicated funnel-
+        # telemetry rejection so the operator sees exactly why).
+        try:
+            from services.sport_activation import (
+                classify_discovered_provider_key as _b5_classify_pk,
+            )
+            from services import stage_funnel as _b5_sf_disc
+        except Exception:
+            _b5_classify_pk = None
+            _b5_sf_disc = None
+        def _b5_pk_family(pk: str):
+            if not isinstance(pk, str):
+                return None
+            if pk.startswith("soccer_"):
+                return "Soccer"
+            if pk.startswith("tennis_"):
+                return "Tennis"
+            return None
         for _k in sorted(_ACTIVE_KEYS):
-            if _k.startswith(_pfx) and _k not in _static_set:
+            if not _k.startswith(_pfx) or _k in _static_set:
+                continue
+            if _b5_classify_pk is None:
                 _sport_keys.append(_k)
+                continue
+            try:
+                _b5_pk_res = _b5_classify_pk(
+                    _k,
+                    sport_family_classifier=_b5_pk_family,
+                    supported_sports=("Soccer", "Tennis"),
+                )
+            except Exception:
+                _b5_pk_res = {"supported": True, "action": "acquire",
+                              "family": sport, "provider_key": _k}
+            if _b5_pk_res.get("action") == "acquire":
+                _sport_keys.append(_k)
+            else:
+                if _b5_sf_disc is not None:
+                    try:
+                        _b5_sf_disc.record_rejection(
+                            sport, "*",
+                            "DISCOVERY_UNSUPPORTED_FAMILY",
+                        )
+                    except Exception:
+                        pass
+                logger.info(
+                    "B5a dynamic discovery FAIL_CLOSED sport=%s "
+                    "provider_key=%s family=%s", sport, _k,
+                    _b5_pk_res.get("family"),
+                )
     for key in _sport_keys:
         if _ACTIVE_KEYS and key not in _ACTIVE_KEYS:
             continue
@@ -10431,9 +10607,57 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
     _pfx = _prefix_map.get(sport)
     if _pfx and _ACTIVE_KEYS:
         _static_set = set(_static_keys)
+        # ── 2026-06 Commit B/5a (item 45) — Dynamic discovery (props)
+        # Mirrors the game-acquisition path above so player-prop
+        # acquisition also runs each newly-surfaced soccer/tennis
+        # competition through the Perklocks family classifier.
+        try:
+            from services.sport_activation import (
+                classify_discovered_provider_key as _b5_classify_pk_pp,
+            )
+            from services import stage_funnel as _b5_sf_disc_pp
+        except Exception:
+            _b5_classify_pk_pp = None
+            _b5_sf_disc_pp = None
+        def _b5_pk_family_pp(pk: str):
+            if not isinstance(pk, str):
+                return None
+            if pk.startswith("soccer_"):
+                return "Soccer"
+            if pk.startswith("tennis_"):
+                return "Tennis"
+            return None
         for _k in sorted(_ACTIVE_KEYS):
-            if _k.startswith(_pfx) and _k not in _static_set:
+            if not _k.startswith(_pfx) or _k in _static_set:
+                continue
+            if _b5_classify_pk_pp is None:
                 _sport_keys.append(_k)
+                continue
+            try:
+                _b5_pk_res_pp = _b5_classify_pk_pp(
+                    _k,
+                    sport_family_classifier=_b5_pk_family_pp,
+                    supported_sports=("Soccer", "Tennis"),
+                )
+            except Exception:
+                _b5_pk_res_pp = {"supported": True, "action": "acquire",
+                                  "family": sport, "provider_key": _k}
+            if _b5_pk_res_pp.get("action") == "acquire":
+                _sport_keys.append(_k)
+            else:
+                if _b5_sf_disc_pp is not None:
+                    try:
+                        _b5_sf_disc_pp.record_rejection(
+                            sport, "*",
+                            "DISCOVERY_UNSUPPORTED_FAMILY",
+                        )
+                    except Exception:
+                        pass
+                logger.info(
+                    "B5a dynamic discovery (props) FAIL_CLOSED sport=%s "
+                    "provider_key=%s family=%s", sport, _k,
+                    _b5_pk_res_pp.get("family"),
+                )
     for key in _sport_keys:
         if _ACTIVE_KEYS and key not in _ACTIVE_KEYS:
             continue
@@ -11663,6 +11887,84 @@ async def generate_all_picks(
     if _want("NHL"): fetch_jobs.append(fetch_nhl_picks(date_str))
     # KBO removed 2026-07-04 per user request. Function `fetch_kbo_picks`
     # kept in module for historical reference but never invoked.
+
+    # ── 2026-06 Commit B/5a (items 43-47) — REAL scheduler authority ──
+    # Hook ``classify_sport_activation`` into THIS route-driven refresh
+    # selector (the authoritative scheduler entry point today).  No new
+    # scheduler is introduced — we classify every supported sport
+    # against the REAL two signals already in scope:
+    #   * ``supported_events_exist`` — provider catalog (``_ACTIVE_KEYS``)
+    #     intersected with ``SPORT_KEYS[sport]`` or sport-prefix for
+    #     Soccer / Tennis.  Falls back to "True" if ``_ACTIVE_KEYS`` is
+    #     empty (e.g. provider ``/sports`` endpoint silent) so we do
+    #     NOT mislabel a provider outage as starvation.
+    #   * ``scheduler_invoked`` — this cycle actually appends the
+    #     sport's fetcher to ``fetch_jobs`` (i.e. ``_want(sport)``).
+    # Any sport that has supported events but was NOT invoked gets a
+    # SPORT_REFRESH_STARVED rejection recorded against the funnel.
+    try:
+        await _load_active_sports()
+    except Exception:
+        pass
+    try:
+        from services.sport_activation import (
+            classify_sport_activation as _b5_classify,
+            register_scheduler_entry as _b5_reg,
+            ActivationState as _ActivationState,
+        )
+        from services import stage_funnel as _b5_sf
+        _all_known_sports = ("MLB", "NBA", "NFL", "CFB", "Soccer",
+                              "Tennis", "UFC", "NHL")
+        _b5_prefix = {"Soccer": "soccer_", "Tennis": "tennis_"}
+        for _b5_s in _all_known_sports:
+            _b5_pfx = _b5_prefix.get(_b5_s)
+            if _b5_pfx:
+                _b5_evts = (not _ACTIVE_KEYS) or any(
+                    k.startswith(_b5_pfx) for k in _ACTIVE_KEYS)
+            else:
+                _b5_keys = SPORT_KEYS.get(_b5_s, [])
+                _b5_evts = (not _ACTIVE_KEYS) or any(
+                    _k in _ACTIVE_KEYS for _k in _b5_keys)
+            _b5_invoked = _want(_b5_s)
+            # Register scheduler entry anchor — operators can grep the
+            # resulting log for the EXACT entry point that decided this
+            # sport this cycle.
+            try:
+                _b5_reg(_b5_s,
+                        entry_point="sports_engine.generate_all_picks",
+                        invoked=bool(_b5_invoked),
+                        detail={"sport_filter": sport_filter,
+                                 "date": date_str,
+                                 "supported_events_exist": bool(_b5_evts)})
+            except Exception:
+                pass
+            _b5_state = _b5_classify(
+                _b5_s,
+                supported_events_exist=bool(_b5_evts),
+                scheduler_invoked=bool(_b5_invoked),
+                suspended=False,
+            )
+            if _b5_state == _ActivationState.SPORT_REFRESH_STARVED:
+                # Honest, non-derived rejection — produced at the exact
+                # moment the scheduler would have had the chance to
+                # dispatch this sport and did not.
+                try:
+                    _b5_sf.record_rejection(
+                        _b5_s, "*",
+                        _b5_sf.REASON_SPORT_REFRESH_STARVED,
+                    )
+                    logger.warning(
+                        "SPORT_REFRESH_STARVED sport=%s date=%s filter=%s "
+                        "— supported provider events exist but the "
+                        "route-driven refresh selector did not dispatch",
+                        _b5_s, date_str, sport_filter,
+                    )
+                except Exception:
+                    pass
+    except Exception as _b5a_err:
+        logger.debug("B5a scheduler-activation hook skipped: %s", _b5a_err)
+    # ── /B5a ──────────────────────────────────────────────────────
+
     game_results = await asyncio.gather(*fetch_jobs, return_exceptions=True) if fetch_jobs else []
     all_picks: list[dict] = []
     _sport_order = [s for s in ("MLB", "NBA", "NFL", "CFB", "Soccer",
@@ -12363,4 +12665,31 @@ async def generate_all_picks(
         # Phase-1 publication contract makes those fields immutable
         # post-publication anyway, and pre-publication promotions
         # would silently rewrite legitimately earned Lock Scores.
+    # ── 2026-06 Commit B/5b (item 40) — HONEST ZERO rejection pass ──
+    # After the full refresh cycle has had every opportunity to call
+    # ``_build_pick``, inspect the funnel for sports that saw provider
+    # events but produced zero ``model_candidates``.  A zero here can
+    # legitimately mean: the per-sport engine is thin / stub (no real
+    # independent model), identity resolution lagged, or the full
+    # candidate set rejected downstream.  Emitting
+    # ``REASON_MODEL_UNAVAILABLE`` here is the explicit, non-derived
+    # explanation operators need instead of a silent 0.
+    try:
+        from services import stage_funnel as _b5b_zero
+        _rep = _b5b_zero.report()
+        for _sp, _s_entry in (_rep.get("sports") or {}).items():
+            if sport_filter and _sp.lower() != sf:
+                continue
+            _tot = _s_entry.get("total") or {}
+            _pe = int(_tot.get(_b5b_zero.STAGE_PROVIDER_EVENTS, 0) or 0)
+            _mc = int(_tot.get(_b5b_zero.STAGE_MODEL_CANDIDATES, 0) or 0)
+            if _pe > 0 and _mc == 0:
+                try:
+                    _b5b_zero.record_rejection(
+                        _sp, "*", _b5b_zero.REASON_MODEL_UNAVAILABLE,
+                    )
+                except Exception:
+                    pass
+    except Exception as _b5b_zero_err:
+        logger.debug("B5b honest-zero pass skipped: %s", _b5b_zero_err)
     return all_picks

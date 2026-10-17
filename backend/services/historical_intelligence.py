@@ -503,6 +503,108 @@ async def query_historical(db, q: HistoricalQuery) -> HistoricalResponse:
                     continue
                 _by_key[key] = o
             all_obs = list(_by_key.values())
+            # ── 2026-06 Commit B/5c (items 22-29) — Universal direct
+            # VS OPP augmentation at the REAL HI consumer boundary.
+            # Prior behaviour (per-sport adapters only — CFB had its
+            # own direct H2H, every other sport filtered the recent-
+            # buffer AFTER the fact) could truncate VS OPP samples:
+            # e.g. an NFL player's Last-80 buffer may not include
+            # every historical meeting with today's opponent.
+            # Fix: when the caller targets a specific opponent AND
+            # the sport is in the shared helper's identity-proven
+            # set, additionally fetch the DIRECT H2H rows via
+            # ``services.direct_h2h.direct_player_vs_opp`` / 
+            # ``direct_team_vs_opp`` and merge them into ``all_obs``
+            # (dedup preserves event_id uniqueness).  This is the
+            # HI consumer calling the SHARED helper — not a per-
+            # adapter reinvention — satisfying the B5c runtime
+            # adoption contract (Trevor Lawrence VS DEN canary flows
+            # through this exact path for NFL player props).
+            try:
+                if (q.opponent_id or q.opponent_name):
+                    from services import direct_h2h as _b5c_dh
+                    _b5c_sport = (q.sport or "").upper()
+                    # Map adapter-registered sport keys to the shared
+                    # helper's canonical sport labels.  The helper
+                    # already covers NFL/MLB/NBA/NHL/Soccer/Tennis/
+                    # CFB; the "_TEAM" suffix routes to the team
+                    # collection (``team_game_actuals``).
+                    _b5c_is_team = _b5c_sport.endswith("_TEAM")
+                    _b5c_root = _b5c_sport.replace("_TEAM", "")
+                    _b5c_sport_label = {
+                        "NFL": "NFL", "MLB": "MLB", "NBA": "NBA",
+                        "NHL": "NHL", "SOCCER": "Soccer",
+                        "TENNIS": "Tennis", "CFB": "CFB",
+                    }.get(_b5c_root)
+                    if _b5c_sport_label:
+                        if _b5c_is_team or q.entity_type == "team":
+                            _b5c_rows = await _b5c_dh.direct_team_vs_opp(
+                                db,
+                                sport=_b5c_sport_label,
+                                canonical_team_id=q.entity_id,
+                                team_name=q.entity_name,
+                                canonical_opponent_id=q.opponent_id,
+                                opponent_name=q.opponent_name,
+                                as_of_iso=q.event_date,
+                            )
+                        else:
+                            _b5c_rows = await _b5c_dh.direct_player_vs_opp(
+                                db,
+                                sport=_b5c_sport_label,
+                                canonical_player_id=q.entity_id,
+                                player_name=q.entity_name,
+                                canonical_opponent_id=q.opponent_id,
+                                opponent_name=q.opponent_name,
+                                as_of_iso=q.event_date,
+                            )
+                        if _b5c_rows:
+                            # Build HistoricalObservation rows from the
+                            # direct-H2H docs — minimal mapping, we
+                            # only need enough shape for the dedupe +
+                            # VS OPP filter + classifier downstream.
+                            _b5c_before = len(all_obs)
+                            for _doc in _b5c_rows:
+                                _eid = (_doc.get("canonical_event_id")
+                                        or _doc.get("event_id")
+                                        or _doc.get("game_id"))
+                                _k = (f"eid:{_eid}" if _eid else
+                                      f"date:{(_doc.get('event_time') or _doc.get('date') or '')[:10]}"
+                                      f"|opp:{str(_doc.get('opponent') or _doc.get('opponent_name') or '').strip().lower()}")
+                                if _k in _by_key:
+                                    continue
+                                _obs = HistoricalObservation(
+                                    date=str(_doc.get("event_time")
+                                             or _doc.get("date") or "")[:10],
+                                    opponent_id=(_doc.get("canonical_opponent_id")
+                                                 or _doc.get("opponent_canonical_id")),
+                                    opponent_name=(_doc.get("opponent")
+                                                   or _doc.get("opponent_name")),
+                                    home_away=_doc.get("home_away"),
+                                    actual=None,  # upstream reducer re-reads
+                                    context={"direct_h2h": True,
+                                             "season": _doc.get("season"),
+                                             "week":   _doc.get("week")},
+                                    provenance=_doc.get("source")
+                                                or "direct_h2h",
+                                    event_id=_eid,
+                                )
+                                _by_key[_k] = _obs
+                                all_obs.append(_obs)
+                            if len(all_obs) > _b5c_before:
+                                logger.debug(
+                                    "B5c direct_h2h added %d rows "
+                                    "sport=%s entity=%s vs opp=%s",
+                                    len(all_obs) - _b5c_before,
+                                    _b5c_sport_label,
+                                    q.entity_id or q.entity_name,
+                                    q.opponent_id or q.opponent_name,
+                                )
+            except Exception as _b5c_err:
+                # Direct-H2H augmentation is additive — a failure must
+                # never deny the adapter's own answer.
+                logger.debug("B5c direct_h2h augmentation skipped: %s",
+                             _b5c_err)
+            # ── /B5c ──────────────────────────────────────────────
             # ── As-of safety: today's fixture may never enter its own
             # history.  Filter observations whose date matches the
             # current pick's event date AND same opponent (the current
