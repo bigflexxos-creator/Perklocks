@@ -794,8 +794,28 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
                 diagnose_funnel as _diag,
             )
             _funnels: dict[str, dict] = {}
+            # ── 2026-06 Commit B/4.1 (item 2) — REAL stage_funnel wiring
+            # at the EXACT runtime stage where each counter advances.
+            # NOT a post-hoc summary loop — each pick entering this
+            # block is ONE real model candidate; each pick with
+            # lock_score >= 85 is ONE real 85+ event.  Later counters
+            # (publication_attempts / published / api_visible) advance
+            # from their own distinct runtime sites (publication
+            # service + /api/picks/today projection).
+            try:
+                from services import stage_funnel as _sfr
+            except Exception:
+                _sfr = None
             for p in _classify_source:
                 s = (p.get("sport") or "unknown").strip() or "unknown"
+                _fam = (p.get("market_family")
+                         or p.get("provider_market_key")
+                         or p.get("market_key") or "*")
+                if _sfr is not None:
+                    # ONE real model candidate — this pick exists
+                    # because a model returned a valid independent
+                    # probability for it.
+                    _sfr.record_stage(s, _fam, _sfr.STAGE_MODEL_CANDIDATES)
                 f = _funnels.setdefault(s, {
                     "provider_events": 0, "provider_outcomes": 0,
                     "canonicalized": 0, "model_candidates": 0,
@@ -808,12 +828,20 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
                     ls = float(p.get("lock_score") or 0)
                     if ls >= 85.0:
                         f["at_or_above_85"] += 1
+                        if _sfr is not None:
+                            # ONE real 85+ event — meets the production
+                            # Lock-floor gate.
+                            _sfr.record_stage(s, _fam,
+                                               _sfr.STAGE_AT_OR_ABOVE_85)
                 except (TypeError, ValueError):
                     pass
                 if p.get("no_real_book_line") and p.get("book_odds") is None:
                     f["rejections"]["SYNTHETIC_BOOK_ODDS"] = (
                         f["rejections"].get("SYNTHETIC_BOOK_ODDS", 0) + 1
                     )
+                    if _sfr is not None:
+                        _sfr.record_rejection(
+                            s, _fam, _sfr.REASON_SYNTHETIC_BOOK_ODDS)
             # Fold projector source counts in as provider_events.
             for _s, _r in _hi_report.items():
                 _src = _r.get("projection", {}).get("source_rows")
@@ -827,6 +855,14 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
                     })
                     bucket["provider_events"] = max(
                         bucket.get("provider_events", 0), int(_src))
+                    if _sfr is not None:
+                        # ONE provider_events increment per projector
+                        # source_rows report — matches the real HI
+                        # projection pass count authoritatively.
+                        _sfr.record_stage(
+                            sport_key, "*",
+                            _sfr.STAGE_PROVIDER_EVENTS,
+                            delta=max(0, int(_src)))
             diagnosed = {s: {"funnel": f, "health": _diag(f)}
                           for s, f in _funnels.items()}
             globals()["_last_universal_funnel"] = diagnosed
