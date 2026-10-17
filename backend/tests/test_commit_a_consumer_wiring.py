@@ -19,8 +19,9 @@ class _AsyncCursor:
     async def __anext__(self):
         if self._i >= len(self._rows): raise StopAsyncIteration
         r = self._rows[self._i]; self._i += 1; return r
-    async def to_list(self, n=None):
-        return self._rows[:n] if n else list(self._rows)
+    async def to_list(self, n=None, length=None):
+        lim = n if n is not None else length
+        return self._rows[:lim] if lim else list(self._rows)
 
 
 class _AsyncColl:
@@ -60,6 +61,12 @@ class _AsyncColl:
         return None
     async def count_documents(self, filt):
         return sum(1 for r in self._rows if self._match(filt or {}, r))
+    async def insert_one(self, doc):
+        self._rows.append(dict(doc))
+        return type("InsertRes", (), {"inserted_id": len(self._rows)})()
+    async def insert_many(self, docs):
+        for d in docs: self._rows.append(dict(d))
+        return type("InsertRes", (), {"inserted_ids": list(range(len(self._rows)))})()
 
 
 class _AsyncDB:
@@ -322,6 +329,316 @@ def test_preservation_assertions_still_hold_after_commit_a():
     assert snap.get("SOCCER_MARKET_GATE_IMPORTABLE") is True
     assert "provider_median" in (snap.get("_SYNTHETIC_ODDS_SOURCES") or [])
     assert "provider_median" not in (snap.get("_REAL_ODDS_SOURCES") or [])
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Commit-A FINAL CLOSURE — Soccer AGS actual candidate→model proof
+# ═══════════════════════════════════════════════════════════════════
+
+def test_soccer_ags_actual_candidate_to_model_independent_probability():
+    """FULL real-production AGS path.
+
+    Proves: a Champions-League attacker who is ABSENT from
+    ``soccer_player_form`` but has canonical ``player_game_actuals``
+    history survives the ACTUAL production candidate discovery
+    (``_fetch_scorers_for_league``), reaches the ACTUAL identity
+    layer (``get_player_stats``) via canonical fallback, and lands
+    an independent probability from the ACTUAL Goal Scorer V3
+    model (``predict_goal_v3``).
+
+    Zero name boosts.  Zero inflation.  Zero mocks of the model."""
+    import services.database as sd
+    import numpy as np
+    from services.soccer_prop_inject import _fetch_scorers_for_league
+    from services.player_props.stats_aggregator import get_player_stats
+    from services.player_props.goal_scorer_v3 import predict_goal_v3
+    from services.player_props.team_strength import clear_cache
+
+    # UCL attacker — 15 completed canonical games w/ real goal activity,
+    # 10 goals, 2 assists, 60 shots, 1275 minutes.  Absent from
+    # soccer_player_form entirely.
+    canonical_rows = []
+    for i in range(15):
+        canonical_rows.append({
+            "sport": "soccer",
+            "player_name": "Jude Bellingham",
+            "canonical_player_id": "soccer:bellingham",
+            "team": "Real Madrid",
+            "league": "UCL",
+            "goals":   1 if i < 10 else 0,
+            "assists": 1 if i in (3, 7) else 0,
+            "shots":   4,
+            "shots_on_target": 2,
+            "minutes": 85,
+            "game_date": f"2026-05-{1+i:02d}",
+        })
+    stub_db = _AsyncDB(
+        soccer_player_form=[],
+        espn_mls_stats=[],
+        wiki_top_scorers=[],
+        mls_player_matchup_history=[],
+        soccer_matches=[],
+        soccer_standings=[],
+        player_game_actuals=canonical_rows,
+    )
+    orig_get_db = sd.get_database
+    sd.get_database = lambda: stub_db
+    clear_cache()
+    try:
+        # ── 1. Candidate discovery (real production function) ───────
+        # League hint None → UCL path.  Understat empty, so canonical
+        # backfill is the ONLY way this player can surface.
+        scorers = _run(_fetch_scorers_for_league(None))
+        names = {(s.get("player_name") or "").strip().lower()
+                 for s in scorers}
+        assert "jude bellingham" in names, (
+            "UCL player with canonical history MUST survive "
+            f"_fetch_scorers_for_league; got candidates={names}")
+
+        # ── 2. Identity + canonical fallback via get_player_stats ───
+        stats = _run(get_player_stats("Jude Bellingham", league_hint=None))
+        assert stats is not None, (
+            "get_player_stats canonical fallback must return "
+            "PlayerStats for a UCL player absent from Understat/ESPN/Wiki")
+        assert stats.data_ok is True
+        assert stats.source == "canonical_history", (
+            f"source must be canonical_history, got {stats.source!r}")
+        assert stats.goals >= 1
+        assert stats.minutes >= 90
+        assert stats.goals_per_90 > 0.0
+
+        # ── 3. ACTUAL Goal Scorer V3 — independent probability ──────
+        out = _run(predict_goal_v3(
+            stub_db, stats, "Barcelona",
+            sport_key="soccer_uefa_champs_league",
+            is_home=True,
+            samples=400,
+            rng=np.random.default_rng(seed=7),
+        ))
+        assert out.data_ok is True, (
+            "predict_goal_v3 must mark data_ok=True; "
+            f"concerns={out.concerns}")
+        assert out.p_anytime > 0.0, (
+            "Goal Scorer V3 must return a non-zero independent "
+            f"probability; got {out.p_anytime}")
+        assert out.engine_version.startswith("gs_v3"), out.engine_version
+        assert out.lam_player > 0.0, (
+            f"λ_player must be >0 for an attacker with real goal "
+            f"activity; got {out.lam_player}")
+    finally:
+        sd.get_database = orig_get_db
+        clear_cache()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Commit-A FINAL CLOSURE — Tennis authoritative winner derivation
+# ═══════════════════════════════════════════════════════════════════
+
+def test_tennis_projector_derives_winner_from_authoritative_scores_not_order():
+    """Projector MUST derive winner_name / loser_name from the
+    completed-match outcome (home_score vs away_score).  Participant
+    order (player1 == home_team) is NEVER a winner signal."""
+    from services.historical_intelligence_projectors import project_tennis_actuals
+
+    # Case A — player1 (home) wins by games.
+    games_a = [{
+        "event_id": "tennis-01", "sport": "tennis",
+        "status": "completed",
+        "home_team": "Iga Swiatek", "away_team": "Coco Gauff",
+        "home_score": 2, "away_score": 0,
+        "game_date": "2026-05-20",
+        "tour": "WTA", "surface": "Clay", "tournament": "Roland Garros",
+    }]
+    db_a = _AsyncDB(games=games_a, tennis_matches_history=[])
+    _run(project_tennis_actuals(db_a))
+    row_a = _run(db_a.tennis_matches_history.find_one(
+        {"canonical_match_id": "tennis-01"}))
+    assert row_a is not None
+    assert row_a["winner_name"] == "Iga Swiatek"
+    assert row_a["loser_name"]  == "Coco Gauff"
+    # Winner-derivation provenance stamped.
+    assert row_a["provenance"]["winner_derivation"] == "home_vs_away_score"
+
+    # Case B — player2 (away) wins.  Critical: must NOT infer winner
+    # from the player1 slot.
+    games_b = [{
+        "event_id": "tennis-02", "sport": "tennis",
+        "status": "completed",
+        "home_team": "Elena Rybakina", "away_team": "Aryna Sabalenka",
+        "home_score": 0, "away_score": 2,
+        "game_date": "2026-05-21",
+        "tour": "WTA", "surface": "Hard", "tournament": "Madrid",
+    }]
+    db_b = _AsyncDB(games=games_b, tennis_matches_history=[])
+    _run(project_tennis_actuals(db_b))
+    row_b = _run(db_b.tennis_matches_history.find_one(
+        {"canonical_match_id": "tennis-02"}))
+    assert row_b is not None
+    assert row_b["winner_name"] == "Aryna Sabalenka", (
+        "Away winner MUST be derived from numeric score, not from "
+        "the player1 slot.  Got "
+        f"winner_name={row_b.get('winner_name')!r}")
+    assert row_b["loser_name"] == "Elena Rybakina"
+
+
+def test_tennis_strength_fetch_rejects_rows_without_authoritative_outcome():
+    """When the row has no explicit winner_name AND no derivable
+    winner (missing/tied score), the fetch function must DROP it
+    rather than infer winner from participant order."""
+    from services.tennis_strength import _fetch_player_matches
+
+    # One good row (score decides winner), one unresolvable row
+    # (no winner_name, no score at all).
+    rows = [
+        # Good: scores say player2 wins → should surface as a loss
+        # for player1 and a win for player2.
+        {"player1": "Alcaraz", "player2": "Djokovic",
+         "score": {"p1": 0, "p2": 2},
+         "event_date": "2026-05-20", "surface": "Hard"},
+        # Bad: no winner_name AND no score — do NOT infer winner from
+        # the player1 slot.  This row MUST be dropped.
+        {"player1": "Alcaraz", "player2": "Sinner",
+         "event_date": "2026-05-10", "surface": "Hard"},
+    ]
+    db = _AsyncDB(tennis_matches_history=rows)
+    rows_out = _run(_fetch_player_matches(db, "Alcaraz", "2026-06-20"))
+    assert len(rows_out) == 1, (
+        f"Rows without authoritative outcome must be dropped; "
+        f"got {len(rows_out)}: {rows_out}")
+    # And in the surviving row Alcaraz is the LOSER (player2 won).
+    r = rows_out[0]
+    assert r["winner_name"] == "Djokovic"
+    assert r["loser_name"]  == "Alcaraz"
+
+
+def test_tennis_snapshot_reflects_actual_winner_regardless_of_player_slot():
+    """`get_player_snapshot` must produce Elo / form that mirrors the
+    AUTHORITATIVE winner, not the player1 slot — tested both for
+    all-wins and all-losses across mixed participant-order rows."""
+    from services.tennis_strength import (
+        get_player_snapshot, _SNAPSHOT_CACHE,
+    )
+
+    # Scenario 1 — Alcaraz wins all 10, half as player1, half as player2.
+    _SNAPSHOT_CACHE.clear()
+    wins_rows = []
+    for i in range(10):
+        is_p1 = (i % 2 == 0)
+        if is_p1:
+            # Alcaraz is player1 AND won → score p1 > p2.
+            wins_rows.append({
+                "player1": "Alcaraz", "player2": "Djokovic",
+                "score": {"p1": 2, "p2": 0},
+                "date": f"2026-05-{10+i:02d}",
+                "event_date": f"2026-05-{10+i:02d}",
+                "surface": "Hard", "tourney_level": "ATP",
+            })
+        else:
+            # Alcaraz is player2 AND won → score p2 > p1.
+            wins_rows.append({
+                "player1": "Djokovic", "player2": "Alcaraz",
+                "score": {"p1": 0, "p2": 2},
+                "date": f"2026-05-{10+i:02d}",
+                "event_date": f"2026-05-{10+i:02d}",
+                "surface": "Hard", "tourney_level": "ATP",
+            })
+    db_w = _AsyncDB(tennis_matches_history=wins_rows)
+    snap_w = _run(get_player_snapshot(db_w, "Alcaraz", "Hard",
+                                        "2026-06-20"))
+    assert snap_w is not None
+    assert snap_w.sample_size == 10
+    assert snap_w.form_l5 is not None and snap_w.form_l5 > 0.9, (
+        f"Winning 10/10 must yield form_l5≈1.0; got {snap_w.form_l5}")
+    assert snap_w.elo > 1500.0, (
+        f"Winning 10/10 must push Elo above base; got {snap_w.elo}")
+    assert snap_w.win_pct_52w == 1.0
+
+    # Scenario 2 — Alcaraz LOSES all 10, mirrored participant order.
+    _SNAPSHOT_CACHE.clear()
+    loss_rows = []
+    for i in range(10):
+        is_p1 = (i % 2 == 0)
+        if is_p1:
+            # Alcaraz is player1 but LOST → score p1 < p2.
+            loss_rows.append({
+                "player1": "Alcaraz", "player2": "Djokovic",
+                "score": {"p1": 0, "p2": 2},
+                "date": f"2026-05-{10+i:02d}",
+                "event_date": f"2026-05-{10+i:02d}",
+                "surface": "Hard", "tourney_level": "ATP",
+            })
+        else:
+            # Alcaraz is player2 but LOST → score p2 < p1.
+            loss_rows.append({
+                "player1": "Djokovic", "player2": "Alcaraz",
+                "score": {"p1": 2, "p2": 0},
+                "date": f"2026-05-{10+i:02d}",
+                "event_date": f"2026-05-{10+i:02d}",
+                "surface": "Hard", "tourney_level": "ATP",
+            })
+    db_l = _AsyncDB(tennis_matches_history=loss_rows)
+    snap_l = _run(get_player_snapshot(db_l, "Alcaraz", "Hard",
+                                        "2026-06-20"))
+    assert snap_l is not None
+    assert snap_l.sample_size == 10
+    assert snap_l.form_l5 is not None and snap_l.form_l5 < 0.1, (
+        f"Losing 10/10 must yield form_l5≈0; got {snap_l.form_l5}")
+    assert snap_l.elo < 1500.0, (
+        f"Losing 10/10 must push Elo below base; got {snap_l.elo}")
+    assert snap_l.win_pct_52w == 0.0
+
+
+def test_tennis_has_real_signal_and_matchup_prob_use_authoritative_winner():
+    """Composite matchup evidence (what the engine actually consumes)
+    must report an Elo-derived matchup probability that reflects the
+    AUTHORITATIVE winner across the two players' real histories."""
+    from services.tennis_strength import (
+        compose_matchup, _SNAPSHOT_CACHE, _H2H_CACHE,
+    )
+    _SNAPSHOT_CACHE.clear()
+    _H2H_CACHE.clear()
+
+    # Alcaraz: 12 wins, 2 losses (participant order mixed).
+    # Djokovic: 2 wins, 12 losses (mirror image).
+    rows: list[dict] = []
+    for i in range(14):
+        alc_wins = i < 12
+        is_p1 = (i % 2 == 0)
+        if is_p1:
+            rows.append({
+                "player1": "Alcaraz", "player2": "Djokovic",
+                "score": {"p1": 2 if alc_wins else 0,
+                           "p2": 0 if alc_wins else 2},
+                "date": f"2026-05-{1+i:02d}",
+                "event_date": f"2026-05-{1+i:02d}",
+                "surface": "Hard", "tourney_level": "ATP",
+            })
+        else:
+            rows.append({
+                "player1": "Djokovic", "player2": "Alcaraz",
+                "score": {"p1": 0 if alc_wins else 2,
+                           "p2": 2 if alc_wins else 0},
+                "date": f"2026-05-{1+i:02d}",
+                "event_date": f"2026-05-{1+i:02d}",
+                "surface": "Hard", "tourney_level": "ATP",
+            })
+    db = _AsyncDB(tennis_matches_history=rows)
+    ev = _run(compose_matchup(db, "Alcaraz", "Djokovic",
+                                surface="Hard",
+                                as_of_iso="2026-06-20"))
+    assert ev is not None
+    assert ev.player.elo is not None and ev.opponent.elo is not None
+    # Alcaraz won their H2H 12-2 → Elo delta must favor Alcaraz.
+    assert ev.strength_delta is not None and ev.strength_delta > 0, (
+        "Alcaraz dominant → strength_delta must be positive; got "
+        f"{ev.strength_delta}")
+    assert ev.matchup_prob is not None and ev.matchup_prob > 0.5, (
+        "Alcaraz dominant → matchup_prob must be > 0.5; got "
+        f"{ev.matchup_prob}")
+    assert ev.h2h.n == 14
+    assert ev.h2h.raw_wins == 12   # Alcaraz won 12 of 14
+    # And the reliability signal is non-zero (real sample).
+    assert ev.reliability > 0.0
 
 
 if __name__ == "__main__":

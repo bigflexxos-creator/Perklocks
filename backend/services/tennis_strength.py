@@ -204,22 +204,15 @@ async def _fetch_player_matches(db, name: str, as_of: str) -> list[dict]:
     2026-06 Universal canonical history wiring: canonical match rows
     may use ``player1``/``player2`` (projector output) alongside
     legacy ``winner_name``/``loser_name``.  Date may be stored as
-    ``date``, ``event_date``, or ``match_date``.  Query both shapes."""
+    ``date``, ``event_date``, or ``match_date``.  Query both shapes.
+
+    2026-06 Commit-A gap closure: ``player1``/``player2`` are
+    PARTICIPANTS, not winner labels.  Winner is derived STRICTLY from
+    authoritative outcome fields (``winner_name`` → ``winner`` →
+    numeric score comparison).  If the completed row carries no
+    determinable winner, we DROP it rather than infer from
+    participant order."""
     if not name: return []
-    cursor = db.tennis_matches_history.find(
-        {"$or": [
-            {"winner_name": name}, {"loser_name": name},
-            {"player1": name},     {"player2": name},
-         ],
-         "$or": [
-             {"date":       {"$lt": as_of}},
-             {"event_date": {"$lt": as_of}},
-             {"match_date": {"$lt": as_of}},
-         ],
-         # The outer $or on names has been replaced by combining via $and below.
-        }
-    ).limit(400)
-    # The two $or at the top level override each other in Mongo; use $and.
     cursor = db.tennis_matches_history.find({
         "$and": [
             {"$or": [{"winner_name": name}, {"loser_name": name},
@@ -231,18 +224,68 @@ async def _fetch_player_matches(db, name: str, as_of: str) -> list[dict]:
     }).sort("date", 1).limit(400)
     rows = [m async for m in cursor]
     # Normalize canonical/legacy field aliases so downstream code
-    # sees ONE shape.
+    # sees ONE shape.  CRITICAL: winner MUST come from an
+    # authoritative outcome signal.
+    normalized: list[dict] = []
     for r in rows:
-        if not r.get("winner_name") and r.get("player1"):
-            # Winner determination: prefer legacy winner_name; else
-            # use `winner` field if present; else fall back to player1.
-            r.setdefault("winner_name",
-                           r.get("winner") or r.get("player1"))
-            r.setdefault("loser_name",
-                           r.get("loser")  or r.get("player2"))
+        _winner, _loser = _derive_winner_loser(r)
+        if not _winner or not _loser:
+            # Unresolvable outcome — skip, do NOT infer from order.
+            continue
+        r["winner_name"] = _winner
+        r["loser_name"]  = _loser
         if not r.get("date"):
             r["date"] = r.get("match_date") or r.get("event_date")
-    return rows
+        normalized.append(r)
+    return normalized
+
+
+def _derive_winner_loser(row: dict) -> tuple[Optional[str], Optional[str]]:
+    """Return (winner_name, loser_name) derived from authoritative
+    completed-match outcome fields.  Participant order (player1 /
+    player2) is NEVER used as a winner signal.
+
+    Resolution order:
+      1. Explicit ``winner_name`` + ``loser_name``.
+      2. Explicit ``winner`` field (with ``loser`` or by diff vs
+         ``player1``/``player2``).
+      3. Numeric score comparison: ``score.p1`` vs ``score.p2``
+         (or ``home_score`` / ``away_score``) mapped onto
+         ``player1``/``player2`` (or ``home_team``/``away_team``).
+      4. Give up → (None, None).  The caller MUST drop the row.
+    """
+    w = row.get("winner_name")
+    l = row.get("loser_name")
+    if w and l:
+        return w, l
+    # (2) explicit `winner` / `loser` keys without `_name` suffix.
+    w2 = row.get("winner")
+    l2 = row.get("loser")
+    p1 = row.get("player1") or row.get("home_team")
+    p2 = row.get("player2") or row.get("away_team")
+    if w2:
+        if l2:
+            return w2, l2
+        if p1 and p2:
+            if w2 == p1: return p1, p2
+            if w2 == p2: return p2, p1
+    # (3) numeric score comparison.
+    score = row.get("score") or {}
+    _s1 = (score.get("p1") if isinstance(score, dict) else None)
+    _s2 = (score.get("p2") if isinstance(score, dict) else None)
+    if _s1 is None:
+        _s1 = row.get("home_score")
+        _s2 = row.get("away_score")
+    try:
+        if _s1 is not None and _s2 is not None and p1 and p2:
+            _i1 = int(_s1); _i2 = int(_s2)
+            if _i1 > _i2:
+                return p1, p2
+            if _i2 > _i1:
+                return p2, p1
+    except (TypeError, ValueError):
+        pass
+    return None, None
 
 
 async def _fetch_h2h_matches(db, a: str, b: str, as_of: str) -> list[dict]:
@@ -261,15 +304,17 @@ async def _fetch_h2h_matches(db, a: str, b: str, as_of: str) -> list[dict]:
         ],
     }).sort("date", 1)
     rows = [m async for m in cursor]
+    normalized: list[dict] = []
     for r in rows:
-        if not r.get("winner_name") and r.get("player1"):
-            r.setdefault("winner_name",
-                           r.get("winner") or r.get("player1"))
-            r.setdefault("loser_name",
-                           r.get("loser")  or r.get("player2"))
+        _winner, _loser = _derive_winner_loser(r)
+        if not _winner or not _loser:
+            continue
+        r["winner_name"] = _winner
+        r["loser_name"]  = _loser
         if not r.get("date"):
             r["date"] = r.get("match_date") or r.get("event_date")
-    return rows
+        normalized.append(r)
+    return normalized
 
 
 # ---------------------------------------------------------------------------
