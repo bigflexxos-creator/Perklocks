@@ -85,7 +85,18 @@ def fingerprint_fields(pick: dict) -> dict:
         "canonical_pick_id": pick.get("canonical_pick_id") or pick.get("id") or pick.get("pick_id"),
         "publication_version": pick.get("publication_version") or pick.get("snapshot_version"),
         "sport": pick.get("sport"),
-        "canonical_event_id": pick.get("canonical_event_id") or pick.get("event_id") or pick.get("external_id"),
+        "canonical_event_id": (
+            pick.get("canonical_event_id")
+            or pick.get("provider_event_id")
+            or pick.get("event_id")
+            # 2026-06 Commit B/1 (item 11) — ``external_id`` is a
+            # Perklocks internal identity (shape ``SPORT-EVENT-...``)
+            # and MUST NEVER be used as a provider_event_id fallback.
+            # Fail closed here: if neither canonical_event_id nor
+            # provider_event_id is available the fingerprint carries
+            # None, which the publication boundary surfaces as
+            # LINEAGE_MISSING_PROVIDER_EVENT_ID.
+        ),
         "market": pick.get("market"),
         "selection": pick.get("selection"),
         "line": pick.get("line"),

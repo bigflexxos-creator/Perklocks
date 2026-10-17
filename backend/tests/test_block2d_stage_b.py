@@ -190,7 +190,10 @@ def test_build_pick_implied_probability_computed_from_real_odds():
     MUST be computed from those odds — never null."""
     src = open("/app/backend/sports_engine.py").read()
     idx = src.index("def _build_pick")
-    end = idx + 3000
+    # 2026-06 Commit B/1 — ``_build_pick`` grew universal SourceWager
+    # provenance kwargs (additive, back-compat).  Enlarge the window
+    # so ``_implied_prob`` reference stays in-scope for this check.
+    end = idx + 4500
     body = src[idx: end]
     # The _build_pick body must consult _implied_prob and NOT bypass
     # it when book_odds are present.

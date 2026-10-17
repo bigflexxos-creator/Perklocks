@@ -1985,7 +1985,24 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
                 # fail-closed SYNTHETIC_BOOK_ODDS rejection — the
                 # canonical contract.
                 odds_source: str | None = None,
-                bookmaker: str | None = None):
+                bookmaker: str | None = None,
+                # 2026-06 Commit B/1 — SourceWager universal lineage (additive, back-compat).
+                provider: str | None = None,
+                provider_event_id: str | None = None,
+                provider_market_key: str | None = None,
+                provider_outcome_name: str | None = None,
+                canonical_event_id: str | None = None,
+                canonical_player_id: str | None = None,
+                canonical_team_id: str | None = None,
+                player_name: str | None = None,
+                line: float | int | str | None = None,
+                side: str | None = None,
+                observed_at: str | None = None,
+                line_source: str | None = None,
+                observed_quotes: list | None = None,
+                source_wager: dict | None = None,
+                canonical_wager_id: str | None = None,
+                quote_id: str | None = None):
     # Filter out malformed prices outside realistic American odds range.
     # Alt prop picks are legitimately chalky but capped at -1000 max.
     # Long-shot picks (anytime goal scorer, etc.) can have huge plus prices.
@@ -2332,6 +2349,34 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
            if (odds_source and final_odds is not None) else {}),
         **({"bookmaker": bookmaker}
            if (bookmaker and final_odds is not None) else {}),
+        # ── 2026-06 Commit B/1 — SourceWager lineage stamping ───────
+        # Additive: only stamped when the caller supplied the value.
+        # Downstream dedupe / publication boundary / API DTO see ONE
+        # authoritative source of structured identity + observed trail.
+        **({"provider": provider} if provider else {}),
+        **({"provider_event_id": provider_event_id}
+           if provider_event_id else {}),
+        **({"provider_market_key": provider_market_key}
+           if provider_market_key else {}),
+        **({"provider_outcome_name": provider_outcome_name}
+           if provider_outcome_name else {}),
+        **({"canonical_event_id": canonical_event_id}
+           if canonical_event_id else {}),
+        **({"canonical_player_id": canonical_player_id}
+           if canonical_player_id else {}),
+        **({"canonical_team_id": canonical_team_id}
+           if canonical_team_id else {}),
+        **({"player_name": player_name} if player_name else {}),
+        **({"line": line} if line is not None else {}),
+        **({"side": side} if side else {}),
+        **({"observed_at": observed_at} if observed_at else {}),
+        **({"line_source": line_source} if line_source else {}),
+        **({"observed_quotes": observed_quotes}
+           if observed_quotes else {}),
+        **({"source_wager": source_wager} if source_wager else {}),
+        **({"canonical_wager_id": canonical_wager_id}
+           if canonical_wager_id else {}),
+        **({"quote_id": quote_id} if quote_id else {}),
         "implied_probability": round(book_implied * 100, 1),
         "edge_percent": edge,
         # PHASE 2A — canonical-edge provenance (Part 8)
@@ -7642,6 +7687,28 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
     # the bookmakers[] loop (first-seen book wins) and from the real
     # observed rows persisted upstream in ``db.live_alt_lines``.
     _nfl_alt_lineage: dict[tuple, dict] = {}
+    # ── 2026-06 Commit B/1 (items 1-3, 16) — UNIVERSAL lineage ───────
+    # Generalisation of the NFL-only ``_nfl_alt_lineage`` dict to EVERY
+    # sport / market family emitted by this function.  The downstream
+    # emitter looks up the exact first-preferred-book quote via
+    # ``payload["_bucket_lineage"][(mk, player, point_key, side)]`` and
+    # stamps ``provider_event_id`` + ``provider_market_key`` +
+    # ``bookmaker`` + ``book_odds`` + ``line_source=OBSERVED_BOOK`` +
+    # ``observed_at`` onto the published pick.  Preferred-book
+    # selection follows ``PREFERRED_BOOK_ORDER`` (FanDuel, DraftKings,
+    # BetMGM, Caesars, PointsBet).  Line and side are already stamped
+    # at acquisition time in this loop (see ``point_key`` / ``side``),
+    # satisfying item 16 (LINE / SIDE first class).
+    _bucket_lineage: dict[tuple, dict] = {}
+    _bucket_quotes: dict[tuple, list[dict]] = {}
+    try:
+        from services.observed_quote import PREFERRED_BOOK_ORDER as _PBO
+    except Exception:
+        _PBO = ("fanduel", "draftkings", "betmgm", "caesars", "pointsbet")
+    _PBO_RANK = {b.lower(): i for i, b in enumerate(_PBO)}
+    _PBO_TAIL = len(_PBO)
+    _nowz_iso = __import__("datetime").datetime.now(
+        __import__("datetime").timezone.utc).isoformat().replace("+00:00", "Z")
     # Track birth-year hints per (clean) player name so we can disambiguate
     # name-collision pairs (Max Muncy LAD vs OAK) when both teams have the
     # same player name on their roster.
@@ -7786,6 +7853,49 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                             continue
                     point_key = point
                 bucket.setdefault((mk, player, point_key, side), []).append(int(price))
+                # ── 2026-06 Commit B/1 — UNIVERSAL lineage stamp ──────
+                # Record the full per-bookmaker quote for every
+                # sport/market in this function (not just NFL alt).
+                # The emitter picks the authoritative preferred-book
+                # quote at publication time via
+                # ``select_authoritative_book`` so NO median masquerades
+                # as sportsbook truth.
+                _ukey = (mk, player, point_key, side)
+                _book_slug = (b.get("key") or "").lower()
+                _quote_entry = {
+                    "sport": sport,
+                    "event_id": payload.get("id"),
+                    "provider_event_id": payload.get("id"),
+                    "provider_market_key": mk,
+                    "market_family": mk,
+                    "line": (point_key if isinstance(point_key, (int, float)) else None),
+                    "side": str(side) if side is not None else None,
+                    "bookmaker": _book_slug,
+                    "price": int(price),
+                    "odds_source": "the_odds_api",
+                    "observed_at": b.get("last_update") or _nowz_iso,
+                    "player_name": player or None,
+                    "provider_outcome_name": raw_player,
+                }
+                _bucket_quotes.setdefault(_ukey, []).append(_quote_entry)
+                _rank = _PBO_RANK.get(_book_slug, _PBO_TAIL)
+                _prev = _bucket_lineage.get(_ukey)
+                if _prev is None or _rank < _prev.get("_rank", _PBO_TAIL + 1):
+                    _bucket_lineage[_ukey] = {
+                        "sportsbook": _book_slug,
+                        "bookmaker": _book_slug,
+                        "provider": "the_odds_api",
+                        "provider_event_id": payload.get("id"),
+                        "provider_market_key": mk,
+                        "provider_outcome_name": raw_player,
+                        "provider_last_seen": b.get("last_update"),
+                        "observed_at": b.get("last_update") or _nowz_iso,
+                        "line_source": "OBSERVED_BOOK",
+                        "line": (point_key if isinstance(point_key, (int, float)) else None),
+                        "side": str(side) if side is not None else None,
+                        "price": int(price),
+                        "_rank": _rank,
+                    }
                 # ── 2026-06-27 · NFL FANDUEL PARITY (bookmaker path) ──
                 # First-seen sportsbook wins for provenance so a real
                 # book price emitted from the bundle always carries
@@ -9489,11 +9599,58 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         # overrides the seed mp for anytime_td / 1st_td picks when the
         # specialized engine returned a valid result.
         _effective_mp = _atd_model_override if _atd_model_override is not None else mp
+        # ── 2026-06 Commit B/1 — UNIVERSAL lineage lookup ──────────
+        # Look up the exact first-preferred-book quote captured at
+        # bucket-population time.  This is the authoritative sportsbook
+        # offering (NOT the median).  When available, we stamp
+        # ``bookmaker`` / ``book_odds`` / ``line_source=OBSERVED_BOOK``
+        # / ``provider_event_id`` / ``provider_market_key`` /
+        # ``observed_at`` and the full ``observed_quotes`` trail onto
+        # the emitted pick via the extended ``_build_pick`` kwargs so
+        # downstream dedupe + publication boundary see ONE source of
+        # truth.  Median remains ANALYTICS only (``consensus_price``).
+        _lineage = _bucket_lineage.get((mk, player, point, side))
+        _quotes_trail = _bucket_quotes.get((mk, player, point, side), []) or []
+        _preferred_price = median
+        _preferred_bookmaker = None
+        _preferred_odds_source = None
+        _preferred_observed_at = None
+        _preferred_line_source = None
+        _preferred_provider_event_id = None
+        _preferred_provider_market_key = None
+        _preferred_provider_outcome_name = None
+        if _lineage:
+            _preferred_price = int(_lineage.get("price") if _lineage.get("price") is not None else median)
+            _preferred_bookmaker = _lineage.get("bookmaker") or _lineage.get("sportsbook")
+            _preferred_odds_source = "the_odds_api"
+            _preferred_observed_at = _lineage.get("observed_at")
+            _preferred_line_source = _lineage.get("line_source") or "OBSERVED_BOOK"
+            _preferred_provider_event_id = _lineage.get("provider_event_id")
+            _preferred_provider_market_key = _lineage.get("provider_market_key") or mk
+            _preferred_provider_outcome_name = _lineage.get("provider_outcome_name")
+        # Canonical wager identity (structured, display-string-free).
+        _cwid = None
+        try:
+            from services.canonical_wager_identity import (
+                canonical_wager_id as _mk_cwid,
+            )
+            _cwid = _mk_cwid(
+                provider_event_id=_preferred_provider_event_id,
+                canonical_event_id=None,
+                provider_market_key=_preferred_provider_market_key or mk,
+                canonical_player_id=None,
+                canonical_team_id=None,
+                line=(point if isinstance(point, (int, float)) else None),
+                side=str(side) if side is not None else None,
+            )
+        except Exception:
+            _cwid = None
         new_pick = _build_pick(
             sport=sport, league=f"{league} · Props", event=f"{away} @ {home}",
             event_time=commence,
             market=market_label,
-            pick_side=player, model_win_prob=_effective_mp, book_odds=median,
+            pick_side=player, model_win_prob=_effective_mp,
+            book_odds=_preferred_price,
             lock=lock, factors=breakdown,
             insights=_prop_insights(sport, breakdown, player),
             external_id=f"{sport}-{payload.get('id', '')}-{mk}-{player[:10]}-{side}-{point}",
@@ -9508,6 +9665,20 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             # away_team / home_team_id / away_team_id natively (MLB only).
             home_team_name=home,
             away_team_name=away,
+            # 2026-06 Commit B/1 — SourceWager lineage plumbing.
+            odds_source=_preferred_odds_source,
+            bookmaker=_preferred_bookmaker,
+            provider="the_odds_api" if _lineage else None,
+            provider_event_id=_preferred_provider_event_id,
+            provider_market_key=_preferred_provider_market_key or mk,
+            provider_outcome_name=_preferred_provider_outcome_name,
+            player_name=player or None,
+            line=(point if isinstance(point, (int, float)) else None),
+            side=str(side) if side is not None else None,
+            observed_at=_preferred_observed_at,
+            line_source=_preferred_line_source,
+            observed_quotes=_quotes_trail if _quotes_trail else None,
+            canonical_wager_id=_cwid,
         )
         # Block 2D · P0 (2026-06-09) — SURGICAL NFL TEAM ATTACH.
         # The identity gate rejects any player-prop lacking a
