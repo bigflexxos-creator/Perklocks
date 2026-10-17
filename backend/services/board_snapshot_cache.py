@@ -210,6 +210,58 @@ def get_stale_snapshot(params: dict[str, Any]) -> Optional[Snapshot]:
 
 
 # ---------------------------------------------------------------------
+# 2026-06 Commit B/4 (items 17-18) — Snapshot / ETag ONE-AUTHORITY
+# ---------------------------------------------------------------------
+# Thin bridge that routes any route-level ETag decision through the
+# B3 ``snapshot_etag_authority``.  The committed board_version is
+# the single source of truth; TTL / content-hash / server restart
+# time are NEVER consulted when committed is available (item 18).
+def decide_etag_response(client_if_none_match: Optional[str],
+                           *, params: Optional[dict[str, Any]] = None,
+                           ) -> dict[str, Any]:
+    """Return the ETag decision for a /api/picks/today-shaped request.
+
+    * ``committed`` comes from board_generation.active_version()
+      (via ``_committed_version()``).
+    * ``cached_snapshot`` is the entry for ``params`` (if any).
+    * Returns a dict with ``status`` (200|304|503), ``serve``
+      (``committed`` | ``cached_snapshot`` | None),
+      ``fallback_stale`` (bool), ``etag`` (str|None), ``reason``.
+
+    Clients MUST use the returned ``etag`` for their response ETag
+    header; the committed board_version is the ONE authoritative
+    version string (X-Board-Version mirrors it).
+    """
+    from services.snapshot_etag_authority import (
+        CommittedIdentity, snapshot_decision,
+    )
+    committed_version = _committed_version()
+    committed_identity = (
+        CommittedIdentity(
+            board_version=committed_version,
+            canonical_revision=committed_version,
+            generation_id=committed_version,
+            content_hash="",
+        ) if committed_version else None
+    )
+    cached_snap = None
+    if params is not None:
+        _snap = _state.entries.get(_cache_key(params))
+        if _snap is not None:
+            cached_snap = CommittedIdentity(
+                board_version=_snap.board_version,
+                canonical_revision=_snap.board_version,
+                generation_id=_snap.board_version,
+                content_hash="",
+            )
+    return snapshot_decision(
+        client_if_none_match=client_if_none_match,
+        committed=committed_identity,
+        cached_snapshot=cached_snap,
+    )
+
+
+# ---------------------------------------------------------------------
 # Single-flight ownership
 # ---------------------------------------------------------------------
 

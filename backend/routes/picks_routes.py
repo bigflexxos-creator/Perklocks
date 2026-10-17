@@ -361,8 +361,22 @@ async def under_of_the_day(
             return False
         return now <= dt <= cutoff
 
-    today_picks = [p for p in picks if starts_today(p)]
-    pool = today_picks if today_picks else picks
+    # ── 2026-06 Commit B/4 — Under-of-the-Day today-only strict ───
+    # Same TODAY-ONLY semantics as /api/picks/rollover.  Previously:
+    #   today_picks = [p for p in picks if starts_today(p)]
+    #   pool = today_picks if today_picks else picks
+    # which allowed a future-day Under to backfill.  Use the shared
+    # rollover_slate_contract day-filter so product-day semantics
+    # match /api/picks/rollover exactly.
+    try:
+        from services.rollover_slate_contract import filter_today_only
+        pool = filter_today_only(
+            picks, as_of_iso=now.isoformat().replace("+00:00", "Z"),
+            drop_started=False,
+        )
+    except Exception:
+        today_picks = [p for p in picks if starts_today(p)]
+        pool = today_picks   # strict today-only; no future fallback
     if not pool:
         return {"pick": None, "alternates": [], "total_evaluated": 0}
 
@@ -375,7 +389,7 @@ async def under_of_the_day(
         "pick": _canonicalize_lock_score(pool[0]),
         "alternates": _canonicalize_picks(pool[1:6]),  # 5 backup alt-Under locks
         "total_evaluated": len(pool),
-        "scoped_to_today": bool(today_picks),
+        "scoped_to_today": True,
     }
 
 
@@ -767,22 +781,59 @@ async def pick_rollover(
 
     picks = _filter_in_play_window(picks)
     now = datetime.now(timezone.utc)
-    cutoff = now + timedelta(hours=24)
+    now_iso = now.isoformat().replace("+00:00", "Z")
 
-    def starts_today(p: dict) -> bool:
-        dt = _parse_event_dt(p.get("event_time") or "")
-        if dt is None:
-            return False
-        return now <= dt <= cutoff
-
-    today_picks = [p for p in picks if starts_today(p)]
-    pool = today_picks if today_picks else picks
+    # ── 2026-06 Commit B/4 — ROLLOVER TODAY-ONLY REAL ADOPTION ─────
+    # (items 1-3 — Real Route Adoption).  The PRIOR branch here was:
+    #
+    #     today_picks = [p for p in picks if starts_today(p)]
+    #     pool = today_picks if today_picks else picks
+    #
+    # which explicitly allowed FUTURE picks when no today pick
+    # qualified.  B3's ``rollover_slate_contract`` captures the
+    # correct product-day semantics (slate_day_start <= event_time
+    # < next_slate_day_start) — wire it directly here so the
+    # /api/picks/rollover ROUTE never backfills from a future day.
+    #
+    # Rank order from ``select_rollover_top`` above is preserved —
+    # ``choose_rollover_locks`` filters-then-respects-input-order
+    # when ``safety_filter`` is unused, falling back to its internal
+    # (lock_score DESC, edge_percent DESC) ranking only to break
+    # ties.  Dedupe by canonical_event_id (one per event).  Future-
+    # day candidates are REJECTED outright (surfaced in telemetry).
+    try:
+        from services.rollover_slate_contract import choose_rollover_locks
+        _rr = choose_rollover_locks(
+            picks, as_of_iso=now_iso,
+            dedupe_key=lambda p: p.get("canonical_event_id")
+                                   or p.get("event_id")
+                                   or p.get("external_id"),
+            max_picks=MAX_LEGS,
+            min_lock_score=0.0,   # Lock-floor already enforced upstream
+        )
+        pool = _rr["selected"]
+        _rollover_tel = _rr["rollover_telemetry"]
+    except Exception as _r_err:
+        import logging as _lg
+        _lg.getLogger("lockscore.rollover").warning(
+            "rollover TODAY-only filter failed: %s", _r_err,
+        )
+        pool = []
+        _rollover_tel = {
+            "rollover_canonical_candidates": len(picks),
+            "rollover_today_candidates":     0,
+            "rollover_rejected_future_day":  len(picks),
+            "rollover_safety_eligible":      0,
+            "rollover_selected":             0,
+        }
     if not pool:
         # PERKLOCKS MAIN 36 · P1.6 — legitimately return 0 picks.
         # NO PICK > FORCED PICK.  Never backfill weak legs.
         return {
             "picks": [], "pick": None, "total_evaluated": 0,
-            "rollover_version": "v5",
+            "rollover_version": "v6-today-only-strict",
+            "selector_version": _SELECTOR_VERSION,
+            "rollover_telemetry": _rollover_tel,
             "selector_version": _SELECTOR_VERSION,
             "survivability": {
                 "mode": "data_driven",
@@ -798,6 +849,27 @@ async def pick_rollover(
     # Selector already produced the ranked + canonical-event-dedup'd
     # top-N in ``pool`` order.  Only attach composite_rank for the UI.
     top = [{**p, "composite_rank": round(_ev_score(p), 2)} for p in pool]
+    # ── 2026-06 Commit B/4 — official-slate / sticky-cache day guard
+    # (items 2 — rollover_slate_contract adoption).  Validate every
+    # leg's event_time belongs to today's slate before we persist
+    # into the sticky cache.  Any wrong-day leg aborts the cache
+    # write (SLATE_DATE_MISMATCH) — a leg stamp cannot create a
+    # frozen slate pointed at tomorrow.
+    try:
+        from services.rollover_slate_contract import validate_freeze_slate
+        _ok, _failures = validate_freeze_slate(top, slate_date_iso=now_iso)
+        if not _ok:
+            import logging as _lg
+            _lg.getLogger("lockscore.rollover").warning(
+                "sticky-cache write blocked by slate-day guard: %s",
+                _failures,
+            )
+            top = []
+    except Exception as _sl_err:
+        import logging as _lg
+        _lg.getLogger("lockscore.rollover").debug(
+            "slate-day guard skipped: %s", _sl_err,
+        )
     # ── Persist sticky cache before returning (2026-07-27) ────────────
     _survivability = {
         "mode": "data_driven",

@@ -98,19 +98,31 @@ async def _max_timestamp(db, collection: str, filt: dict, field: str) -> Optiona
 
 
 # Per-sport mapping to the right (collection, filter, timestamp field).
+#
+# ── 2026-06 Commit B/4 (item 11) — REAL event-time freshness ────────
+# PRIOR DEFECT: this map used ``updated_at`` as the authoritative
+# freshness field for every sport.  updated_at is OPERATIONAL metadata
+# (set to NOW whenever a projector touches a row); a 2025 completed
+# event rewritten today reads as CURRENT when it clearly isn't.
+#
+# B2's hi_event_time_freshness module made event_time the authority;
+# this adoption rewires every consumer in _SPORT_CONSUMER_MAP to
+# use the normalized event-time columns (event_time → game_date →
+# match_date → event_date → date), with updated_at as a secondary
+# field (reported but NEVER driving the freshness verdict).
 _SPORT_CONSUMER_MAP = {
-    "nfl":    [("player_game_actuals", {"sport": "nfl"}, "updated_at"),
-                ("team_game_actuals",   {"sport": "nfl"}, "updated_at")],
-    "mlb":    [("player_game_actuals", {"sport": "mlb"}, "updated_at"),
-                ("team_game_actuals",   {"sport": "mlb"}, "updated_at")],
-    "nba":    [("player_game_actuals", {"sport": "nba"}, "updated_at"),
-                ("team_game_actuals",   {"sport": "nba"}, "updated_at")],
-    "nhl":    [("player_game_actuals", {"sport": "nhl"}, "updated_at"),
-                ("team_game_actuals",   {"sport": "nhl"}, "updated_at")],
-    "soccer": [("soccer_matches",            {},                     "updated_at"),
-                ("soccer_player_game_logs",  {},                     "updated_at"),
-                ("player_game_actuals",      {"sport": "soccer"},    "updated_at")],
-    "tennis": [("tennis_matches_history",    {},                     "updated_at")],
+    "nfl":    [("player_game_actuals", {"sport": "nfl"}, "event_time"),
+                ("team_game_actuals",   {"sport": "nfl"}, "event_time")],
+    "mlb":    [("player_game_actuals", {"sport": "mlb"}, "event_time"),
+                ("team_game_actuals",   {"sport": "mlb"}, "event_time")],
+    "nba":    [("player_game_actuals", {"sport": "nba"}, "event_time"),
+                ("team_game_actuals",   {"sport": "nba"}, "event_time")],
+    "nhl":    [("player_game_actuals", {"sport": "nhl"}, "event_time"),
+                ("team_game_actuals",   {"sport": "nhl"}, "event_time")],
+    "soccer": [("soccer_matches",            {},                     "game_date"),
+                ("soccer_player_game_logs",  {},                     "game_date"),
+                ("player_game_actuals",      {"sport": "soccer"},    "event_time")],
+    "tennis": [("tennis_matches_history",    {},                     "date")],
     "cfb":    [("games",                     {"sport": "cfb"},       "game_date")],
 }
 
