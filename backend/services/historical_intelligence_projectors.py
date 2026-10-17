@@ -657,21 +657,54 @@ async def project_tennis_actuals(db) -> dict:
                     filt, {"_id": 1})
                 if existing:
                     continue
+                # ── 2026-06 Commit-A gap closure ─────────────────────
+                # player1/player2 are PARTICIPANTS, not winner labels.
+                # Derive authoritative winner_name / loser_name from
+                # the completed-match outcome (home_score vs away_score).
+                # If scores are missing / tied, we SKIP the row so no
+                # synthetic ordering-based winner leaks into history.
+                _p1 = g.get("home_team")
+                _p2 = g.get("away_team")
+                _s1 = g.get("home_score")
+                _s2 = g.get("away_score")
+                _winner_name = None
+                _loser_name = None
+                try:
+                    if _s1 is not None and _s2 is not None:
+                        _is1 = int(_s1); _is2 = int(_s2)
+                        if _is1 > _is2:
+                            _winner_name, _loser_name = _p1, _p2
+                        elif _is2 > _is1:
+                            _winner_name, _loser_name = _p2, _p1
+                        # tied → unresolvable; stay None.
+                except (TypeError, ValueError):
+                    _winner_name = None
+                    _loser_name = None
+                if not _winner_name or not _loser_name:
+                    # Completed-match row without a determinable winner
+                    # is unsafe for the Elo / form consumer.  Skip
+                    # rather than infer winner from participant order.
+                    continue
+                _game_date = g.get("game_date")
                 await db.tennis_matches_history.insert_one({
                     **filt,
-                    "player1": g.get("home_team"),
-                    "player2": g.get("away_team"),
-                    "score": {"p1": g.get("home_score"),
-                               "p2": g.get("away_score")},
+                    "player1": _p1,
+                    "player2": _p2,
+                    "winner_name": _winner_name,
+                    "loser_name":  _loser_name,
+                    # Keep `date` populated for the standard query path.
+                    "date":        _game_date,
+                    "score": {"p1": _s1, "p2": _s2},
                     "surface": g.get("surface"),
                     "tour": g.get("tour"),
                     "tournament": g.get("tournament"),
-                    "event_date": g.get("game_date"),
+                    "event_date": _game_date,
                     "status": "completed",
                     "provenance": {"provider": "games_rollup",
                                     "authority": 70,
                                     "retrieved_at": now_iso,
-                                    "projector": PROJECTOR_VERSION},
+                                    "projector": PROJECTOR_VERSION,
+                                    "winner_derivation": "home_vs_away_score"},
                     "source": "hi_projector_tennis",
                     "updated_at": now_iso,
                 })

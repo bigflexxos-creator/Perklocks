@@ -149,6 +149,83 @@ async def _load_wiki(name_norm: str) -> Optional[PlayerStats]:
     return None
 
 
+async def _load_canonical_history(name_norm: str,
+                                   league_hint: Optional[str] = None
+                                   ) -> Optional[PlayerStats]:
+    """2026-06 Commit-A gap closure: aggregate canonical per-game
+    actuals into a PlayerStats shape when no Understat/ESPN/Wiki
+    record exists for the player.
+
+    Reads ``player_game_actuals`` where ``sport='soccer'`` for rows
+    that resolve to this player via name match (case-insensitive).
+    Zero-goal, zero-shot players return None so the junk floor stays
+    clean.  This is a strict fallback — Understat remains preferred
+    when both sources carry the player.
+    """
+    from deps import db
+    try:
+        # Case-insensitive name match; canonical_player_id also
+        # considered when the caller already passed it in.
+        q = {
+            "sport": "soccer",
+            "$or": [
+                {"player_name": {"$regex": f"^{name_norm}$",
+                                   "$options": "i"}},
+                {"name":        {"$regex": f"^{name_norm}$",
+                                   "$options": "i"}},
+            ],
+        }
+        cursor = db.player_game_actuals.find(q).limit(200)
+    except Exception as e:
+        logger.debug("canonical history read failed for %s: %s",
+                     name_norm, e)
+        return None
+    goals = assists = shots = sot = minutes = games = 0
+    display_name = name_norm.title()
+    team = ""
+    league = ""
+    async for r in cursor:
+        pname = r.get("player_name") or r.get("name") or ""
+        if pname:
+            display_name = pname
+        actuals = r.get("actuals") or {}
+        goals   += int(r.get("goals")   or actuals.get("g")   or 0)
+        assists += int(r.get("assists") or actuals.get("a")   or 0)
+        shots   += int(r.get("shots")   or actuals.get("sh")  or 0)
+        sot     += int(r.get("shots_on_target")
+                        or actuals.get("sot") or 0)
+        minutes += int(r.get("minutes") or actuals.get("min") or 0)
+        games   += 1
+        if not team:
+            team = r.get("team") or r.get("team_name") or ""
+        if not league:
+            league = r.get("league") or ""
+    if games == 0 or (goals == 0 and assists == 0 and sot == 0):
+        return None
+    mp = max(1, minutes)
+    return PlayerStats(
+        player_name=display_name,
+        name_norm=name_norm,
+        team=team,
+        league=league or (league_hint or ""),
+        season=0,
+        games=games,
+        minutes=minutes,
+        goals=goals,
+        assists=assists,
+        goals_per_90=round(goals * 90.0 / mp, 3),
+        assists_per_90=round(assists * 90.0 / mp, 3),
+        shots_per_90=round(shots * 90.0 / mp, 3),
+        key_passes_per_90=0.0,
+        npxg_per_90=0.0,
+        form_score=50.0,
+        form_label="NEUTRAL",
+        position="",
+        source="canonical_history",
+        data_ok=True,
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────────────
@@ -161,7 +238,12 @@ async def get_player_stats(player_name: str,
       • Understat (Big-5) is preferred where available (richest features).
       • ESPN MLS is the primary source for MLS.
       • Wiki is a last-resort fallback for smaller leagues.
-      • If found in multiple, we return Understat > ESPN > Wiki.
+      • Canonical player_game_actuals (new) is the final strict
+        fallback — enables Champions-League / non-Big-5 players
+        with real completed-match history to reach the AGS model
+        even when Understat/ESPN/Wiki caches are empty for them.
+      • If found in multiple, we return Understat > ESPN > Wiki
+        > canonical_history.
     """
     n = _norm(player_name)
     if not n:
@@ -180,6 +262,9 @@ async def get_player_stats(player_name: str,
     if r:
         return r
     r = await _load_wiki(n)
+    if r:
+        return r
+    r = await _load_canonical_history(n, league_hint=league_hint)
     if r:
         return r
     return None

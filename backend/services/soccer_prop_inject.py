@@ -279,6 +279,17 @@ async def _fetch_scorers_for_league(league_hint: Optional[str]
     """Return top attacking players from `soccer_player_form`.
 
     If `league_hint` is None (UCL), pull all Big-5 top-90 combined.
+
+    2026-06 Commit-A gap closure: candidate discovery MUST not drop
+    a player merely because ``soccer_player_form`` is empty for them.
+    Many Champions-League and non-Big-5 attackers have canonical
+    completed-match history in ``player_game_actuals`` /
+    ``soccer_player_game_logs`` even when the per-90 Understat cache
+    is stale or empty.  We now UNION the Understat results with a
+    canonical-history-backed candidate list so the actual Goal
+    Scorer v3 model sees them.  Zero name boosts, zero inflation —
+    we only surface players whose canonical rows show real goal /
+    shot / minute activity.
     """
     from deps import db
     query = {"league": league_hint} if league_hint else {
@@ -291,7 +302,107 @@ async def _fetch_scorers_for_league(league_hint: Optional[str]
     docs = await db.soccer_player_form.find(query).sort(
         [("goals", -1)]
     ).to_list(length=400)
+
+    # ── Canonical-history candidate backfill ────────────────────────
+    try:
+        canonical_docs = await _fetch_canonical_history_candidates(
+            db, league_hint)
+    except Exception as e:
+        logger.debug("canonical candidate backfill failed: %s", e)
+        canonical_docs = []
+    if canonical_docs:
+        seen = {
+            (d.get("player_name") or "").strip().lower(): True
+            for d in docs
+        }
+        for c in canonical_docs:
+            key = (c.get("player_name") or "").strip().lower()
+            if not key or key in seen:
+                continue
+            seen[key] = True
+            docs.append(c)
     return docs
+
+
+async def _fetch_canonical_history_candidates(db,
+                                               league_hint: Optional[str]
+                                               ) -> list[dict]:
+    """Produce candidate rows in ``soccer_player_form`` shape from
+    canonical player-game actuals.
+
+    Reads directly from ``player_game_actuals`` where ``sport=soccer``
+    AND the row carries non-zero goal / shot activity (so junk is
+    excluded without any name whitelist).  Aggregates per
+    ``canonical_player_id`` (fallback: ``player_name``) across all
+    rows and returns a Understat-shaped candidate row the rest of
+    the pipeline can consume.
+    """
+    try:
+        cursor = db.player_game_actuals.find({
+            "sport": "soccer",
+            "$or": [
+                {"goals":            {"$gte": 1}},
+                {"actuals.g":        {"$gte": 1}},
+                {"shots_on_target": {"$gte": 1}},
+                {"actuals.sot":     {"$gte": 1}},
+            ],
+        }).limit(5000)
+    except Exception as e:
+        logger.debug("player_game_actuals canonical read failed: %s", e)
+        return []
+
+    # Aggregate per player.
+    agg: dict[str, dict] = {}
+    async for r in cursor:
+        pname = (r.get("player_name") or r.get("name") or "").strip()
+        if not pname:
+            continue
+        actuals = r.get("actuals") or {}
+        goals     = int(r.get("goals")     or actuals.get("g")   or 0)
+        assists   = int(r.get("assists")   or actuals.get("a")   or 0)
+        shots     = int(r.get("shots")     or actuals.get("sh")  or 0)
+        sot       = int(r.get("shots_on_target")
+                         or actuals.get("sot") or 0)
+        minutes   = int(r.get("minutes")   or actuals.get("min") or 0)
+        team      = r.get("team") or r.get("team_name") or ""
+        league    = r.get("league") or ""
+        key = pname.lower()
+        a = agg.setdefault(key, {
+            "player_name": pname, "team": team, "league": league,
+            "goals": 0, "assists": 0, "shots": 0, "sot": 0,
+            "minutes": 0, "games": 0,
+        })
+        a["goals"]   += goals
+        a["assists"] += assists
+        a["shots"]   += shots
+        a["sot"]     += sot
+        a["minutes"] += minutes
+        a["games"]   += 1
+
+    out: list[dict] = []
+    for key, a in agg.items():
+        # Only surface candidates with real signal and ≥1 goal — this
+        # mirrors the Understat `goals>=5 OR assists>=5` intent for
+        # non-season-aggregated canonical rows (per-game, so threshold
+        # is lower).  Prevents zero-goal defenders from being pushed
+        # into the AGS candidate list.
+        if a["goals"] < 1 and a["assists"] < 1:
+            continue
+        mp = max(1, a["minutes"])
+        a["goals_per_90"]    = round(a["goals"]   * 90.0 / mp, 3)
+        a["assists_per_90"]  = round(a["assists"] * 90.0 / mp, 3)
+        a["shots_per_90"]    = round(a["shots"]   * 90.0 / mp, 3)
+        a["npxg_per_90"]     = 0.0          # unknown — Understat only
+        a["form_score"]      = 50.0
+        a["form_label"]      = "NEUTRAL"
+        a["name_canonical"]  = key
+        a["source"]          = "canonical_history_resolver"
+        if not a.get("league") and league_hint:
+            a["league"] = league_hint
+        out.append(a)
+    # Sort by goals desc for deterministic ordering.
+    out.sort(key=lambda d: d.get("goals", 0), reverse=True)
+    return out
 
 
 async def _generate_for_event(ev: dict, sport_key: str,
