@@ -114,6 +114,16 @@ async def project_nfl_actuals(db, *, season: Optional[int] = None) -> dict:
         {"_id": 1, "player_id": 1, "player_name": 1, "player_display_name": 1,
          "team": 1, "opponent_team": 1, "season": 1, "week": 1,
          "position": 1, "game_id": 1,
+         # ── 2026-06 Commit B/2 (item 20) — CONSUMER-READY STAMPING ──
+         # Project these fields when present so the downstream HI /
+         # model consumers can see event_time, canonical opponent id,
+         # home/away, and real scores.  Fields are passed through only
+         # when the source carries them; missing values stay None (never
+         # fabricated — see item 20: "Do not call shell rows CURRENT").
+         "game_date": 1, "event_time": 1, "kickoff_time": 1,
+         "home_team": 1, "away_team": 1,
+         "home_score": 1, "away_score": 1,
+         "canonical_opponent_id": 1, "opponent_team_id": 1,
          "passing_yards": 1, "passing_tds": 1, "passing_ints": 1,
          "rushing_yards": 1, "rushing_tds": 1, "carries": 1,
          "receiving_yards": 1, "receiving_tds": 1, "receptions": 1, "targets": 1,
@@ -152,6 +162,25 @@ async def project_nfl_actuals(db, *, season: Optional[int] = None) -> dict:
             "week": row.get("week"),
             "event_id": str(event_id),
             "actuals": stats,
+            # ── 2026-06 Commit B/2 (item 20) — consumer-ready fields ──
+            # event_time: real completed-event timestamp (freshness
+            # authority — see hi_event_time_freshness).  home_away +
+            # canonical_opponent_id enable direct VS OPP queries
+            # (direct_h2h).  Fields stay absent when source doesn't
+            # carry them — do NOT fabricate.
+            **({"event_time": row.get("game_date")
+                if row.get("game_date") else row.get("event_time")
+                or row.get("kickoff_time")}
+               if (row.get("game_date") or row.get("event_time")
+                   or row.get("kickoff_time")) else {}),
+            **({"home_away": "home"
+                if row.get("home_team") == row.get("team")
+                else "away"}
+               if (row.get("home_team") and row.get("team")) else {}),
+            **({"canonical_opponent_id": row.get("canonical_opponent_id")
+                or row.get("opponent_team_id")}
+               if (row.get("canonical_opponent_id")
+                   or row.get("opponent_team_id")) else {}),
             "provenance": {"provider": "nflverse_weekly",
                            "authority": 90,
                            "retrieved_at": now_iso,
@@ -191,6 +220,35 @@ async def project_nfl_actuals(db, *, season: Optional[int] = None) -> dict:
                     "team_name": team,
                     "opponent": row.get("opponent_team"),
                     "season": season_v, "week": week,
+                    # ── 2026-06 Commit B/2 (item 20) — team-row
+                    # consumer-ready: scores, event_time, opponent
+                    # identity, home/away, result.  Absent when
+                    # source doesn't carry them (never fabricated).
+                    **({"event_time": row.get("game_date")
+                        or row.get("event_time")
+                        or row.get("kickoff_time")}
+                       if (row.get("game_date") or row.get("event_time")
+                           or row.get("kickoff_time")) else {}),
+                    **({"home_away": "home"
+                        if row.get("home_team") == team else "away"}
+                       if (row.get("home_team") and team) else {}),
+                    **({"canonical_opponent_id":
+                        row.get("canonical_opponent_id")
+                        or row.get("opponent_team_id")}
+                       if (row.get("canonical_opponent_id")
+                           or row.get("opponent_team_id")) else {}),
+                    **({"team_score": row.get("home_score")
+                        if row.get("home_team") == team
+                        else row.get("away_score")}
+                       if ((row.get("home_score") is not None
+                            or row.get("away_score") is not None)
+                           and row.get("home_team") and team) else {}),
+                    **({"opponent_score": row.get("away_score")
+                        if row.get("home_team") == team
+                        else row.get("home_score")}
+                       if ((row.get("home_score") is not None
+                            or row.get("away_score") is not None)
+                           and row.get("home_team") and team) else {}),
                     "provenance": {"provider": "nflverse_weekly",
                                    "authority": 85,
                                    "retrieved_at": now_iso,
