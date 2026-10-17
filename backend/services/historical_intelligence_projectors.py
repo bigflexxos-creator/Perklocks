@@ -80,6 +80,133 @@ def _iso(dt: datetime) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# ESPN canonical backbone (B5c — item 33 adoption)
+# ─────────────────────────────────────────────────────────────────────
+async def project_espn_canonical_actuals(db, sport: str) -> dict:
+    """Secondary ESPN-backbone pass: seed canonical team / player
+    rows from any ``espn_scoreboard_cache`` payloads using the shared
+    ``services.espn_canonical_enrichment`` normalizer.
+
+    * Reads completed-event ESPN payloads already cached by the
+      orchestrator (no new network call).
+    * Writes ``team_game_actuals`` (always, score pair available).
+      Player rows are written only when ESPN leaders / boxscore
+      athletes are present in the cached payload — otherwise the
+      team-perspective rows alone power VS OPP for team markets.
+    * Idempotent on ``(sport, canonical_event_id, canonical_team_id)``.
+    * Returns ``{written, skipped}`` so callers can report coverage
+      honestly (no silent "0 picks").
+
+    This is additive and ESPN is NEVER promoted to sportsbook truth
+    or model probability — the adoption only widens VS OPP coverage
+    for sports whose provider leader table is thin.
+    """
+    try:
+        from services.espn_canonical_enrichment import (
+            canonical_team_row,
+            canonical_player_row,
+        )
+    except Exception as e:
+        return {"sport": sport, "status": STATUS_UNKNOWN,
+                "reason": f"espn_canonical_enrichment_missing:{e}"}
+    sport_lc = sport.lower()
+    try:
+        cur = db.espn_scoreboard_cache.find({"sport": sport_lc})
+    except Exception as e:
+        return {"sport": sport, "status": STATUS_UNKNOWN,
+                "reason": f"espn_cache_read_error:{e}"}
+    written_team = written_player = skipped = 0
+    now_iso = _iso(_now())
+    async for raw in cur:
+        try:
+            event = raw.get("event") or raw.get("competition") or raw
+            competitors = raw.get("competitors") or event.get("competitors") or []
+            if len(competitors) < 2:
+                skipped += 1
+                continue
+            home_side = next((c for c in competitors
+                              if (c.get("homeAway") == "home"
+                                  or c.get("home_away") == "home")),
+                             competitors[0])
+            away_side = next((c for c in competitors
+                              if c is not home_side),
+                             competitors[1])
+            # Team-perspective rows for both sides.
+            for team_side, opp_side in ((home_side, away_side),
+                                        (away_side, home_side)):
+                trow = canonical_team_row(event, team_side, opp_side,
+                                           sport_lc)
+                if not trow.get("canonical_event_id") \
+                        or not trow.get("canonical_team_id"):
+                    continue
+                trow["updated_at"] = now_iso
+                trow.setdefault("provenance", {
+                    "provider":     "espn",
+                    "authority":    75,
+                    "retrieved_at": now_iso,
+                    "projector":    PROJECTOR_VERSION,
+                })
+                filt = {"sport": sport_lc,
+                        "canonical_event_id": trow["canonical_event_id"],
+                        "canonical_team_id":  trow["canonical_team_id"]}
+                try:
+                    await db.team_game_actuals.update_one(
+                        filt, {"$set": trow}, upsert=True)
+                    written_team += 1
+                except Exception:
+                    skipped += 1
+            # Player rows (optional — only when leaders present).
+            athletes = (raw.get("leaders")
+                        or raw.get("athletes")
+                        or event.get("leaders")
+                        or [])
+            for ath in athletes:
+                p = ath if isinstance(ath, dict) else None
+                if not p:
+                    continue
+                team_side = (home_side if p.get("team_side") == "home"
+                             else away_side)
+                opp_side  = (away_side if team_side is home_side
+                             else home_side)
+                prow = canonical_player_row(
+                    event, p, team_side, opp_side, sport_lc,
+                    actuals=p.get("actuals") or p.get("stats") or {},
+                )
+                if not prow.get("canonical_event_id") \
+                        or not prow.get("canonical_player_id"):
+                    continue
+                prow["updated_at"] = now_iso
+                prow.setdefault("provenance", {
+                    "provider":     "espn",
+                    "authority":    75,
+                    "retrieved_at": now_iso,
+                    "projector":    PROJECTOR_VERSION,
+                })
+                filt = {"sport": sport_lc,
+                        "canonical_event_id":  prow["canonical_event_id"],
+                        "canonical_player_id": prow["canonical_player_id"]}
+                try:
+                    await db.player_game_actuals.update_one(
+                        filt, {"$set": prow}, upsert=True)
+                    written_player += 1
+                except Exception:
+                    skipped += 1
+        except Exception:
+            skipped += 1
+            continue
+    return {
+        "sport":              sport,
+        "status":             (STATUS_CURRENT if (written_team or written_player)
+                               else STATUS_COVERAGE_LIMITED),
+        "team_rows_written":  written_team,
+        "player_rows_written": written_player,
+        "skipped":            skipped,
+        "reason":             None if (written_team or written_player)
+                               else "no_espn_cache_rows",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────
 # NFL
 # ─────────────────────────────────────────────────────────────────────
 
@@ -263,6 +390,19 @@ async def project_nfl_actuals(db, *, season: Optional[int] = None) -> dict:
                 except Exception as e:
                     logger.debug("nfl team projector failed: %s", e)
 
+    # ── 2026-06 Commit B/5c (item 33) — ESPN canonical backbone
+    # adoption.  Call the shared ESPN canonical enrichment projector
+    # as a complementary pass so VS OPP coverage includes any
+    # completed events the nflverse weekly feed has not yet
+    # published.  Additive; never promoted to sportsbook truth and
+    # never used as a model probability — ESPN authority stays below
+    # the primary provider.
+    espn_report = None
+    try:
+        espn_report = await project_espn_canonical_actuals(db, "nfl")
+    except Exception as e:
+        logger.debug("B5c NFL ESPN canonical backbone skipped: %s", e)
+
     return {
         "status": STATUS_CURRENT if (inserted + updated) > 0 else STATUS_INGESTION_LAG,
         "sport": "nfl", "season": season,
@@ -270,6 +410,8 @@ async def project_nfl_actuals(db, *, season: Optional[int] = None) -> dict:
         "inserted": inserted, "updated": updated, "skipped": skipped,
         "team_rows": team_inserted,
         "projector_version": PROJECTOR_VERSION,
+        **({"espn_canonical_backbone": espn_report}
+           if espn_report is not None else {}),
     }
 
 
@@ -475,8 +617,20 @@ async def project_nhl_actuals(db) -> dict:
                 logger.info("ESPN NHL backbone seeded %d games", seeded)
         except Exception:
             pass
+        # ── 2026-06 Commit B/5c (item 33) — ESPN canonical backbone
+        # adoption for NHL.  Additionally project the shared canonical
+        # team / player rows so VS OPP queries have ``team_game_actuals``
+        # / ``player_game_actuals`` coverage even when the primary
+        # player_game_logs feed is empty.
+        espn_canonical = None
+        try:
+            espn_canonical = await project_espn_canonical_actuals(db, "nhl")
+        except Exception as e:
+            logger.debug("B5c NHL ESPN canonical backbone skipped: %s", e)
         return {"status": STATUS_COVERAGE_LIMITED, "sport": "nhl",
-                "reason": "no_rows_in_player_game_logs"}
+                "reason": "no_rows_in_player_game_logs",
+                **({"espn_canonical_backbone": espn_canonical}
+                   if espn_canonical is not None else {})}
 
     cur = db.player_game_logs.find(
         {"sport": "nhl"},
@@ -847,5 +1001,6 @@ __all__ = [
     "project_nfl_actuals", "project_mlb_actuals", "project_nba_actuals",
     "project_nhl_actuals", "project_soccer_actuals",
     "project_tennis_actuals", "project_cfb_actuals",
+    "project_espn_canonical_actuals",
     "project_sport", "PROJECTORS",
 ]
