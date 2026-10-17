@@ -1398,11 +1398,40 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 get_snapshot as _bsc_get,
                 get_stale_snapshot as _bsc_stale,
                 get_lock as _bsc_lock,
+                decide_etag_response as _bsc_decide,
             )
+            # ── 2026-06 Commit B/4.1 (item 3) — Snapshot/ETag ONE-authority
+            # route adoption.  Route the client If-None-Match decision
+            # through the committed-authority chain BEFORE serving the
+            # cached snapshot — so a stale V1 cache entry can never
+            # cause a 304 against a committed V2 identity (CASE A of
+            # item 60).  TTL / content-hash are never consulted while
+            # committed is available (item 18).
+            _client_etag_hdr = request.headers.get("if-none-match") or ""
+            try:
+                _etag_decision = _bsc_decide(
+                    client_if_none_match=_client_etag_hdr,
+                    params=_snapshot_params,
+                )
+            except Exception:
+                _etag_decision = None
+            if (_etag_decision and _etag_decision.get("status") == 304
+                    and _etag_decision.get("serve") == "committed"):
+                _etag_val = _etag_decision.get("etag") or ""
+                return Response(
+                    status_code=304,
+                    headers={
+                        "ETag": _etag_val,
+                        "X-Board-Version": (
+                            _etag_val.replace('W/"', '').split(":", 1)[0]
+                            if _etag_val else ""),
+                        "X-Snapshot-Cache": "HIT-304-COMMITTED",
+                    },
+                )
             _snap = _bsc_get(_snapshot_params)
             if _snap is not None:
                 # If-None-Match short-circuit → 304 Not Modified.
-                _client_etag = request.headers.get("if-none-match") or ""
+                _client_etag = _client_etag_hdr
                 # Strip weak/quotes for tolerant compare.
                 _cle = _client_etag.strip().strip('"').lstrip("W/").strip('"')
                 if _cle and _cle == _snap.board_version:
@@ -4010,6 +4039,25 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
                 _final_response = dict(_final_response)
                 _final_response["picks"] = _dto_project(_final_response["picks"])
                 _final_response["dto_version"] = "board_v2"
+                # ── 2026-06 Commit B/4.1 (item 1) — REAL api_visible ──
+                # This is the EXACT runtime stage where a published row
+                # has survived every eligibility filter / projection
+                # layer and now appears in the /api/picks/today response
+                # body.  Count ONLY the final projected rows (not
+                # ``canonical`` or ``_final_response["picks"]`` before
+                # projection) so ``api_visible`` corresponds to the
+                # response the client actually sees.
+                try:
+                    from services import stage_funnel as _sf_av
+                    for _p_av in _final_response["picks"]:
+                        _sf_av.record_stage(
+                            _p_av.get("sport") or "unknown",
+                            (_p_av.get("market_family")
+                             or _p_av.get("provider_market_key")
+                             or _p_av.get("market_key") or "*"),
+                            _sf_av.STAGE_API_VISIBLE)
+                except Exception:
+                    pass
         except Exception as _dto_err:
             logger.debug("BoardPickDTO projection skipped: %s", _dto_err)
 
