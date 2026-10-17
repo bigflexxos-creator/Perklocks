@@ -126,26 +126,31 @@ def test_api_visible_is_recorded_at_board_dto_projection_in_route():
 # ═══════════════════════════════════════════════════════════════════
 
 def test_orchestrator_records_distinct_stages_at_distinct_sites():
-    """pick_refresh_orchestrator must call record_stage for distinct
-    stages (MODEL_CANDIDATES / AT_OR_ABOVE_85 / PROVIDER_EVENTS) at
-    the real runtime sites — NOT by iterating 'canonicalized' and
-    bumping every downstream stage from a single pick."""
+    """pick_refresh_orchestrator must only count signals it can truly
+    attribute to the right runtime stage.
+
+    2026-06 Commit B/4.2 — the earlier instrumentation here recorded
+    STAGE_MODEL_CANDIDATES / STAGE_AT_OR_ABOVE_85 / STAGE_PROVIDER_
+    EVENTS from the classify/projector loops, which was SEMANTICALLY
+    WRONG (classify_source carries legacy / replayed rows; projector
+    source_rows are not provider events).  Those counters were REMOVED
+    pending real wiring in B5 — honest zero > false count.  What MUST
+    remain here is the SYNTHETIC_BOOK_ODDS rejection counter (a
+    pick's own flag, not a derived stage count).
+    """
     src = open("/app/backend/services/pick_refresh_orchestrator.py").read()
     assert "stage_funnel" in src
+    executable = "\n".join(
+        ln for ln in src.splitlines()
+        if not ln.strip().startswith("#")
+    )
     for stage in ("STAGE_MODEL_CANDIDATES", "STAGE_AT_OR_ABOVE_85",
                   "STAGE_PROVIDER_EVENTS"):
-        assert stage in src, (
-            f"orchestrator must record {stage} at its real runtime "
-            f"stage")
-    # The MODEL_CANDIDATES increment must be inside the per-pick
-    # loop (one real candidate = one record_stage).  The
-    # AT_OR_ABOVE_85 increment must be gated by the lock_score
-    # threshold check — proven by presence of the ``if ls >= 85.0``
-    # branch adjacent to the stage call.
-    i85 = src.index("STAGE_AT_OR_ABOVE_85")
-    window = src[max(0, i85 - 400): i85]
-    assert "85.0" in window or ">= 85" in window, (
-        "AT_OR_ABOVE_85 must be recorded only when lock_score >= 85")
+        assert stage not in executable, (
+            f"{stage} must NOT be recorded here — removed in B4.2; "
+            "real site is B5 scope")
+    assert "REASON_SYNTHETIC_BOOK_ODDS" in src, (
+        "SYNTHETIC_BOOK_ODDS rejection counting must survive")
 
 
 # ═══════════════════════════════════════════════════════════════════

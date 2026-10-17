@@ -758,6 +758,32 @@ async def pick_rollover(
     # ── In-play window + quality gate BEFORE the shared selector so
     # the canonical selector sees only playable + gate-approved rows.
     candidates = _filter_in_play_window(candidates)
+    # ── 2026-06 Commit B/4.2 (item 3) — DAY FILTER BEFORE RANKING ──
+    # Previously the TODAY filter ran AFTER select_rollover_top which
+    # meant a tomorrow 99 could enter the ranker and (worst case
+    # fallback) displace an eligible today pick.  Correct order per
+    # the directive:
+    #   candidate query → PRODUCT-DAY event_time FILTER
+    #                   → in-play/invalid filter → canonical eligibility
+    #                   → safety gates → rank → event dedupe → freeze
+    # Enforce the PRODUCT-DAY event_time filter here, pre-ranker, so
+    # a future-day candidate never reaches select_rollover_top /
+    # freeze_official_slate.  freeze retains the validator as
+    # defense-in-depth (see validate_freeze_slate below).
+    _now = datetime.now(timezone.utc)
+    _now_iso = _now.isoformat().replace("+00:00", "Z")
+    try:
+        from services.rollover_slate_contract import filter_today_only
+        _candidates_pre = len(candidates)
+        candidates = filter_today_only(
+            candidates, as_of_iso=_now_iso, drop_started=False,
+        )
+        _rejected_future_day = _candidates_pre - len(candidates)
+    except Exception as _df_err:
+        import logging
+        logging.getLogger("lockscore.rollover").warning(
+            "pre-ranker day filter skipped: %s", _df_err)
+        _rejected_future_day = 0
     try:
         from quality_gate import apply_quality_gate
         candidates, qg_blocked = apply_quality_gate(candidates)
@@ -780,27 +806,15 @@ async def pick_rollover(
     picks = top_selected
 
     picks = _filter_in_play_window(picks)
-    now = datetime.now(timezone.utc)
-    now_iso = now.isoformat().replace("+00:00", "Z")
-
-    # ── 2026-06 Commit B/4 — ROLLOVER TODAY-ONLY REAL ADOPTION ─────
-    # (items 1-3 — Real Route Adoption).  The PRIOR branch here was:
-    #
-    #     today_picks = [p for p in picks if starts_today(p)]
-    #     pool = today_picks if today_picks else picks
-    #
-    # which explicitly allowed FUTURE picks when no today pick
-    # qualified.  B3's ``rollover_slate_contract`` captures the
-    # correct product-day semantics (slate_day_start <= event_time
-    # < next_slate_day_start) — wire it directly here so the
-    # /api/picks/rollover ROUTE never backfills from a future day.
-    #
-    # Rank order from ``select_rollover_top`` above is preserved —
-    # ``choose_rollover_locks`` filters-then-respects-input-order
-    # when ``safety_filter`` is unused, falling back to its internal
-    # (lock_score DESC, edge_percent DESC) ranking only to break
-    # ties.  Dedupe by canonical_event_id (one per event).  Future-
-    # day candidates are REJECTED outright (surfaced in telemetry).
+    # ── 2026-06 Commit B/4.2 (item 3) — DAY FILTER ALREADY APPLIED ──
+    # The product-day event_time filter ran pre-ranker (see above),
+    # so ``picks`` is guaranteed to contain only today's candidates.
+    # ``choose_rollover_locks`` still runs here to apply the dedupe
+    # + safety-gate + telemetry contract and to produce the top-N
+    # final selection.  There is NO future-day fallback branch;
+    # ``pool`` can legitimately be 0/1/2/3 but never a future pick.
+    now = _now
+    now_iso = _now_iso
     try:
         from services.rollover_slate_contract import choose_rollover_locks
         _rr = choose_rollover_locks(
@@ -809,10 +823,14 @@ async def pick_rollover(
                                    or p.get("event_id")
                                    or p.get("external_id"),
             max_picks=MAX_LEGS,
-            min_lock_score=0.0,   # Lock-floor already enforced upstream
+            min_lock_score=0.0,
         )
         pool = _rr["selected"]
         _rollover_tel = _rr["rollover_telemetry"]
+        # Fold the pre-ranker drops into the telemetry so the operator
+        # sees future-day rejections as a first-class counter.
+        _rollover_tel["rollover_rejected_future_day"] += int(
+            _rejected_future_day)
     except Exception as _r_err:
         import logging as _lg
         _lg.getLogger("lockscore.rollover").warning(
@@ -822,7 +840,7 @@ async def pick_rollover(
         _rollover_tel = {
             "rollover_canonical_candidates": len(picks),
             "rollover_today_candidates":     0,
-            "rollover_rejected_future_day":  len(picks),
+            "rollover_rejected_future_day":  int(_rejected_future_day),
             "rollover_safety_eligible":      0,
             "rollover_selected":             0,
         }
