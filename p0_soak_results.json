@@ -1,0 +1,77 @@
+{
+  "pass": 33,
+  "fail": 0,
+  "issues": [],
+  "live": {
+    "snaps": [
+      {
+        "label": "T0: cold",
+        "status": 200,
+        "revision": "368",
+        "boardVersion": "5e53be16f50d07d7",
+        "generationId": "gen_20261018T071054_31878124",
+        "etag": "",
+        "pickCount": 86,
+        "pickIdHash": "874c7e095d7e1fa3",
+        "elapsedMs": 1631
+      },
+      {
+        "label": "T+1s",
+        "status": 200,
+        "revision": "368",
+        "boardVersion": "5e53be16f50d07d7",
+        "generationId": "gen_20261018T071054_31878124",
+        "etag": "",
+        "pickCount": 86,
+        "pickIdHash": "874c7e095d7e1fa3",
+        "elapsedMs": 1251
+      },
+      {
+        "label": "T+3s",
+        "status": 200,
+        "revision": "368",
+        "boardVersion": "5e53be16f50d07d7",
+        "generationId": "gen_20261018T071054_31878124",
+        "etag": "",
+        "pickCount": 86,
+        "pickIdHash": "874c7e095d7e1fa3",
+        "elapsedMs": 1279
+      },
+      {
+        "label": "foreground-simulated",
+        "status": 200,
+        "revision": "368",
+        "boardVersion": "5e53be16f50d07d7",
+        "generationId": "gen_20261018T071054_31878124",
+        "etag": "",
+        "pickCount": 86,
+        "pickIdHash": "874c7e095d7e1fa3",
+        "elapsedMs": 1244
+      },
+      {
+        "label": "manual-refresh",
+        "status": 200,
+        "revision": "368",
+        "boardVersion": "5e53be16f50d07d7",
+        "generationId": "gen_20261018T071054_31878124",
+        "etag": "",
+        "pickCount": 86,
+        "pickIdHash": "874c7e095d7e1fa3",
+        "elapsedMs": 1231
+      }
+    ],
+    "logins": [
+      {
+        "label": "fresh login",
+        "status": 200,
+        "ok": true
+      },
+      {
+        "label": "after 3s idle",
+        "status": 200,
+        "ok": true
+      }
+    ]
+  },
+  "ts": "2026-10-18T07:16:46.700Z"
+}
