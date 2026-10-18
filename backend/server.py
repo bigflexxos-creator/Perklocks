@@ -330,10 +330,40 @@ async def get_ready(response: Response):
     outage) is OPTIONAL and returns 200 with degraded=True flags so
     the pod continues serving normal traffic and the board naturally
     fails-closed at the market classifier layer.
+
+    P0-A Launch-Blocker (2026-06 Master Surgical Fix Build):
+    ``/api/ready`` previously reflected ONLY the startup-cached
+    `_READINESS_STATE` and never detected a mid-flight DB outage
+    (closed client / network drop / pool exhaustion).  We now
+    ALSO issue a short, lightly-cached live Mongo ping so the LB
+    stops sending login traffic to a pod whose shared client is
+    unusable.  Ping is throttled to once per 5s per process so a
+    probe burst can't hammer Mongo.
     """
     ready_state = globals().get("_READINESS_STATE") or {}
     db_ok  = bool(ready_state.get("database_ready", True))
     idx_ok = bool(ready_state.get("indexes_ready", True))
+
+    # ── Live DB ping (P0-A) — short timeout, 5s coalesced cache ──
+    live_db_ok: bool | None = None
+    try:
+        from services.database import ping_database as _ping_db
+        now_ts = datetime.now(timezone.utc).timestamp()
+        cache = globals().get("_READY_PING_CACHE") or {}
+        if (now_ts - float(cache.get("ts") or 0)) < 5.0 and "ok" in cache:
+            live_db_ok = bool(cache["ok"])
+        else:
+            live_db_ok = await _ping_db(timeout_ms=800)
+            globals()["_READY_PING_CACHE"] = {"ts": now_ts, "ok": bool(live_db_ok)}
+    except Exception as _ready_ping_err:
+        live_db_ok = False
+        logger.warning("ready-probe live DB ping errored: %s", _ready_ping_err)
+
+    # Fail-closed on live DB failure — the LB must stop sending
+    # /api/auth/login traffic to a pod that cannot talk to Mongo.
+    if live_db_ok is False:
+        db_ok = False
+
     ok = db_ok and idx_ok
     if not ok:
         response.status_code = 503
@@ -341,6 +371,7 @@ async def get_ready(response: Response):
         "ready": ok,
         "database_ready": db_ok,
         "indexes_ready": idx_ok,
+        "live_db_ping_ok": live_db_ok,
         "recovery_complete": bool(ready_state.get("recovery_complete", True)),
         "preflight_duration_ms": ready_state.get("duration_ms"),
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -379,7 +410,33 @@ async def register(payload: UserCreate, _throttle: None = Depends(_register_thro
 
 @api.post("/auth/login", response_model=Token)
 async def login(payload: UserLogin, _throttle: None = Depends(_login_throttle)):
-    doc = await db.users.find_one({"email": payload.email.lower()})
+    # P0-A Launch-Blocker (2026-06 Master Surgical Fix Build):
+    #   Convert transient Mongo outages (network blip, AutoReconnect,
+    #   ServerSelectionTimeoutError) into a CLEAN 503 instead of an
+    #   opaque 500.  The deps.py lazy proxy already fixes "cannot use
+    #   MongoClient after close" (auto-reinits via get_database()),
+    #   so by the time we get here either the DB is reachable or the
+    #   driver is genuinely unable to select a server — the latter
+    #   must be surfaced as a retryable failure, not an unhandled
+    #   exception.
+    try:
+        from pymongo.errors import (
+            AutoReconnect as _AutoReconnect,
+            ServerSelectionTimeoutError as _ServerSelectionTimeout,
+            NetworkTimeout as _NetworkTimeout,
+        )
+        _TRANSIENT_DB_EXC = (_AutoReconnect, _ServerSelectionTimeout, _NetworkTimeout)
+    except Exception:  # pragma: no cover — pymongo always present
+        _TRANSIENT_DB_EXC = tuple()
+
+    try:
+        doc = await db.users.find_one({"email": payload.email.lower()})
+    except _TRANSIENT_DB_EXC as _db_exc:
+        logger.warning("login: transient DB failure: %s", _db_exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Database temporarily unavailable, please retry.",
+        )
     if not doc or not verify_password(payload.password, doc["hashed_password"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     # Reject suspended users at login itself so they never get a usable
@@ -399,11 +456,16 @@ async def login(payload: UserLogin, _throttle: None = Depends(_login_throttle)):
         status=doc.get("status") or "active",
     )
     # Stamp last_login_at for the dashboard's active-24h tile.
+    # Best-effort — a transient blip here must NOT block a valid login
+    # from succeeding (we already authenticated the password).
     from datetime import datetime as _dt, timezone as _tz
-    await db.users.update_one(
-        {"id": doc["id"]},
-        {"$set": {"last_login_at": _dt.now(_tz.utc).isoformat()}},
-    )
+    try:
+        await db.users.update_one(
+            {"id": doc["id"]},
+            {"$set": {"last_login_at": _dt.now(_tz.utc).isoformat()}},
+        )
+    except _TRANSIENT_DB_EXC as _upd_exc:
+        logger.warning("login: last_login_at stamp failed (non-fatal): %s", _upd_exc)
     return Token(access_token=create_access_token(doc["id"]), user=public)
 
 

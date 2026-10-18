@@ -52,15 +52,113 @@ from services.database import (  # noqa: E402
 initialize_database()
 
 
-def __getattr__(name):
-    """Module-level lookup so ``deps.db`` and ``deps.client`` ALWAYS
-    resolve to the shared owner's current instances.  This survives
-    ``close_database()`` + ``initialize_database()`` cycles used in
-    tests and re-entrant startup scenarios."""
-    if name == "db":
+# ─────────────────────────────────────────────────────────────────────
+# P0-A Launch-Blocker Fix (2026-06 Master Surgical Fix Build)
+# =====================================================================
+# ROOT CAUSE PROVEN by tests/test_login_stale_client_repro.py:
+#   `from deps import db, client` captures the result of
+#   `get_database()` / `get_client()` into the IMPORTING module's
+#   globals ONCE at import time.  If `close_database()` later runs
+#   (shutdown fallback, admin reset, test harness, idle-pool reset)
+#   the authority's `_state.client` is nulled and the importer still
+#   holds a reference to the CLOSED motor client.  The next DB
+#   operation raises:
+#       pymongo.errors.InvalidOperation: Cannot use MongoClient after close
+#   which surfaces as `POST /api/auth/login → 500` and only clears
+#   on a supervisor restart.  The module-level `__getattr__` above
+#   does NOT rescue this case because `from deps import db` resolves
+#   the attribute exactly once at import; it never fires again.
+#
+# FIX (surgical, zero-callsite change):
+#   Export `db` and `client` as *lazy proxies*.  Every attribute /
+#   subscript access re-resolves through the shared authority
+#   (`get_database()` / `get_client()`) which already auto-reinits
+#   when `_state.client` is `None`.  Importers like
+#   `from deps import db` still get a module-level binding, but the
+#   binding is a proxy *object* whose behaviour defers to the LIVE
+#   handle on every call.  No new MongoClient per request, no pool
+#   leak, no supervisor restart needed, no auth weakening.
+# ─────────────────────────────────────────────────────────────────────
+
+
+class _LazyDatabaseProxy:
+    """Resolve the shared database handle on every access.
+
+    Behaves like an :class:`AsyncIOMotorDatabase` for the handful of
+    patterns the codebase uses: attribute access (``db.users``),
+    item access (``db["users"]``), ``repr``, truthiness, and
+    ``isinstance`` is NOT supported (callers don't need it).
+    """
+
+    __slots__ = ()
+
+    def _resolve(self):
         return get_database()
-    if name == "client":
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return getattr(self._resolve(), name)
+
+    def __getitem__(self, name):
+        return self._resolve()[name]
+
+    def __repr__(self) -> str:                      # pragma: no cover
+        try:
+            return f"<LazyDBProxy -> {self._resolve()!r}>"
+        except Exception:
+            return "<LazyDBProxy (unresolved)>"
+
+    def __bool__(self) -> bool:                     # pragma: no cover
+        try:
+            return self._resolve() is not None
+        except Exception:
+            return False
+
+
+class _LazyClientProxy:
+    """Resolve the shared motor client on every access."""
+
+    __slots__ = ()
+
+    def _resolve(self):
         return get_client()
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return getattr(self._resolve(), name)
+
+    def __getitem__(self, name):
+        return self._resolve()[name]
+
+    def __repr__(self) -> str:                      # pragma: no cover
+        try:
+            return f"<LazyClientProxy -> {self._resolve()!r}>"
+        except Exception:
+            return "<LazyClientProxy (unresolved)>"
+
+    def __bool__(self) -> bool:                     # pragma: no cover
+        try:
+            return self._resolve() is not None
+        except Exception:
+            return False
+
+
+# Public module symbols — importers get these proxies, not raw handles.
+db = _LazyDatabaseProxy()
+client = _LazyClientProxy()
+
+
+def __getattr__(name):
+    """Fallback resolver kept for anyone touching
+    ``deps.db`` / ``deps.client`` dynamically (e.g. monkeypatching
+    in tests).  The proxies above cover 100% of static ``from deps
+    import db`` callsites; this is defence-in-depth."""
+    if name == "db":
+        return db
+    if name == "client":
+        return client
     raise AttributeError(f"module 'deps' has no attribute {name!r}")
 
 # ── auth dependency ───────────────────────────────────────────────────
