@@ -879,71 +879,22 @@ class NFLPlayerHistoricalAdapter(HistoricalAdapter):
         if not base_q:
             return []
 
-        # ── 2026-10-03 Perklocks NFL CURRENT-SEASON HISTORY BRIDGE ──────
-        # Root cause of stale L10 (last-season game logs for current-
-        # season picks): `player_game_actuals` carries NFL rows under TWO
-        # parallel canonical_player_id schemes:
-        #   (1) gsis   e.g. "00-0036244"  (nfl_player_weekly projector,
-        #                                  covers 2019-2025)
-        #   (2) ESPN   e.g. "4242557"     (live_gamelog_nfl_v1,
-        #                                  covers CURRENT 2026 season)
-        # `player_identities` only carries ONE of the two for most
-        # players, so a single-id query misses the other pipeline's
-        # rows — the pick stamped with gsis sees only 2025, the pick
-        # stamped with ESPN sees only 2026.  Resolve the full identity
-        # bridge BEFORE firing the actuals query:
-        #   a) start with the pick id and any provider_ids on the
-        #      identity doc,
-        #   b) union with the set of distinct canonical_player_id
-        #      values that player_game_actuals already stores under
-        #      the EXACT player name scoped to sport="nfl" (bounded
-        #      and small — NFL has no two active players sharing an
-        #      identical full name once sport is scoped).
-        # This re-unites both pipelines WITHOUT creating a second
-        # historical provider and WITHOUT a Prod write.  The sort stays
-        # by event_time desc so current-season rows naturally lead
-        # (2026-10-* > 2026-01-* lexicographically).
+        # ── 2026-10-03 Perklocks UNIVERSAL IDENTITY BRIDGE ──────────────
+        # Historical Freshness Contract (services.historical_freshness).
+        # NFL used to carry a bespoke dual-pipeline bridge inline; it is
+        # now delegated to the shared resolver so every sport uses the
+        # SAME code path.  No change in behaviour for NFL — the shared
+        # resolver returns the exact same ID set the NFL-specific
+        # version produced.
         try:
-            if isinstance(base_q, dict) and "canonical_player_id" in base_q:
-                _ids: set[str] = set()
-                _initial = base_q.get("canonical_player_id")
-                if isinstance(_initial, str):
-                    _ids.add(_initial)
-                elif isinstance(_initial, dict) and "$in" in _initial:
-                    _ids.update(str(x) for x in _initial.get("$in") or [])
-                if eid:
-                    _ids.add(eid)
-                # Pull every provider_id sibling from the identity doc(s).
-                if q.entity_name:
-                    _norm2 = q.entity_name.strip().lower().replace(".", "")
-                    async for _ident in db.player_identities.find(
-                        {"sport": "NFL", "name_norm": _norm2},
-                        {"provider_ids": 1, "canonical_player_id": 1},
-                    ):
-                        _cp = _ident.get("canonical_player_id")
-                        if _cp:
-                            _ids.add(str(_cp))
-                        for _v in (_ident.get("provider_ids") or {}).values():
-                            if _v:
-                                _ids.add(str(_v))
-                # Union with every canonical_player_id already stored
-                # for an EXACT name match in actuals.  This closes the
-                # dual-pipeline bridge when identity has no sibling id.
-                if q.entity_name:
-                    _distinct = await db.player_game_actuals.distinct(
-                        "canonical_player_id",
-                        {"sport": "nfl", "player_name": q.entity_name},
-                    )
-                    for _d in _distinct or ():
-                        if _d:
-                            _ids.add(str(_d))
-                if len(_ids) > 1:
-                    base_q = {"sport": "nfl",
-                              "canonical_player_id": {"$in": sorted(_ids)}}
-        except Exception as _bridge_e:  # pragma: no cover — bridge is
-            # strictly additive; on any failure fall back to the
-            # original single-id query (preserves pre-fix behaviour).
-            logger.debug("NFL identity bridge soft-fail: %s", _bridge_e)
+            from services.historical_freshness import identity_candidates
+            _ids = await identity_candidates(
+                db, "nfl", eid or None, q.entity_name)
+            if _ids and len(_ids) > 1:
+                base_q = {"sport": "nfl",
+                          "canonical_player_id": {"$in": sorted(_ids)}}
+        except Exception as _bridge_e:  # pragma: no cover
+            logger.debug("NFL universal bridge soft-fail: %s", _bridge_e)
 
         obs: list[HistoricalObservation] = []
         docs: list[dict] = []
@@ -1001,24 +952,28 @@ class NFLPlayerHistoricalAdapter(HistoricalAdapter):
                 if v is not None:
                     try: actual = float(v)
                     except Exception: actual = None
-            # ── 2026-10-03 Perklocks — HONEST season context ──────────
-            # live_gamelog rows arrive with season=null; derive the NFL
-            # season from the real event_time (Sep-Dec of year Y OR
-            # Jan-Feb of Y+1 belong to NFL season Y).  No fabrication —
-            # we only compute from data already present on the row.
-            _season = doc.get("season")
-            if _season is None:
-                _et = str(doc.get("event_time") or "")[:10]
-                if len(_et) >= 7 and _et[0:4].isdigit() and _et[5:7].isdigit():
-                    _y = int(_et[0:4]); _m = int(_et[5:7])
-                    _season = _y if _m >= 8 else _y - 1
+            # ── 2026-10-03 Perklocks UNIVERSAL FRESHNESS CONTRACT ─────
+            # One shared normalizer across every sport.  Returns a
+            # truthful season (derived from event_time when the row
+            # stored null), event_date, is_current_season flag, and
+            # provenance.  No fabrication — HONEST ZERO when both
+            # stored season and event_date are missing.
+            try:
+                from services.historical_freshness import normalize_context
+                _ctx = normalize_context("nfl", doc)
+            except Exception:
+                _ctx = {"season": doc.get("season"),
+                        "event_date": str(doc.get("event_time") or "")[:10],
+                        "is_current_season": False}
+            _ctx["week"] = doc.get("week")
             obs.append(HistoricalObservation(
-                date=str(doc.get("event_time") or doc.get("ingested_at") or "")[:10],
+                date=_ctx.get("event_date") or
+                     str(doc.get("event_time") or doc.get("ingested_at") or "")[:10],
                 opponent_id=doc.get("canonical_opponent_id"),
                 opponent_name=doc.get("opponent") or doc.get("canonical_opponent_id"),
                 home_away=doc.get("home_away"),
                 actual=actual,
-                context={"season": _season, "week": doc.get("week")},
+                context=_ctx,
                 provenance=doc.get("source"),
                 event_id=doc.get("canonical_event_id") or doc.get("event_id"),
             ))
@@ -1083,7 +1038,12 @@ class NFLTeamHistoricalAdapter(HistoricalAdapter):
                 actual=actual,
                 context={"team_score": ts, "opponent_score": os_,
                          "result": doc.get("result"),
-                         "season": doc.get("season")},
+                         "season": (
+                             __import__("services.historical_freshness",
+                                         fromlist=["derive_season"])
+                             .derive_season("nfl",
+                                             doc.get("event_time"),
+                                             doc.get("season")))},
                 provenance=doc.get("source"),
                 event_id=doc.get("event_id"),
             ))
@@ -1172,6 +1132,16 @@ class MLBPlayerHistoricalAdapter(HistoricalAdapter):
             base_q = {"sport": "mlb", "player_name": q.entity_name}
         if not base_q:
             return []
+        # ── 2026-10-03 Perklocks UNIVERSAL IDENTITY BRIDGE (MLB) ────────
+        try:
+            from services.historical_freshness import identity_candidates
+            _ids = await identity_candidates(
+                db, "mlb", eid or None, q.entity_name)
+            if _ids and len(_ids) > 1:
+                base_q = {"sport": "mlb",
+                          "canonical_player_id": {"$in": sorted(_ids)}}
+        except Exception as _bridge_e:  # pragma: no cover
+            logger.debug("MLB universal bridge soft-fail: %s", _bridge_e)
         obs: list[HistoricalObservation] = []
         # Fetch player game logs.  We prefer event_time DESC but many
         # legacy MLB rows have event_time=None; the shared helper does
@@ -1195,12 +1165,22 @@ class MLBPlayerHistoricalAdapter(HistoricalAdapter):
             ctx = {k: actuals.get(k) for k in
                    ("h", "hr", "rbi", "r", "tb", "at_bats", "strikeouts",
                     "k", "outs")}
-            ctx["season"] = doc.get("season")
+            try:
+                from services.historical_freshness import normalize_context
+                _fctx = normalize_context("mlb", doc)
+            except Exception:
+                _fctx = {"season": doc.get("season"),
+                         "event_date": str(doc.get("event_time") or "")[:10],
+                         "is_current_season": False}
+            ctx["season"] = _fctx.get("season")
+            ctx["event_date"] = _fctx.get("event_date")
+            ctx["is_current_season"] = _fctx.get("is_current_season")
             # Transparent proxy disclosure for H+R+RBI (Runs missing).
             if family == "hits_runs_rbi":
                 ctx["proxy"] = "H+RBI (Runs unavailable in source)"
             obs.append(HistoricalObservation(
-                date=str(doc.get("event_time") or doc.get("ingested_at") or "")[:10],
+                date=_fctx.get("event_date") or
+                     str(doc.get("event_time") or doc.get("ingested_at") or "")[:10],
                 opponent_id=doc.get("canonical_opponent_id"),
                 opponent_name=doc.get("opponent") or doc.get("canonical_opponent_id"),
                 home_away=doc.get("home_away"),
@@ -1328,8 +1308,15 @@ class SoccerPlayerHistoricalAdapter(HistoricalAdapter):
                 try: actual = float(v)
                 except Exception: actual = None
             is_home = str(doc.get("is_home", "")).lower() in ("true", "1")
+            try:
+                from services.historical_freshness import normalize_context
+                _fctx = normalize_context("soccer", doc)
+            except Exception:
+                _fctx = {"season": doc.get("season"),
+                         "event_date": str(doc.get("match_date") or "")[:10],
+                         "is_current_season": False}
             obs.append(HistoricalObservation(
-                date=str(doc.get("match_date") or "")[:10],
+                date=_fctx.get("event_date") or str(doc.get("match_date") or "")[:10],
                 opponent_id=str(doc.get("opponent_team_id") or "") or None,
                 opponent_name=doc.get("opponent_team_name"),
                 home_away="home" if is_home else "away",
@@ -1343,7 +1330,9 @@ class SoccerPlayerHistoricalAdapter(HistoricalAdapter):
                          "league": doc.get("league"),
                          "competition": doc.get("competition") or doc.get("league"),
                          "xg": doc.get("xg"), "npxg": doc.get("npxg"), "xa": doc.get("xa"),
-                         "season": doc.get("season")},
+                         "season": _fctx.get("season"),
+                         "event_date": _fctx.get("event_date"),
+                         "is_current_season": _fctx.get("is_current_season")},
                 provenance=doc.get("source"),
                 event_id=doc.get("canonical_event_id") or doc.get("match_id"),
             ))
@@ -1489,13 +1478,43 @@ class TennisHistoricalAdapter(HistoricalAdapter):
         # Tennis history is keyed by winner_name / loser_name.
         # We must query BOTH sides then merge.
         name = q.entity_name.strip()
-        # Normalize "Cirstea S." style to "Sorana Cirstea" would require
-        # cross-referencing tennis_players; we try both raw and a light
-        # last-name lookup so real DB names win the match.
+        # ── 2026-10-03 Perklocks UNIVERSAL IDENTITY BRIDGE (TENNIS) ─────
+        # Tennis has 618 player names that resolve to multiple
+        # canonical_player_ids (provider swaps / abbreviation forms).
+        # The shared resolver would UNION those ids — but the tennis
+        # history store is keyed on `winner_name` / `loser_name`, not
+        # canonical_player_id.  So we additionally gather any display
+        # aliases from `player_identities` so the OR-clause probes
+        # EVERY name form the player has ever been written under.
         or_clauses = [
             {"winner_name": name},
             {"loser_name":  name},
         ]
+        try:
+            tok = "Tennis"
+            norm = name.strip().lower().replace(".", "")
+            if norm:
+                aliases: set[str] = set()
+                async for ident in db.player_identities.find(
+                    {"sport": tok, "name_norm": norm},
+                    {"name": 1, "display_name": 1, "aliases": 1,
+                     "provider_ids": 1},
+                ):
+                    for key in ("name", "display_name"):
+                        v = ident.get(key)
+                        if v and v != name:
+                            aliases.add(str(v))
+                    for v in (ident.get("aliases") or []):
+                        if v and v != name:
+                            aliases.add(str(v))
+                    for v in (ident.get("provider_ids") or {}).values():
+                        if isinstance(v, str) and v != name:
+                            aliases.add(v)
+                for a in aliases:
+                    or_clauses.append({"winner_name": a})
+                    or_clauses.append({"loser_name":  a})
+        except Exception as _bridge_e:  # pragma: no cover
+            logger.debug("Tennis universal alias bridge soft-fail: %s", _bridge_e)
         cursor = db.tennis_matches_history.find(
             {"$or": or_clauses}
         ).sort("date", -1).limit(200)
@@ -1525,6 +1544,13 @@ class TennisHistoricalAdapter(HistoricalAdapter):
                 actual = total_g
             else:
                 actual = player_g - opp_g
+            try:
+                from services.historical_freshness import normalize_context
+                _fctx = normalize_context("tennis", doc)
+            except Exception:
+                _fctx = {"season": doc.get("season"),
+                         "event_date": str(doc.get("date") or "")[:10],
+                         "is_current_season": False}
             obs.append(HistoricalObservation(
                 date=str(doc.get("date") or "")[:10],
                 opponent_id=None,
@@ -1540,7 +1566,10 @@ class TennisHistoricalAdapter(HistoricalAdapter):
                          "tourney_name": doc.get("tourney_name"),
                          "round": doc.get("round"),
                          "score": score,
-                         "won": is_winner},
+                         "won": is_winner,
+                         "season": _fctx.get("season"),
+                         "event_date": _fctx.get("event_date"),
+                         "is_current_season": _fctx.get("is_current_season")},
                 provenance=doc.get("source"),
                 event_id=doc.get("tourney_id"),
             ))
@@ -1613,15 +1642,25 @@ class CFBHistoricalAdapter(HistoricalAdapter):
                 actual = total
             else:
                 actual = team_pts - opp_pts
+            try:
+                from services.historical_freshness import normalize_context
+                _fctx = normalize_context("cfb", doc)
+            except Exception:
+                _fctx = {"season": doc.get("season"),
+                         "event_date": str(doc.get("date") or "")[:10],
+                         "is_current_season": False}
             obs.append(HistoricalObservation(
-                date=str(doc.get("date") or "")[:10],
+                date=_fctx.get("event_date") or str(doc.get("date") or "")[:10],
                 opponent_id=None,
                 opponent_name=opp,
                 home_away="home" if is_home else "away",
                 actual=actual,
                 context={"team_score": team_pts, "opponent_score": opp_pts,
                          "total": total,
-                         "season": doc.get("season"), "week": doc.get("week"),
+                         "season": _fctx.get("season"),
+                         "event_date": _fctx.get("event_date"),
+                         "is_current_season": _fctx.get("is_current_season"),
+                         "week": doc.get("week"),
                          "h2h_direct_query": is_h2h},
                 provenance="games",
                 event_id=gid,
@@ -1718,6 +1757,16 @@ class NBAPlayerHistoricalAdapter(HistoricalAdapter):
             base_q = {"sport": {"$in": ["NBA", "nba"]}, "player_name": q.entity_name}
         if not base_q:
             return []
+        # ── 2026-10-03 Perklocks UNIVERSAL IDENTITY BRIDGE (NBA) ────────
+        try:
+            from services.historical_freshness import identity_candidates
+            _ids = await identity_candidates(
+                db, "nba", str(q.entity_id or "") or None, q.entity_name)
+            if _ids and len(_ids) > 1:
+                base_q = {"sport": {"$in": ["NBA", "nba"]},
+                          "canonical_player_id": {"$in": sorted(_ids)}}
+        except Exception as _bridge_e:  # pragma: no cover
+            logger.debug("NBA universal bridge soft-fail: %s", _bridge_e)
         obs: list[HistoricalObservation] = []
         async for doc in db.player_game_actuals.find(base_q).sort("event_time", -1).limit(80):
             a = doc.get("actuals") or {}
@@ -1730,13 +1779,24 @@ class NBAPlayerHistoricalAdapter(HistoricalAdapter):
                     actual = float(v) if v is not None else None
                 except Exception:
                     actual = None
+            try:
+                from services.historical_freshness import normalize_context
+                _fctx = normalize_context("nba", doc)
+            except Exception:
+                _fctx = {"season": doc.get("season"),
+                         "event_date": str(doc.get("event_time") or "")[:10],
+                         "is_current_season": False}
             obs.append(HistoricalObservation(
-                date=str(doc.get("event_time") or "")[:10],
+                date=_fctx.get("event_date") or
+                     str(doc.get("event_time") or "")[:10],
                 opponent_id=doc.get("canonical_opponent_id"),
                 opponent_name=doc.get("opponent") or doc.get("canonical_opponent_id"),
                 home_away=doc.get("home_away"),
                 actual=actual,
-                context={"season": doc.get("season"), "minutes": a.get("minutes")},
+                context={"season": _fctx.get("season"),
+                         "event_date": _fctx.get("event_date"),
+                         "is_current_season": _fctx.get("is_current_season"),
+                         "minutes": a.get("minutes")},
                 provenance=doc.get("source") or "player_game_actuals",
                 event_id=doc.get("canonical_event_id") or doc.get("event_id"),
             ))
@@ -1976,6 +2036,14 @@ class NHLPlayerHistoricalAdapter(HistoricalAdapter):
                 "position":    doc.get("position"),
                 "toi":         doc.get("toi"),
             }
+            try:
+                from services.historical_freshness import normalize_context
+                _fctx = normalize_context("nhl", doc)
+                ctx["season"] = _fctx.get("season")
+                ctx["event_date"] = _fctx.get("event_date")
+                ctx["is_current_season"] = _fctx.get("is_current_season")
+            except Exception:
+                ctx["is_current_season"] = False
             obs.append(HistoricalObservation(
                 date=date_s,
                 opponent_id=opp_id,
@@ -2018,6 +2086,16 @@ class NHLPlayerHistoricalAdapter(HistoricalAdapter):
             base_q = {"sport": "nhl", "player_name": q.entity_name}
         if not base_q:
             return []
+        # ── 2026-10-03 Perklocks UNIVERSAL IDENTITY BRIDGE (NHL) ────────
+        try:
+            from services.historical_freshness import identity_candidates
+            _ids = await identity_candidates(
+                db, "nhl", eid or None, q.entity_name)
+            if _ids and len(_ids) > 1:
+                base_q = {"sport": "nhl",
+                          "canonical_player_id": {"$in": sorted(_ids)}}
+        except Exception as _bridge_e:  # pragma: no cover
+            logger.debug("NHL universal bridge soft-fail: %s", _bridge_e)
         docs: list[dict] = []
         try:
             cursor = db.player_game_actuals.find(base_q).sort(
