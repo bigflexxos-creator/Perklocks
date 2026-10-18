@@ -1,4 +1,4 @@
-"""Live game-log ingestor runner — orchestrates MLB · NBA · NFL."""
+"""Live game-log ingestor runner — orchestrates MLB · NBA · NFL · NHL."""
 from __future__ import annotations
 
 import asyncio
@@ -9,6 +9,7 @@ from .common import logger, TARGET_COLLECTION
 from . import mlb as _mlb
 from . import nba as _nba
 from . import nfl as _nfl
+from . import nhl as _nhl
 
 
 async def _ensure_target_index(db) -> None:
@@ -41,18 +42,32 @@ async def refresh_nfl_gamelogs(db, *,
     return await _nfl.refresh(db, max_players=max_players)
 
 
+async def refresh_nhl_gamelogs(db, *,
+                                max_players: Optional[int] = None,
+                                hot_list_only: bool = False) -> dict:
+    """2026-10-03 Perklocks — wire ESPN/NHL live gamelog into
+    canonical_player_game_actuals so NHL stops returning HONEST ZERO.
+    Mirrors the NFL/NBA/MLB runner pattern; ``hot_list_only=True``
+    scopes the refresh to players appearing in today's canonical NHL
+    picks (bounded cost for the first wiring run)."""
+    await _ensure_target_index(db)
+    return await _nhl.refresh(db, max_players=max_players,
+                               hot_list_only=hot_list_only)
+
+
 async def refresh_all_sports(db, *,
                               season: Optional[int] = None,
                               max_players_per_sport: Optional[int] = None
                               ) -> dict:
-    """Refresh MLB + NBA + NFL sequentially.  Sequential (not parallel)
-    so we don't stress any single provider — each sport already runs
-    all its players concurrently via bounded semaphore."""
+    """Refresh MLB + NBA + NFL + NHL sequentially.  Sequential (not
+    parallel) so we don't stress any single provider — each sport
+    already runs all its players concurrently via bounded semaphore."""
     started = time.time()
     summary: dict = {"sports": {}}
     for name, fn in (("mlb", refresh_mlb_gamelogs),
                      ("nba", refresh_nba_gamelogs),
-                     ("nfl", refresh_nfl_gamelogs)):
+                     ("nfl", refresh_nfl_gamelogs),
+                     ("nhl", refresh_nhl_gamelogs)):
         try:
             kwargs: dict = {"max_players": max_players_per_sport}
             if name == "mlb" and season is not None:
@@ -70,5 +85,6 @@ __all__ = [
     "refresh_mlb_gamelogs",
     "refresh_nba_gamelogs",
     "refresh_nfl_gamelogs",
+    "refresh_nhl_gamelogs",
     "refresh_all_sports",
 ]
