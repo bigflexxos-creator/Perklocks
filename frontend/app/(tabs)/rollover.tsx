@@ -15,6 +15,8 @@ import { PremiumHeader } from "@/src/components/PremiumHeader";
 import { PickEventRow } from "@/src/components/PickEventRow";
 import { SkeletonList } from "@/src/components/Skeleton";
 import { EmptyState } from "@/src/components/EmptyState";
+import { BackendHealthEmptyState } from "@/src/components/BackendHealthEmptyState";
+import { useTransportState, isTransportUnhealthy } from "@/src/lib/transportState";
 import { formatGameTime } from "@/src/lib/formatGameTime";
 import { useFocusRefetch } from "@/src/lib/useFocusRefetch";
 import { swrCacheRead, swrCacheWrite } from "@/src/lib/useSWR";
@@ -146,6 +148,11 @@ export default function RolloverScreen() {
 
   const onRefresh = () => { setRefreshing(true); load(lineType, sport, filters, false); };
 
+  // Commit C — observe live transport state so a backend outage
+  // preempts the misleading "No qualifying picks" domain-empty.
+  const _transport = useTransportState();
+  const _transportUnhealthy = isTransportUnhealthy(_transport);
+
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
       <PremiumHeader
@@ -176,7 +183,15 @@ export default function RolloverScreen() {
         showsVerticalScrollIndicator={false}
         testID="rollover-scroll"
       >
-        {loading ? (
+        {(_transportUnhealthy && visiblePicks.length === 0) ? (
+          // Commit C — transport-unhealthy preempts the skeleton too:
+          // honest "backend unreachable" beats an infinite spinner
+          // during a confirmed outage.
+          <BackendHealthEmptyState
+            onRetry={() => { setLoading(true); load(lineType, sport, filters); }}
+            testID="rollover-backend-health"
+          />
+        ) : loading ? (
           <SkeletonList count={3} testID="rollover-skeleton" />
         ) : error ? (
           <EmptyState

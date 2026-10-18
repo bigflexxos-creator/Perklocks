@@ -2,6 +2,19 @@ import { storage } from "@/src/utils/storage";
 import { Platform } from "react-native";
 import Constants from "expo-constants";
 import { noteCanonicalEpoch } from "@/src/lib/canonicalEpoch";
+// Commit C — transport state + exact-identity cache keying.  Pure
+// observability + canonical key hooks; no change to response shapes,
+// retry policy, ETag semantics, or canonical-epoch flow.
+import {
+  recordRequestStart,
+  recordRequestOk,
+  recordRequestFail,
+} from "@/src/lib/transportState";
+import { classifyError } from "@/src/lib/errorTaxonomy";
+import {
+  requestCacheIdentity,
+  etagCacheIdentity,
+} from "@/src/lib/requestCacheIdentity";
 
 // ═══════════════════════════════════════════════════════════════════
 // Expo/Native freshness closure — 2026-08-22
@@ -904,19 +917,18 @@ async function _fetchWithTimeout(
 type _EtagEntry<T = unknown> = { etag: string; body: T; ts: number };
 const _etagStore: Map<string, _EtagEntry> = new Map();
 
-/** Canonical URL used as the ETag store key — drops the `_=…`
- *  cache-buster + `If-None-Match` cannot leak across users because
- *  auth tokens do not appear in the URL. */
+/** Legacy ETag key helper — superseded by `etagCacheIdentity` from
+ *  `@/src/lib/requestCacheIdentity` in Commit C.  Retained as a
+ *  no-op shim so any out-of-tree reference does not break; new
+ *  code MUST use the canonical identity module. */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function _etagKey(url: string): string {
-  try {
-    const [base, qs] = url.split("?");
-    if (!qs) return base;
-    const parts = qs
-      .split("&")
-      .filter((p) => !p.startsWith("_="))
-      .sort();
-    return parts.length ? `${base}?${parts.join("&")}` : base;
-  } catch { return url; }
+  // Delegate to the canonical helper to keep behaviour identical if
+  // anything still imports this symbol — new auth scoping defaults
+  // to "pub" since callers of the legacy signature never passed a
+  // token.  The canonical path (api.ts request()) no longer calls
+  // this function.
+  return etagCacheIdentity({ url, authToken: null });
 }
 
 /** Endpoints that participate in the server-side snapshot / ETag
@@ -936,12 +948,23 @@ async function request<T>(
   // fallback and unifies slash normalization across app/web/preview.
   const url = buildApiUrl(path);
 
+  // Commit C — Exact Request Cache Identity.  Resolve ONCE here so
+  // both the inflight-dedupe key and the ETag-store key reference
+  // the same canonical identity.  Public endpoints share one cache
+  // across sessions (authToken = null → "pub" scope); authenticated
+  // endpoints partition the ETag body cache by auth scope so a 304
+  // body-reuse cannot cross user sessions.
+  const _authTokenForIdentity = opts.auth === false
+    ? null
+    : await (async () => { try { return await getToken(); } catch { return null; } })();
+  const _reqIdentity = requestCacheIdentity({ method, url, authToken: _authTokenForIdentity });
+
   // In-flight dedupe — GETs only (mutations must NEVER be deduped).
   // Session 9 Client Request Race Controller — do NOT dedupe when a
   // caller-provided AbortSignal is present.  Dedupe collapses two
   // callers onto ONE underlying request; if either caller cancels
   // via its signal, the other would be silently torn down too.
-  const dedupeKey = method === "GET" && !opts.signal ? `${method}:${url}` : null;
+  const dedupeKey = method === "GET" && !opts.signal ? _reqIdentity : null;
   if (dedupeKey && _inflight.has(dedupeKey)) {
     return _inflight.get(dedupeKey) as Promise<T>;
   }
@@ -953,7 +976,14 @@ async function request<T>(
     // 304 with 0-byte body.  For all other endpoints keep the
     // aggressive no-cache posture (they aren't cache-participants).
     const _isEtagParticipant = method === "GET" && _pathParticipatesInEtag(path);
-    const _etagKeyForRequest = _etagKey(url);
+    // Commit C — ETag store now keyed by canonical request identity
+    // (auth-scoped, cache-buster stripped, params alpha-sorted) so a
+    // 304 body-reuse never crosses user sessions and matches the
+    // same identity the inflight-dedupe map uses above.
+    const _etagKeyForRequest = etagCacheIdentity({
+      url,
+      authToken: _authTokenForIdentity,
+    });
     const _prevEntry = _isEtagParticipant
       ? _etagStore.get(_etagKeyForRequest)
       : undefined;
@@ -1153,11 +1183,24 @@ async function request<T>(
   };
 
   if (dedupeKey) {
-    const promise = exec().finally(() => _inflight.delete(dedupeKey));
+    // Commit C — transport-state tap at the LOGICAL request level.
+    // One `recordRequestStart` per user-visible request (not per
+    // retry attempt), paired with exactly one Ok or Fail at the
+    // terminal outcome.  Keeps the inflight counter honest and the
+    // consecutive-failure streak user-level (a single bad endpoint
+    // after 2 retries counts as ONE failure, not three).
+    try { recordRequestStart(); } catch {}
+    const promise = exec()
+      .then((v) => { try { recordRequestOk(); } catch {} return v; })
+      .catch((e) => { try { recordRequestFail(classifyError(e)); } catch {} throw e; })
+      .finally(() => _inflight.delete(dedupeKey));
     _inflight.set(dedupeKey, promise);
     return promise;
   }
-  return exec();
+  try { recordRequestStart(); } catch {}
+  return exec()
+    .then((v) => { try { recordRequestOk(); } catch {} return v; })
+    .catch((e) => { try { recordRequestFail(classifyError(e)); } catch {} throw e; });
 }
 
 // ── MLB HR Slate types — mirror of GameHRSlate / HRHitter in

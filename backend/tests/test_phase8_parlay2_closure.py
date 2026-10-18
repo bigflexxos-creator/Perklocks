@@ -69,6 +69,7 @@ def _base_leg(**overrides) -> dict:
         "selection": "Yankees",
         "line": None,
         "book_odds": -150,
+        "odds_source": "the_odds_api",
         "provider": "test_provider",
         "lock_score": 90.0,
         "lock_score_v2": 90.0,
@@ -101,8 +102,10 @@ def slate() -> list[dict]:
         # 1. High-lock extreme-chalk leg
         _base_leg(id="A1_extreme_chalk", event="Dodgers @ Rockies",
                   event_id="evt_lad_col", selection="Dodgers",
+                  home_team="Rockies", away_team="Dodgers",
                   book_odds=-700, win_probability=88.0,
-                  lock_score=97.0, edge_percent=1.5,
+                  lock_score=97.0, published_lock_score=97.0,
+                  edge_percent=1.5,
                   roi_bucket_pct=2.0),
         # 2. Strong positive-value underdog
         _base_leg(id="A2_value_dog", sport="nba", league="NBA",
@@ -197,9 +200,11 @@ def slate() -> list[dict]:
         # 12. Below-85 lock (must be rejected by is_eligible_leg standard)
         _base_leg(id="A12_below85", sport="mlb", league="MLB",
                   event="Astros @ Rangers", event_id="evt_hou_tex",
+                  home_team="Rangers", away_team="Astros",
                   market="Moneyline", selection="Astros",
                   book_odds=-105, win_probability=54.0,
-                  lock_score=82.0, edge_percent=2.0),
+                  lock_score=82.0, published_lock_score=82.0,
+                  edge_percent=2.0),
         # 13. Apex candidate
         _base_leg(id="A13_apex", sport="mlb", league="MLB",
                   event="Braves @ Phillies", event_id="evt_atl_phi",
@@ -719,6 +724,7 @@ def test_8AM_proof_J_apex_leg_not_forced_into_every_parlay(slate):
     # (b) A leg that is Apex but has bad eligibility MUST still be rejected.
     bad_apex = dict(apex)
     bad_apex["lock_score"] = 80.0
+    bad_apex["published_lock_score"] = 80.0
     bad_apex["edge_percent"] = 0.5
     ok, reason = is_eligible_leg(bad_apex, bucket_map={}, high_risk=False)
     assert not ok, "8AM-J: Apex cannot bypass standard eligibility gate"
