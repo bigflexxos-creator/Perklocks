@@ -428,6 +428,37 @@ def is_eligible_leg(pick: dict, bucket_map: dict, *, high_risk: bool = False) ->
     if win_p <= 0:
         return False, "no win_probability"
 
+    # ── Phase 8K EXTREME-CHALK EDGE FLOOR ─────────────────────────────
+    # Perklocks Master Surgical Fix (2026-10-03) — closes the "extreme
+    # price manufactures entry" Phase 8K rule WITHOUT reintroducing a
+    # universal edge gate that would starve the optimizer.  The 2026-06
+    # Parlay 3.0 Universal Closure correctly made edge a RANKING signal
+    # for normal-priced legs, because high lock + strong win_prob + bucket
+    # ROI already cover admission.  BUT for structurally heavy chalk
+    # (American ≤ -300) the win_prob is inflated BY the price itself,
+    # so admitting with 1-2 % edge silently converts price into entry
+    # permission.  This narrow gate requires chalk at -300 or worse to
+    # ALSO clear a 3 % edge floor.  Alt-chalk ladders are exempt via the
+    # existing `is_alt` carve-out (handled above).  Value dogs and
+    # normal-priced legs are untouched.
+    _EXTREME_CHALK_AMERICAN: int = -300
+    _EXTREME_CHALK_MIN_EDGE: float = 3.0
+    try:
+        _bo_val = int(pick.get("book_odds") or 0)
+    except (TypeError, ValueError):
+        _bo_val = 0
+    _is_alt_leg = bool(pick.get("is_alt") or pick.get("is_alt_prop"))
+    if (
+        _bo_val < 0
+        and _bo_val <= _EXTREME_CHALK_AMERICAN
+        and not _is_alt_leg
+        and edge < _EXTREME_CHALK_MIN_EDGE
+    ):
+        return False, (
+            f"edge {edge:+.1f}% < {_EXTREME_CHALK_MIN_EDGE:+.0f}% "
+            f"for extreme chalk ({_bo_val})"
+        )
+
     # Bucket ROI must be non-negative (with sample) — standard mode only
     # ── P0 FINAL SURGICAL REPAIR (2026-08-25) ─────────────────────────
     # Historical market-family ROI may WARN or RANK-DOWN a leg but

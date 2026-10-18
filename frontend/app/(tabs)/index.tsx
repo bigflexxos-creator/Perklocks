@@ -30,6 +30,8 @@ import { classifyError, ErrorKind, ErrorKindT, ERROR_COPY, isSilentError } from 
 import perf, { recordMountedRowCount } from "@/src/lib/perfHUD";
 import { DevPerfHUD } from "@/src/components/DevPerfHUD";
 import { subscribeConnectivity } from "@/src/lib/connectivity";
+import { BackendHealthEmptyState } from "@/src/components/BackendHealthEmptyState";
+import { useTransportState, isTransportUnhealthy } from "@/src/lib/transportState";
 
 const PREFS_KEY = "locks_feed_prefs_v2";
 type FeedPrefs = { sport?: string; sortKey?: SortKey; lineType?: LineType };
@@ -226,6 +228,10 @@ export default function LocksScreen() {
   const [gameFilterOpen, setGameFilterOpen] = useState(false);
   const [loading, setLoading] = useState(_memSeed ? false : true);
   const [refreshing, setRefreshing] = useState(false);
+  // Commit C — live transport state so a backend outage preempts the
+  // misleading "No 85+ locks right now" generic empty-board card.
+  const _transport = useTransportState();
+  const _transportUnhealthy = isTransportUnhealthy(_transport);
   const [stats, setStats] = useState<{ total_picks: number; elite_count: number; avg_edge_percent: number } | null>(_statsMem.data ?? null);
   const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
   // P0.7 — canonical board identity of the slate on screen + stale flag.
@@ -1378,7 +1384,16 @@ export default function LocksScreen() {
           </>
         }
         ListEmptyComponent={
-          loading ? (
+          _transportUnhealthy ? (
+            // Commit C — HONEST backend-health state preempts both
+            // the skeleton (infinite spinner during outage) and the
+            // generic "No 85+ locks right now" fallback when the real
+            // reason the board is empty is a backend outage.
+            <BackendHealthEmptyState
+              onRetry={() => load(sport, lineType, sortKey, filters, sortDir, { manual: true })}
+              testID="locks-backend-health"
+            />
+          ) : loading ? (
             <View testID="board-skeleton">
               {/* Milestone 1.2 skeleton loader — matches event-grouped list. */}
               <EventGroupSkeleton picks={2} />

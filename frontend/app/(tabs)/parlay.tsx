@@ -23,6 +23,8 @@ import { getDisplayLockRounded } from "@/src/lib/lockScore";
 import { buildSlipText as buildGamblySlipText, shareSlip, saveSlipImage } from "@/src/lib/shareBetSlip";
 import { SkeletonList } from "@/src/components/Skeleton";
 import { EmptyState } from "@/src/components/EmptyState";
+import { BackendHealthEmptyState } from "@/src/components/BackendHealthEmptyState";
+import { useTransportState, isTransportUnhealthy } from "@/src/lib/transportState";
 
 // ─── Card label → accent colour mapping ───────────────────────────────
 const CARD_ACCENTS: Record<ParlayCard["label"], string> = {
@@ -68,6 +70,11 @@ export default function ParlayScreen() {
   const [parlays, setParlays] = useState<ParlayCard[]>([]);
   const [reason, setReason] = useState<string>("");
   const [loading, setLoading] = useState(true);
+  // Commit C — observe live transport state to preempt the
+  // misleading "No parlay available" domain-empty when the backend
+  // is really the one failing.
+  const _transport = useTransportState();
+  const _transportUnhealthy = isTransportUnhealthy(_transport);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Per-card refresh cursor: ephemeral — NOT persisted (resets every launch)
@@ -525,7 +532,17 @@ export default function ParlayScreen() {
         }
         showsVerticalScrollIndicator={false}
       >
-        {loading ? (
+        {(_transportUnhealthy && parlays.length === 0) ? (
+          // Commit C — honest "backend unreachable" takes precedence
+          // over an infinite spinner when there's no data to show.
+          <BackendHealthEmptyState
+            onRetry={() => {
+              setLoading(true);
+              setRefreshNonce((n) => n + 1);
+            }}
+            testID="parlay-backend-health"
+          />
+        ) : loading ? (
           <SkeletonList count={3} testID="parlay-skeleton" />
         ) : error ? (
           <EmptyState

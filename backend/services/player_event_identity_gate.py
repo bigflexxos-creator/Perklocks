@@ -221,7 +221,20 @@ def _is_player_market(pick: dict) -> bool:
     # rejections on CFB/NFL/NBA/NHL/MLB totals).  Team markets
     # NEVER carry a player_name / player field, so short-circuit
     # here to preserve the existing player-prop detection path.
-    if market.startswith("total ") or market.endswith(" spread"):
+    #
+    # ── 2026-10-03 PERKLOCKS MASTER SURGICAL FIX ────────────────────
+    # The short-circuit above only applies when the pick carries
+    # NO player_name / player field.  Player markets like MLB
+    # "Total Bases Over 1.5" and NBA "Total Rebounds Over 7.5"
+    # legitimately start with "total " yet are player props — they
+    # ALWAYS carry player_name.  Gating the short-circuit on the
+    # absence of player_name preserves game-total protection while
+    # correctly classifying "Total <stat>" player props so the
+    # downstream identity match (home/away vs player_team) runs.
+    _has_player_field = bool(pick.get("player_name") or pick.get("player"))
+    if not _has_player_field and (
+        market.startswith("total ") or market.endswith(" spread")
+    ):
         return False
     for token in _PLAYER_MARKET_TOKENS:
         if token in market:
