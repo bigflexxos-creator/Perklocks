@@ -19,7 +19,8 @@
  *   - Any future screen that fetches paged/versioned data.
  */
 export const ErrorKind = {
-  NETWORK_OFFLINE:      "NETWORK_OFFLINE",       // navigator.onLine === false OR bare TypeError with "network"
+  NETWORK_OFFLINE:          "NETWORK_OFFLINE",       // AUTHORITATIVE device-offline per NetInfo / navigator.onLine
+  NETWORK_TRANSPORT_FAILURE:"NETWORK_TRANSPORT_FAILURE", // generic bare fetch failure — do NOT infer device offline
   DNS_TLS:              "DNS_TLS",               // TLS/DNS failure at connect time
   TIMEOUT:              "TIMEOUT",               // AbortError from the internal timeout guard
   HTTP_5XX:             "HTTP_5XX",              // 5xx from server after retries
@@ -38,7 +39,8 @@ export type ErrorKindT = typeof ErrorKind[keyof typeof ErrorKind];
 /** Human-readable copy for the retry banner — never conflates the
  *  ABORTED_SUPERSEDED "not an error" with actual transport failure. */
 export const ERROR_COPY: Record<ErrorKindT, { title: string; message: string; showRetry: boolean }> = {
-  NETWORK_OFFLINE:     { title: "You're offline",       message: "Reconnect to refresh. Showing your last good slate.", showRetry: true  },
+  NETWORK_OFFLINE:          { title: "You're offline",       message: "Reconnect to refresh. Showing your last good slate.", showRetry: true  },
+  NETWORK_TRANSPORT_FAILURE:{ title: "Connection hiccup",    message: "We had trouble reaching the server. Showing your last good slate.", showRetry: true  },
   DNS_TLS:             { title: "Can't reach server",   message: "DNS or TLS failure. Showing your last good slate.",   showRetry: true  },
   TIMEOUT:             { title: "Server slow to respond", message: "Request timed out. Showing your last good slate.", showRetry: true  },
   HTTP_5XX:            { title: "Server hiccup",        message: "Backend is bouncing. Showing your last good slate.", showRetry: true  },
@@ -86,11 +88,21 @@ export function classifyError(err: any): ErrorKindT {
     return ErrorKind.HTTP_5XX;
   }
   if (msg.includes("network request failed") || msg.includes("failed to fetch")) {
-    // If browser reports offline, tag as OFFLINE explicitly.
+    // ── 2026-10-18 Perklocks Defect 2 fix ──────────────────────────
+    // A bare "Network request failed" / "Failed to fetch" from
+    // React-Native / fetch bridge may be ANY of:
+    //   DNS · TLS · connection reset · origin restart · proxy ·
+    //   cellular handoff · fetch bridge · backend closing conn ·
+    //   true offline.
+    // The REQUEST layer cannot authoritatively decide device
+    // connectivity.  Only the native connectivity authority (NetInfo
+    // / navigator.onLine) can.  If navigator proves offline, honour
+    // it; otherwise classify as transport failure so transportState
+    // bumps the request-fail streak without faking device offline.
     if (typeof navigator !== "undefined" && navigator && (navigator as any).onLine === false) {
       return ErrorKind.NETWORK_OFFLINE;
     }
-    return ErrorKind.NETWORK_OFFLINE;
+    return ErrorKind.NETWORK_TRANSPORT_FAILURE;
   }
   if (msg.includes("dns") || msg.includes("tls") || msg.includes("ssl")) {
     return ErrorKind.DNS_TLS;

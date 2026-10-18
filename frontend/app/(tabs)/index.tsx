@@ -32,6 +32,11 @@ import { DevPerfHUD } from "@/src/components/DevPerfHUD";
 import { subscribeConnectivity } from "@/src/lib/connectivity";
 import { BackendHealthEmptyState } from "@/src/components/BackendHealthEmptyState";
 import { useTransportState, isTransportUnhealthy } from "@/src/lib/transportState";
+// 2026-10-18 Perklocks Defects 7/8 — deterministic filter identity.
+// Used to key the persisted last-good picks cache by the FULL request
+// identity so each (sport × line × sort × filter × multi-select)
+// preset retains its own independent last-good slate.
+import { filterIdentityHash } from "@/src/lib/filterIdentity";
 
 const PREFS_KEY = "locks_feed_prefs_v2";
 type FeedPrefs = { sport?: string; sortKey?: SortKey; lineType?: LineType };
@@ -61,8 +66,21 @@ const PICKS_CACHE_KEY = "locks_picks_cache_v2";
 // each sport restore ITS OWN last-good independently.  Falls back to
 // the legacy single key on read so no user loses their current cache
 // across the upgrade.
+//
+// 2026-10-18 Perklocks Defects 7 + 8 — exact request-identity cache.
+//   Keying on `sport` alone meant Yankees-only MLB and league-wide
+//   MLB fought over a single disk entry; the LAST write won and the
+//   NEXT read painted whichever happened to be stored under whatever
+//   filter you NOW had selected.  The new `picksCacheKeyFull` keys
+//   each on the deterministic filter identity hash so each filter
+//   preset keeps its own independent last-good.  The legacy
+//   `picksCacheKey(sport)` is kept as a FALLBACK read ONLY (never
+//   written to any more) so no user loses their last-good slate
+//   across the upgrade.
 const picksCacheKey = (sport: string): string =>
   `locks_picks_cache_v2:${(sport || "").toUpperCase().trim() || "ALL"}`;
+const picksCacheKeyFull = (sport: string, identityHash: string): string =>
+  `locks_picks_cache_v3:${(sport || "").toUpperCase().trim() || "ALL"}:${identityHash}`;
 const PICKS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 // GATE 3 P0 (2026-06) — truthful last-good persistence.
 // A persisted board projection MUST NOT claim complete-canonical-truth.
@@ -287,8 +305,29 @@ export default function LocksScreen() {
     let cancelled = false;
     (async () => {
       try {
-        // 2026-06 Block P fix — per-sport cache read with legacy fallback.
-        let raw = await storage.getItem<string>(picksCacheKey(sport), "");
+        // 2026-10-18 Perklocks Defects 7 + 8 — exact request-identity
+        // read.  Try the new (v3) key first keyed by the FULL filter
+        // identity hash so each filter preset retains its own
+        // independent last-good.  Fall back to the (v2) per-sport
+        // key, then to the pre-upgrade single-key, so no user ever
+        // loses their cache across the upgrade.
+        const _identityHash = filterIdentityHash({
+          sport,
+          lineType,
+          sortKey,
+          sortDir,
+          filters,
+          sports:   filterStore.sports,
+          leagues:  filterStore.leagues,
+          markets:  filterStore.markets,
+          gameIds:  filterStore.gameIds,
+          events:   filterStore.events,
+          search:   filterStore.searchText || undefined,
+        });
+        let raw = await storage.getItem<string>(picksCacheKeyFull(sport, _identityHash), "");
+        if (!raw) {
+          raw = await storage.getItem<string>(picksCacheKey(sport), "");
+        }
         if (!raw) {
           // Legacy single-key fallback (one-time, until next write).
           raw = await storage.getItem<string>(PICKS_CACHE_KEY, "");
@@ -837,10 +876,27 @@ export default function LocksScreen() {
                 ? JSON.stringify(filters).length : 0,
             },
           } as PicksCache;
-          // 2026-06 Block P fix — write to per-sport key so each
-          // sport retains its own last-good cache independently.
-          storage.setItem(picksCacheKey(requestedSport || sport),
-                           JSON.stringify(cache));
+          // 2026-10-18 Perklocks Defects 7 + 8 — write under the FULL
+          // request-identity key so each (sport × line × sort ×
+          // filter × multi-select) preset keeps its own independent
+          // last-good slate.  Legacy per-sport key is ALSO written so
+          // an older code version that reads v2 doesn't go blank.
+          const _writeHash = filterIdentityHash({
+            sport: requestedSport,
+            lineType: lt,
+            sortKey: sk,
+            sortDir: dir,
+            filters: f as Record<string, unknown>,
+            sports:   filterStore.sports,
+            leagues:  filterStore.leagues,
+            markets:  filterStore.markets,
+            gameIds:  filterStore.gameIds,
+            events:   filterStore.events,
+            search:   filterStore.searchText || undefined,
+          });
+          const _serialized = JSON.stringify(cache);
+          storage.setItem(picksCacheKeyFull(requestedSport || sport, _writeHash), _serialized);
+          storage.setItem(picksCacheKey(requestedSport || sport), _serialized);
         } catch { /* storage full / serialize err — silent */ }
       }
       const altDiag: any = (picksRes as any).alt_availability;
@@ -1022,8 +1078,17 @@ export default function LocksScreen() {
   //   connectivity authority (src/lib/connectivity.ts): a single debounced
   //   `foreground` signal per active transition, after a reachability probe.
   useEffect(() => {
+    // 2026-10-18 Perklocks Defect 3 + Network Change Contract:
+    // Honour BOTH `foreground` (app resume) and `network_change`
+    // (Wi-Fi ↔ cellular handoff) as triggers for a silent refresh.
+    // Both are already debounced inside the connectivity authority
+    // and the fetch itself is coalesced by `FETCH_DEDUPE_MS` plus the
+    // in-flight AbortController, so we cannot cause a storm here.
+    // Crucially the Production Board Acceptance Contract still
+    // applies: `load()` NEVER wipes a valid committed board on a
+    // transport-level failure — see `load()` catch-branch.
     const unsub = subscribeConnectivity((_s, event) => {
-      if (event !== "foreground") return;
+      if (event !== "foreground" && event !== "network_change") return;
       load(sport, lineType, sortKey, filters, sortDir);
       loadCooldown();
     });
