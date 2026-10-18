@@ -51,11 +51,25 @@ export type TransportState = {
   stage: TransportStage;
   online: boolean;
   reachable: boolean | null;
+  // ── 2026-10-18 Perklocks Defect 1 — separate concepts ──────────────
+  // `deviceOnline` is written ONLY by the native connectivity
+  // authority (NetInfo / navigator).  A bare request failure may NOT
+  // flip it.  Mirrors `online` for legacy readers but is explicitly
+  // authoritative.
+  deviceOnline: boolean;
+  // `originReachable` is written ONLY by `probeReachability()`
+  // (health probe) or a succesful request.  Individual request
+  // timeouts do NOT flip it.
+  originReachable: boolean | null;
   inflight: number;
   lastOutcome: TransportOutcome;
   lastOutcomeAt: number | null;
   lastOkAt: number | null;
-  consecutiveFailures: number;
+  // Separate failure streaks per source so a slow optional endpoint
+  // cannot inflate the probe streak and vice-versa.
+  consecutiveFailures: number;              // legacy aggregate (requests)
+  consecutiveRequestFailures: number;       // requests only
+  consecutiveOriginProbeFailures: number;   // probes only
   degraded: boolean;
   // Monotone counter — bumps on EVERY recorded transition so React
   // consumers using `useSyncExternalStore` style memoization have a
@@ -69,11 +83,15 @@ const state: TransportState = {
   stage: "idle",
   online: true,
   reachable: null,
+  deviceOnline: true,
+  originReachable: null,
   inflight: 0,
   lastOutcome: "unknown",
   lastOutcomeAt: null,
   lastOkAt: null,
   consecutiveFailures: 0,
+  consecutiveRequestFailures: 0,
+  consecutiveOriginProbeFailures: 0,
   degraded: false,
   revision: 0,
 };
@@ -93,13 +111,17 @@ function _emit(): void {
 
 function _computeStage(): TransportStage {
   if (state.lastOutcome === "auth")                       return "auth_locked";
-  if (state.online === false)                             return "offline";
-  if (state.reachable === false)                          return "backend_unreachable";
-  // 3+ consecutive 5xx / timeout while device appears online.
-  if (state.consecutiveFailures >= 3 &&
+  // Device-offline requires authoritative connectivity signal.
+  if (state.deviceOnline === false || state.online === false)
+                                                           return "offline";
+  // Backend-unreachable requires EITHER two consecutive health
+  // probes failing OR 3+ consecutive request failures (defect 1 fix:
+  // single timeout cannot flip this any more).
+  if (state.originReachable === false)                    return "backend_unreachable";
+  if (state.consecutiveRequestFailures >= 3 &&
       (state.lastOutcome === "http_5xx" ||
        state.lastOutcome === "timeout"))                  return "backend_unreachable";
-  if (state.consecutiveFailures >= 2)                     return "degraded";
+  if (state.consecutiveRequestFailures >= 2)              return "degraded";
   if (state.lastOkAt !== null)                            return "online";
   return "idle";
 }
@@ -150,15 +172,26 @@ export function recordRequestOk(): void {
   state.lastOutcomeAt = now;
   state.lastOkAt = now;
   state.consecutiveFailures = 0;
+  state.consecutiveRequestFailures = 0;
+  state.consecutiveOriginProbeFailures = 0;
   state.degraded = false;
   state.online = true;
+  state.deviceOnline = true;
   state.reachable = true;
+  state.originReachable = true;
   state.stage = _computeStage();
   _emit();
 }
 
 /** Called when a request fails (any 4xx/5xx retry-exhausted, or
- *  network/timeout).  `kind` is the ErrorTaxonomy classification. */
+ *  network/timeout).  `kind` is the ErrorTaxonomy classification.
+ *
+ *  2026-10-18 Perklocks Defects 1 & 2 fix:
+ *  INDIVIDUAL request failures NEVER flip `deviceOnline` or
+ *  `originReachable` — those are owned by the native connectivity
+ *  authority and the single-flight `probeReachability()` respectively.
+ *  A single slow endpoint can therefore NO LONGER mark the whole
+ *  backend unreachable or the device offline. */
 export function recordRequestFail(kind: ErrorKindT | string): void {
   if (state.inflight > 0) state.inflight -= 1;
   // Caller-cancelled requests are NOT real failures — they must
@@ -173,22 +206,35 @@ export function recordRequestFail(kind: ErrorKindT | string): void {
   let outcome: TransportOutcome = "unknown";
   switch (kind) {
     case ErrorKind.NETWORK_OFFLINE:
-    case ErrorKind.DNS_TLS:
+      // Only trust the authority — if the taxonomy upgraded this
+      // from navigator.onLine === false we honour it; otherwise
+      // (we already classify bare fetch failures as
+      // NETWORK_TRANSPORT_FAILURE) the fail is a request-level event.
       outcome = "offline";
-      state.online = false;
-      state.reachable = false;
+      // Deliberately NOT flipping state.online here — NetInfo /
+      // connectivity authority owns the device-online flag.
+      break;
+    case ErrorKind.NETWORK_TRANSPORT_FAILURE:
+    case ErrorKind.DNS_TLS:
+      // Request-level transport failure.  Count toward the request
+      // streak but DO NOT mark origin unreachable from a single hit —
+      // only the authoritative health probe may do that.
+      outcome = "unknown";
       break;
     case ErrorKind.TIMEOUT:
       outcome = "timeout";
-      state.reachable = false;
+      // Deliberately NOT setting reachable=false — one slow endpoint
+      // is not grounds for "backend_unreachable".
       break;
     case ErrorKind.HTTP_5XX:
       outcome = "http_5xx";
       state.reachable = true;  // backend answered, just badly
+      state.originReachable = true;
       break;
     case ErrorKind.HTTP_429:
       outcome = "http_429";
       state.reachable = true;
+      state.originReachable = true;
       break;
     case ErrorKind.AUTH_FAILURE:
       outcome = "auth";
@@ -196,6 +242,7 @@ export function recordRequestFail(kind: ErrorKindT | string): void {
     case ErrorKind.JSON_PARSE:
       outcome = "parse";
       state.reachable = true;
+      state.originReachable = true;
       break;
     default:
       outcome = "unknown";
@@ -204,11 +251,39 @@ export function recordRequestFail(kind: ErrorKindT | string): void {
   // AUTH_FAILURE and 429 are transport-neutral — don't inflate the
   // consecutive-fail streak used to decide "degraded".
   const bumpStreak = outcome === "offline" || outcome === "timeout" ||
-                     outcome === "http_5xx" || outcome === "parse";
-  if (bumpStreak) state.consecutiveFailures += 1;
+                     outcome === "http_5xx" || outcome === "parse" ||
+                     outcome === "unknown";
+  if (bumpStreak) {
+    state.consecutiveFailures += 1;
+    state.consecutiveRequestFailures += 1;
+  }
   state.lastOutcome = outcome;
   state.lastOutcomeAt = Date.now();
-  state.degraded = state.consecutiveFailures >= 2;
+  state.degraded = state.consecutiveRequestFailures >= 2;
+  state.stage = _computeStage();
+  _emit();
+}
+
+/** 2026-10-18 Perklocks Defect 4 — authoritative probe result.
+ *  Called by `probeReachability()` with the true outcome.  This is
+ *  the ONLY path that may transition `originReachable` to false
+ *  (and therefore the stage to `backend_unreachable`).  Normal
+ *  request failures route through `recordRequestFail` and never
+ *  touch origin reachability. */
+export function recordOriginProbe(ok: boolean): void {
+  if (ok) {
+    state.originReachable = true;
+    state.reachable = true;
+    state.consecutiveOriginProbeFailures = 0;
+  } else {
+    state.consecutiveOriginProbeFailures += 1;
+    // Only mark origin unreachable after two consecutive probe
+    // failures — one 6s probe hiccup is not enough to blank screens.
+    if (state.consecutiveOriginProbeFailures >= 2) {
+      state.originReachable = false;
+      state.reachable = false;
+    }
+  }
   state.stage = _computeStage();
   _emit();
 }
@@ -227,12 +302,16 @@ export function recordExternalRecovery(): void {
 export function _resetTransportStateForTests(): void {
   state.stage = "idle";
   state.online = true;
+  state.deviceOnline = true;
   state.reachable = null;
+  state.originReachable = null;
   state.inflight = 0;
   state.lastOutcome = "unknown";
   state.lastOutcomeAt = null;
   state.lastOkAt = null;
   state.consecutiveFailures = 0;
+  state.consecutiveRequestFailures = 0;
+  state.consecutiveOriginProbeFailures = 0;
   state.degraded = false;
   state.revision = 0;
 }
@@ -250,12 +329,19 @@ function _installConnectivityBridge(): void {
   try {
     subscribeConnectivity((c, event) => {
       const prev = { online: state.online, reachable: state.reachable };
+      // Only the connectivity authority may flip deviceOnline.
       state.online = c.online;
-      if (c.reachable !== null) state.reachable = c.reachable;
+      state.deviceOnline = c.online;
+      if (c.reachable !== null) {
+        state.reachable = c.reachable;
+        state.originReachable = c.reachable;
+      }
       if (event === "foreground" && c.reachable === true) {
-        // Fresh probe success → clear streak so the next real request
-        // starts from a clean "degraded gate" slate.
+        // Fresh probe success → clear streaks so the next real request
+        // starts from a clean slate.
         state.consecutiveFailures = 0;
+        state.consecutiveRequestFailures = 0;
+        state.consecutiveOriginProbeFailures = 0;
         state.degraded = false;
       }
       if (prev.online !== state.online ||
