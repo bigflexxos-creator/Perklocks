@@ -3709,6 +3709,29 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         if sport and sport.lower() not in ("all", "any"):
             _rescue_query["sport"] = {"$regex": f"^{re.escape(sport)}$",
                                         "$options": "i"}
+        # ── 2026-10-03 Perklocks — sports= multi-select RESCUE PARITY ──
+        # NHL (and every other sport) was buried on the Locks board when
+        # the frontend sent the new `sports=NHL` CSV param.  The primary
+        # query honoured `sport_list` via `q["sport"] = scoped[0]`, but
+        # this rescue block only scoped by the LEGACY singular `sport`
+        # param — so the rescue silently re-injected the full published
+        # Soccer slate (46k+ rows for today), swamping NHL.  Mirror the
+        # exact pattern used by market_list / league_list / event_list
+        # above: narrow the rescue query by the same CSV list.
+        elif sport_list:
+            _scoped_sports = [s for s in sport_list
+                              if s and s.lower() not in ("all", "any")]
+            if len(_scoped_sports) == 1:
+                _rescue_query["sport"] = {
+                    "$regex": f"^{re.escape(_scoped_sports[0])}$",
+                    "$options": "i",
+                }
+            elif len(_scoped_sports) > 1:
+                _rescue_query["sport"] = {
+                    "$regex": "|".join(f"^{re.escape(s)}$"
+                                       for s in _scoped_sports),
+                    "$options": "i",
+                }
         # ── P0-A CANONICAL MARKET FILTER PARITY (2026-06-09) ──────────
         # The eligibility-union rescue MUST honour the same user-supplied
         # market / league / game / event / search filters that shaped the

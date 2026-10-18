@@ -878,6 +878,73 @@ class NFLPlayerHistoricalAdapter(HistoricalAdapter):
             base_q = {"sport": "nfl", "player_name": q.entity_name}
         if not base_q:
             return []
+
+        # ── 2026-10-03 Perklocks NFL CURRENT-SEASON HISTORY BRIDGE ──────
+        # Root cause of stale L10 (last-season game logs for current-
+        # season picks): `player_game_actuals` carries NFL rows under TWO
+        # parallel canonical_player_id schemes:
+        #   (1) gsis   e.g. "00-0036244"  (nfl_player_weekly projector,
+        #                                  covers 2019-2025)
+        #   (2) ESPN   e.g. "4242557"     (live_gamelog_nfl_v1,
+        #                                  covers CURRENT 2026 season)
+        # `player_identities` only carries ONE of the two for most
+        # players, so a single-id query misses the other pipeline's
+        # rows — the pick stamped with gsis sees only 2025, the pick
+        # stamped with ESPN sees only 2026.  Resolve the full identity
+        # bridge BEFORE firing the actuals query:
+        #   a) start with the pick id and any provider_ids on the
+        #      identity doc,
+        #   b) union with the set of distinct canonical_player_id
+        #      values that player_game_actuals already stores under
+        #      the EXACT player name scoped to sport="nfl" (bounded
+        #      and small — NFL has no two active players sharing an
+        #      identical full name once sport is scoped).
+        # This re-unites both pipelines WITHOUT creating a second
+        # historical provider and WITHOUT a Prod write.  The sort stays
+        # by event_time desc so current-season rows naturally lead
+        # (2026-10-* > 2026-01-* lexicographically).
+        try:
+            if isinstance(base_q, dict) and "canonical_player_id" in base_q:
+                _ids: set[str] = set()
+                _initial = base_q.get("canonical_player_id")
+                if isinstance(_initial, str):
+                    _ids.add(_initial)
+                elif isinstance(_initial, dict) and "$in" in _initial:
+                    _ids.update(str(x) for x in _initial.get("$in") or [])
+                if eid:
+                    _ids.add(eid)
+                # Pull every provider_id sibling from the identity doc(s).
+                if q.entity_name:
+                    _norm2 = q.entity_name.strip().lower().replace(".", "")
+                    async for _ident in db.player_identities.find(
+                        {"sport": "NFL", "name_norm": _norm2},
+                        {"provider_ids": 1, "canonical_player_id": 1},
+                    ):
+                        _cp = _ident.get("canonical_player_id")
+                        if _cp:
+                            _ids.add(str(_cp))
+                        for _v in (_ident.get("provider_ids") or {}).values():
+                            if _v:
+                                _ids.add(str(_v))
+                # Union with every canonical_player_id already stored
+                # for an EXACT name match in actuals.  This closes the
+                # dual-pipeline bridge when identity has no sibling id.
+                if q.entity_name:
+                    _distinct = await db.player_game_actuals.distinct(
+                        "canonical_player_id",
+                        {"sport": "nfl", "player_name": q.entity_name},
+                    )
+                    for _d in _distinct or ():
+                        if _d:
+                            _ids.add(str(_d))
+                if len(_ids) > 1:
+                    base_q = {"sport": "nfl",
+                              "canonical_player_id": {"$in": sorted(_ids)}}
+        except Exception as _bridge_e:  # pragma: no cover — bridge is
+            # strictly additive; on any failure fall back to the
+            # original single-id query (preserves pre-fix behaviour).
+            logger.debug("NFL identity bridge soft-fail: %s", _bridge_e)
+
         obs: list[HistoricalObservation] = []
         docs: list[dict] = []
         cursor = db.player_game_actuals.find(base_q).sort("event_time", -1).limit(80)
@@ -934,13 +1001,24 @@ class NFLPlayerHistoricalAdapter(HistoricalAdapter):
                 if v is not None:
                     try: actual = float(v)
                     except Exception: actual = None
+            # ── 2026-10-03 Perklocks — HONEST season context ──────────
+            # live_gamelog rows arrive with season=null; derive the NFL
+            # season from the real event_time (Sep-Dec of year Y OR
+            # Jan-Feb of Y+1 belong to NFL season Y).  No fabrication —
+            # we only compute from data already present on the row.
+            _season = doc.get("season")
+            if _season is None:
+                _et = str(doc.get("event_time") or "")[:10]
+                if len(_et) >= 7 and _et[0:4].isdigit() and _et[5:7].isdigit():
+                    _y = int(_et[0:4]); _m = int(_et[5:7])
+                    _season = _y if _m >= 8 else _y - 1
             obs.append(HistoricalObservation(
                 date=str(doc.get("event_time") or doc.get("ingested_at") or "")[:10],
                 opponent_id=doc.get("canonical_opponent_id"),
                 opponent_name=doc.get("opponent") or doc.get("canonical_opponent_id"),
                 home_away=doc.get("home_away"),
                 actual=actual,
-                context={"season": doc.get("season"), "week": doc.get("week")},
+                context={"season": _season, "week": doc.get("week")},
                 provenance=doc.get("source"),
                 event_id=doc.get("canonical_event_id") or doc.get("event_id"),
             ))
