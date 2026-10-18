@@ -1,4 +1,4 @@
-"""Live Game-Log Ingestor — MLB · NBA · NFL
+"""Live Game-Log Ingestor — MLB · NBA · NFL · NHL
 
 Keeps ``db.player_game_actuals`` current by pulling per-game logs
 directly from free public APIs on a scheduled cadence.
@@ -21,6 +21,7 @@ from .runner import (
     refresh_mlb_gamelogs,
     refresh_nba_gamelogs,
     refresh_nfl_gamelogs,
+    refresh_nhl_gamelogs,
     refresh_all_sports,
 )
 
@@ -28,5 +29,6 @@ __all__ = [
     "refresh_mlb_gamelogs",
     "refresh_nba_gamelogs",
     "refresh_nfl_gamelogs",
+    "refresh_nhl_gamelogs",
     "refresh_all_sports",
 ]

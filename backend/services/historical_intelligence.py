@@ -1898,8 +1898,10 @@ def _nhl_player_market_family(market: str) -> Optional[str]:
         return "points"
     if ("shot on goal" in m or "shots on goal" in m or " sog" in m
             or m in ("player_shots_on_goal", "player_shots_on_goal_alternate",
-                     "player_shots", "shots", "shots_on_goal", "sog")
-            or m.startswith("player_shots")):
+                     "player_shots", "player_sog", "shots",
+                     "shots_on_goal", "sog")
+            or m.startswith("player_shots")
+            or m.startswith("player_sog")):
         return "shots_on_goal"
     return None
 
@@ -2064,8 +2066,16 @@ class NHLPlayerHistoricalAdapter(HistoricalAdapter):
         → direct player_name."""
         base_q: Optional[dict] = None
         eid = str(q.entity_id or "")
-        if eid:
-            # NHL canonical ids are opaque strings (often "nhl_<id>").
+        # ── 2026-10-03 Perklocks — only treat entity_id as a canonical
+        # NHL id when it ACTUALLY looks like one.  Routes stamp the
+        # pick's player NAME here when the pick payload has no id
+        # (`str(pid or pname)` fallback in historical_intelligence_routes
+        # ._resolve_entity).  Previously that bare name was slammed
+        # into `canonical_player_id` and returned 0 rows for every
+        # NHL pick.
+        looks_like_nhl_id = (eid.startswith("nhl_")
+                              or (eid.isdigit() and len(eid) >= 6))
+        if eid and looks_like_nhl_id:
             base_q = {"sport": "nhl", "canonical_player_id": eid}
         if base_q is None and q.entity_name:
             norm = q.entity_name.strip().lower().replace(".", "")
@@ -2096,6 +2106,31 @@ class NHLPlayerHistoricalAdapter(HistoricalAdapter):
                           "canonical_player_id": {"$in": sorted(_ids)}}
         except Exception as _bridge_e:  # pragma: no cover
             logger.debug("NHL universal bridge soft-fail: %s", _bridge_e)
+        # ── 2026-10-03 Perklocks NHL NAME-FORM BRIDGE ───────────────────
+        # Picks stamp selection as the FULL name ("Luke Hughes") but
+        # the NHL live-gamelog projector writes the roster's
+        # abbreviated form ("L. Hughes") because the players collection
+        # itself stores "L. Hughes".  The NHL API /landing endpoint
+        # has full names but adding 1k extra HTTP calls per refresh
+        # cycle is wasteful — instead we bridge AT READ TIME by
+        # probing both forms.  This fallback only fires when the
+        # primary query returned no rows AND the pick carries a name.
+        if (base_q
+            and isinstance(base_q.get("player_name"), str)
+            and q.entity_name
+            and " " in q.entity_name.strip()):
+            try:
+                primary_hits = await db.player_game_actuals.count_documents(
+                    base_q, limit=1)
+            except Exception:
+                primary_hits = 1  # don't disrupt on count failure
+            if primary_hits == 0:
+                parts = q.entity_name.strip().split()
+                if len(parts) >= 2 and parts[0] and parts[0][0].isalpha():
+                    abbreviated = f"{parts[0][0]}. {' '.join(parts[1:])}"
+                    base_q = {"sport": "nhl",
+                              "player_name": {"$in":
+                                  [q.entity_name, abbreviated]}}
         docs: list[dict] = []
         try:
             cursor = db.player_game_actuals.find(base_q).sort(
