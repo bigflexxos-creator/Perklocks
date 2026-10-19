@@ -1,17 +1,18 @@
 {
-  "TOTAL_FULLY_PAIRED": 2752,
+  "TOTAL_FULLY_PAIRED": 2738,
+  "EXCLUDED_AMBIGUOUS": 14,
   "AMBIGUOUS_GSIS": 0,
-  "AMBIGUOUS_ESPN": 7,
-  "NAME_COLLISIONS": 13,
+  "AMBIGUOUS_ESPN": 0,
+  "NAME_COLLISIONS": 6,
   "SUFFIX_COLLISIONS": 0,
-  "TEAM_CONFLICTS": 874,
-  "TEAM_CONFLICTS_WITH_COLLISION_RISK": 7,
-  "SAME_NAME_DIFFERENT_TEAMS": 13,
+  "TEAM_CONFLICTS": 869,
+  "TEAM_CONFLICTS_WITH_COLLISION_RISK": 2,
+  "SAME_NAME_DIFFERENT_TEAMS": 6,
   "RETIRED_VS_ACTIVE": 0,
   "PROVENANCE_CONFLICTS": 0,
-  "UNRESOLVED": 893,
+  "UNRESOLVED": 879,
   "SAFE_UNIQUE_PAIRS": 1859,
-  "HARD_AMBIGUOUS_IDENTITIES": 14,
+  "HARD_AMBIGUOUS_IDENTITIES": 0,
   "HARD_SAFE_UNIQUE_PAIRS": 2738,
   "canaries": [
     {
@@ -142,64 +143,7 @@
     }
   ],
   "exclusions": {
-    "hard_ambiguous_pairs": [
-      [
-        "00-0026982",
-        "3895831"
-      ],
-      [
-        "00-0028908",
-        "2976316"
-      ],
-      [
-        "00-0032765",
-        "2976316"
-      ],
-      [
-        "00-0033161",
-        "4569371"
-      ],
-      [
-        "00-0033903",
-        "3914630"
-      ],
-      [
-        "00-0034430",
-        "3895831"
-      ],
-      [
-        "00-0034980",
-        "4367699"
-      ],
-      [
-        "00-0035681",
-        "3155647"
-      ],
-      [
-        "00-0036363",
-        "3914630"
-      ],
-      [
-        "00-0038978",
-        "4567123"
-      ],
-      [
-        "00-0039137",
-        "4567123"
-      ],
-      [
-        "00-0039451",
-        "4569371"
-      ],
-      [
-        "00-0039472",
-        "3155647"
-      ],
-      [
-        "00-0039483",
-        "4367699"
-      ]
-    ],
+    "hard_ambiguous_pairs": [],
     "all_flagged_pairs": [
       [
         "00-0023459",
@@ -236,10 +180,6 @@
       [
         "00-0026625",
         "12477"
-      ],
-      [
-        "00-0026982",
-        "3895831"
       ],
       [
         "00-0027114",
@@ -292,10 +232,6 @@
       [
         "00-0028872",
         "15153"
-      ],
-      [
-        "00-0028908",
-        "2976316"
       ],
       [
         "00-0028946",
@@ -822,10 +758,6 @@
         "2979591"
       ],
       [
-        "00-0032765",
-        "2976316"
-      ],
-      [
         "00-0032774",
         "2969944"
       ],
@@ -964,10 +896,6 @@
       [
         "00-0033156",
         "3051389"
-      ],
-      [
-        "00-0033161",
-        "4569371"
       ],
       [
         "00-0033221",
@@ -1238,10 +1166,6 @@
         "3042738"
       ],
       [
-        "00-0033903",
-        "3914630"
-      ],
-      [
         "00-0033910",
         "2979482"
       ],
@@ -1492,10 +1416,6 @@
       [
         "00-0034424",
         "3126179"
-      ],
-      [
-        "00-0034430",
-        "3895831"
       ],
       [
         "00-0034431",
@@ -1792,10 +1712,6 @@
       [
         "00-0034978",
         "4037650"
-      ],
-      [
-        "00-0034980",
-        "4367699"
       ],
       [
         "00-0034981",
@@ -2140,10 +2056,6 @@
       [
         "00-0035680",
         "3110565"
-      ],
-      [
-        "00-0035681",
-        "3155647"
       ],
       [
         "00-0035685",
@@ -2568,10 +2480,6 @@
       [
         "00-0036362",
         "4259804"
-      ],
-      [
-        "00-0036363",
-        "3914630"
       ],
       [
         "00-0036366",
@@ -3598,10 +3506,6 @@
         "4361861"
       ],
       [
-        "00-0038978",
-        "4567123"
-      ],
-      [
         "00-0039002",
         "4360386"
       ],
@@ -3620,10 +3524,6 @@
       [
         "00-0039135",
         "4362486"
-      ],
-      [
-        "00-0039137",
-        "4567123"
       ],
       [
         "00-0039148",
@@ -3662,24 +3562,12 @@
         "4573152"
       ],
       [
-        "00-0039451",
-        "4569371"
-      ],
-      [
         "00-0039458",
         "4362603"
       ],
       [
         "00-0039460",
         "4569428"
-      ],
-      [
-        "00-0039472",
-        "3155647"
-      ],
-      [
-        "00-0039483",
-        "4367699"
       ],
       [
         "00-0039489",
@@ -3777,57 +3665,7 @@
   },
   "details": {
     "ambiguous_gsis": [],
-    "ambiguous_espn": [
-      {
-        "espn": "2976316",
-        "gsis_ids": [
-          "00-0028908",
-          "00-0032765"
-        ]
-      },
-      {
-        "espn": "3155647",
-        "gsis_ids": [
-          "00-0035681",
-          "00-0039472"
-        ]
-      },
-      {
-        "espn": "3895831",
-        "gsis_ids": [
-          "00-0026982",
-          "00-0034430"
-        ]
-      },
-      {
-        "espn": "3914630",
-        "gsis_ids": [
-          "00-0033903",
-          "00-0036363"
-        ]
-      },
-      {
-        "espn": "4367699",
-        "gsis_ids": [
-          "00-0034980",
-          "00-0039483"
-        ]
-      },
-      {
-        "espn": "4567123",
-        "gsis_ids": [
-          "00-0038978",
-          "00-0039137"
-        ]
-      },
-      {
-        "espn": "4569371",
-        "gsis_ids": [
-          "00-0033161",
-          "00-0039451"
-        ]
-      }
-    ],
+    "ambiguous_espn": [],
     "name_collisions": [
       {
         "name_norm": "aaronbrewer",
@@ -3867,86 +3705,6 @@
         "teams": [
           "BUF",
           "MIA"
-        ]
-      },
-      {
-        "name_norm": "michaelthomas",
-        "name_samples": [
-          "Michael Thomas"
-        ],
-        "identities": [
-          {
-            "gsis": "00-0028908",
-            "espn": "2976316"
-          },
-          {
-            "gsis": "00-0032765",
-            "espn": "2976316"
-          }
-        ],
-        "teams": [
-          "HOU",
-          "NO"
-        ]
-      },
-      {
-        "name_norm": "mikeedwards",
-        "name_samples": [
-          "Mike Edwards"
-        ],
-        "identities": [
-          {
-            "gsis": "00-0035681",
-            "espn": "3155647"
-          },
-          {
-            "gsis": "00-0039472",
-            "espn": "3155647"
-          }
-        ],
-        "teams": [
-          "BUF",
-          "TB"
-        ]
-      },
-      {
-        "name_norm": "andresmith",
-        "name_samples": [
-          "Andre Smith"
-        ],
-        "identities": [
-          {
-            "gsis": "00-0026982",
-            "espn": "3895831"
-          },
-          {
-            "gsis": "00-0034430",
-            "espn": "3895831"
-          }
-        ],
-        "teams": [
-          "CIN",
-          "TEN"
-        ]
-      },
-      {
-        "name_norm": "joshjones",
-        "name_samples": [
-          "Josh Jones"
-        ],
-        "identities": [
-          {
-            "gsis": "00-0033903",
-            "espn": "3914630"
-          },
-          {
-            "gsis": "00-0036363",
-            "espn": "3914630"
-          }
-        ],
-        "teams": [
-          "BAL",
-          "SEA"
         ]
       },
       {
@@ -4007,66 +3765,6 @@
         "teams": [
           "CHI",
           "IND"
-        ]
-      },
-      {
-        "name_norm": "isaiahjohnson",
-        "name_samples": [
-          "Isaiah Johnson"
-        ],
-        "identities": [
-          {
-            "gsis": "00-0034980",
-            "espn": "4367699"
-          },
-          {
-            "gsis": "00-0039483",
-            "espn": "4367699"
-          }
-        ],
-        "teams": [
-          "LV",
-          "MIA"
-        ]
-      },
-      {
-        "name_norm": "byronyoung",
-        "name_samples": [
-          "Byron Young"
-        ],
-        "identities": [
-          {
-            "gsis": "00-0038978",
-            "espn": "4567123"
-          },
-          {
-            "gsis": "00-0039137",
-            "espn": "4567123"
-          }
-        ],
-        "teams": [
-          "LA",
-          "PHI"
-        ]
-      },
-      {
-        "name_norm": "isaiahwilliams",
-        "name_samples": [
-          "Isaiah Williams"
-        ],
-        "identities": [
-          {
-            "gsis": "00-0033161",
-            "espn": "4569371"
-          },
-          {
-            "gsis": "00-0039451",
-            "espn": "4569371"
-          }
-        ],
-        "teams": [
-          "DET",
-          "NYJ"
         ]
       },
       {
@@ -4275,42 +3973,6 @@
     ],
     "team_conflicts_with_collision_risk": [
       {
-        "gsis": "00-0028908",
-        "espn": "2976316",
-        "name": "Michael Thomas",
-        "crosswalk_team": "HOU",
-        "weekly_latest_team": "CIN",
-        "latest_season": 2022,
-        "latest_week": 16
-      },
-      {
-        "gsis": "00-0035681",
-        "espn": "3155647",
-        "name": "Mike Edwards",
-        "crosswalk_team": "BUF",
-        "weekly_latest_team": "KC",
-        "latest_season": 2025,
-        "latest_week": 17
-      },
-      {
-        "gsis": "00-0026982",
-        "espn": "3895831",
-        "name": "Andre Smith",
-        "crosswalk_team": "CIN",
-        "weekly_latest_team": "BAL",
-        "latest_season": 2021,
-        "latest_week": 4
-      },
-      {
-        "gsis": "00-0034430",
-        "espn": "3895831",
-        "name": "Andre Smith",
-        "crosswalk_team": "TEN",
-        "weekly_latest_team": "ATL",
-        "latest_season": 2023,
-        "latest_week": 18
-      },
-      {
         "gsis": "00-0035944",
         "espn": "4032481",
         "name": "Jonah Williams",
@@ -4327,15 +3989,6 @@
         "weekly_latest_team": "ARI",
         "latest_season": 2025,
         "latest_week": 10
-      },
-      {
-        "gsis": "00-0039451",
-        "espn": "4569371",
-        "name": "Isaiah Williams",
-        "crosswalk_team": "DET",
-        "weekly_latest_team": "NYJ",
-        "latest_season": 2026,
-        "latest_week": 3
       }
     ],
     "same_name_different_teams": [
@@ -4376,86 +4029,6 @@
           {
             "gsis": "00-0040175",
             "espn": "4837188"
-          }
-        ]
-      },
-      {
-        "name_norm": "michaelthomas",
-        "name_samples": [
-          "Michael Thomas"
-        ],
-        "teams": [
-          "HOU",
-          "NO"
-        ],
-        "identities": [
-          {
-            "gsis": "00-0028908",
-            "espn": "2976316"
-          },
-          {
-            "gsis": "00-0032765",
-            "espn": "2976316"
-          }
-        ]
-      },
-      {
-        "name_norm": "mikeedwards",
-        "name_samples": [
-          "Mike Edwards"
-        ],
-        "teams": [
-          "BUF",
-          "TB"
-        ],
-        "identities": [
-          {
-            "gsis": "00-0035681",
-            "espn": "3155647"
-          },
-          {
-            "gsis": "00-0039472",
-            "espn": "3155647"
-          }
-        ]
-      },
-      {
-        "name_norm": "andresmith",
-        "name_samples": [
-          "Andre Smith"
-        ],
-        "teams": [
-          "CIN",
-          "TEN"
-        ],
-        "identities": [
-          {
-            "gsis": "00-0026982",
-            "espn": "3895831"
-          },
-          {
-            "gsis": "00-0034430",
-            "espn": "3895831"
-          }
-        ]
-      },
-      {
-        "name_norm": "joshjones",
-        "name_samples": [
-          "Josh Jones"
-        ],
-        "teams": [
-          "BAL",
-          "SEA"
-        ],
-        "identities": [
-          {
-            "gsis": "00-0033903",
-            "espn": "3914630"
-          },
-          {
-            "gsis": "00-0036363",
-            "espn": "3914630"
           }
         ]
       },
@@ -4516,66 +4089,6 @@
           {
             "gsis": "00-0038407",
             "espn": "4685145"
-          }
-        ]
-      },
-      {
-        "name_norm": "isaiahjohnson",
-        "name_samples": [
-          "Isaiah Johnson"
-        ],
-        "teams": [
-          "LV",
-          "MIA"
-        ],
-        "identities": [
-          {
-            "gsis": "00-0034980",
-            "espn": "4367699"
-          },
-          {
-            "gsis": "00-0039483",
-            "espn": "4367699"
-          }
-        ]
-      },
-      {
-        "name_norm": "byronyoung",
-        "name_samples": [
-          "Byron Young"
-        ],
-        "teams": [
-          "LA",
-          "PHI"
-        ],
-        "identities": [
-          {
-            "gsis": "00-0038978",
-            "espn": "4567123"
-          },
-          {
-            "gsis": "00-0039137",
-            "espn": "4567123"
-          }
-        ]
-      },
-      {
-        "name_norm": "isaiahwilliams",
-        "name_samples": [
-          "Isaiah Williams"
-        ],
-        "teams": [
-          "DET",
-          "NYJ"
-        ],
-        "identities": [
-          {
-            "gsis": "00-0033161",
-            "espn": "4569371"
-          },
-          {
-            "gsis": "00-0039451",
-            "espn": "4569371"
           }
         ]
       },

@@ -129,6 +129,13 @@ async def resolve_identity(
     (name is used only as a last-resort authoritative lookup when a
     name UNIQUELY identifies a single crosswalk row).
 
+    Rows carrying ``ambiguous: True`` are NEVER returned — they
+    represent crosswalk entries where the name/team bridge produced a
+    one-to-many GSIS↔ESPN mapping and the authoritative pairing cannot
+    be trusted.  Callers get ``None`` and the upstream fail-closed
+    path (``identity_unresolved``) takes over, exactly like for an
+    unknown id.
+
     Short-lived in-process cache keeps repeated lookups fast; the
     caller does not need to batch.
     """
@@ -149,32 +156,58 @@ async def resolve_identity(
 
     coll = db[CROSSWALK_COLL]
 
-    # Primary: direct alias lookup.
+    # Primary: direct alias lookup — but FAIL CLOSED when the alias
+    # resolves to >1 crosswalk row (one external id → two distinct
+    # identities) OR to a row explicitly marked ``ambiguous: True``.
     if probe_keys:
         q = {"$or": [{"aliases": {"$in": probe_keys}},
                      {"_id": {"$in": probe_keys}},
                      {"canonical_player_id": {"$in": probe_keys}},
                      {"espn_player_id": {"$in": probe_keys}},
                      {"gsis_player_id": {"$in": probe_keys}}]}
-        row = await coll.find_one(q)
-        if row:
+        cursor = coll.find(q).limit(3)
+        matches = [r async for r in cursor]
+        # Drop ambiguous rows from consideration.
+        matches = [r for r in matches if not r.get("ambiguous")]
+        if len(matches) == 1:
+            row = matches[0]
             for k in probe_keys:
                 _resolve_cache[k] = (now, row)
             return row
+        if len(matches) > 1:
+            # Collapse to a single row ONLY when every match shares the
+            # same (gsis, espn) identity (dedupe artefact — same player,
+            # multiple canonical_player_id rows that pre-date the
+            # single-canonical invariant).  Any disagreement on either
+            # identifier → fail closed, exactly as a brand-new
+            # ambiguous row would.
+            ident_set = {
+                (r.get("gsis_player_id") or "",
+                 r.get("espn_player_id") or "")
+                for r in matches
+            }
+            if len(ident_set) == 1:
+                row = matches[0]
+                for k in probe_keys:
+                    _resolve_cache[k] = (now, row)
+                return row
+            # True one-id→many-identity collision.  Cache the negative
+            # outcome so we don't re-query, and return None.
+            for k in probe_keys:
+                _resolve_cache[k] = (now, None)
+            return None
 
     # Secondary: authoritative name lookup — ONLY when the normalised
-    # name maps to exactly ONE DISTINCT player identity.  Two
-    # crosswalk rows for the same player (one keyed by ``espn_<N>``,
-    # one by GSIS) will share the same ``espn_player_id`` and/or
-    # ``gsis_player_id`` — those are the SAME identity, not an
-    # ambiguous match.  We dedupe candidates on that identifier set
-    # and never silently take a multi-match best guess across
-    # truly-different players.
+    # name maps to exactly ONE DISTINCT player identity.  Ambiguous
+    # rows are filtered out before the groupings are computed so a
+    # name query against a cleaned-up collision set still resolves
+    # cleanly when exactly one non-ambiguous player remains.
     if name:
         n = _norm_name(name)
         if n:
             cand = []
-            async for r in coll.find({"sport": "nfl", "name_norm": n}).limit(10):
+            async for r in coll.find({"sport": "nfl", "name_norm": n,
+                                      "ambiguous": {"$ne": True}}).limit(10):
                 cand.append(r)
             def _ident_key(r: dict) -> tuple:
                 return ((r.get("espn_player_id") or ""),
@@ -368,6 +401,130 @@ async def ensure_indexes(db) -> None:
         await coll.create_index([("gsis_player_id", 1)], name="ix_gsis")
     except Exception:
         pass
+    try:
+        await coll.create_index([("ambiguous", 1)], name="ix_ambiguous")
+    except Exception:
+        pass
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Ambiguity enforcement — the authoritative pairing invariant.
+#
+# Required contract (post 2026-06 pre-deployment audit):
+#
+#   * one GSIS → at most one ESPN
+#   * one ESPN → at most one GSIS
+#
+# When either side would map to >1 of the other, mark EVERY involved
+# row with ``ambiguous: True`` and the reason.  No winner is chosen,
+# no team/name heuristic is used.  Standalone GSIS-only or ESPN-only
+# rows are untouched (they do not participate in the alias bridge).
+#
+# The resolver already fails closed when it hits any row with
+# ``ambiguous: True`` — see ``resolve_identity`` above.
+# ─────────────────────────────────────────────────────────────────────
+
+async def detect_and_mark_ambiguity(db, *, dry_run: bool = False) -> dict:
+    """Scan the crosswalk and mark every row participating in a
+    hard-ambiguous (one-to-many) GSIS↔ESPN pairing as
+    ``ambiguous: True`` with ``ambiguity_reason``.
+
+    Returns a summary dict:
+        {
+          "scanned": <int>,
+          "paired_rows": <int>,
+          "ambiguous_gsis_groups": <int>,
+          "ambiguous_espn_groups": <int>,
+          "ambiguous_row_ids": [<_id>, ...],
+          "cleared_row_ids":  [<_id>, ...],
+          "dry_run": bool,
+        }
+
+    Also CLEARS the ``ambiguous`` flag from any row that no longer
+    participates in an ambiguous group (so the audit is self-healing
+    when a bad row is deleted upstream).
+    """
+    coll = db[CROSSWALK_COLL]
+    from collections import defaultdict
+
+    paired: list[dict] = []
+    async for r in coll.find({
+        "sport": "nfl",
+        "gsis_player_id": {"$ne": None, "$exists": True, "$nin": [None, ""]},
+        "espn_player_id": {"$ne": None, "$exists": True, "$nin": [None, ""]},
+    }):
+        paired.append(r)
+
+    # Build the GSIS→{ESPN} and ESPN→{GSIS} indices.
+    gsis_to_espns: dict[str, set[str]] = defaultdict(set)
+    espn_to_gsises: dict[str, set[str]] = defaultdict(set)
+    for r in paired:
+        g = str(r.get("gsis_player_id") or "")
+        e = str(r.get("espn_player_id") or "")
+        if g and e:
+            gsis_to_espns[g].add(e)
+            espn_to_gsises[e].add(g)
+
+    ambiguous_gsis = {g for g, es in gsis_to_espns.items() if len(es) > 1}
+    ambiguous_espn = {e for e, gs in espn_to_gsises.items() if len(gs) > 1}
+
+    # Rows to mark ambiguous — every paired row that participates in
+    # either side of a one-to-many collision.
+    to_mark: list[tuple[Any, str]] = []
+    for r in paired:
+        g = str(r.get("gsis_player_id") or "")
+        e = str(r.get("espn_player_id") or "")
+        reasons: list[str] = []
+        if g in ambiguous_gsis:
+            reasons.append(f"gsis_maps_to_{len(gsis_to_espns[g])}_espn")
+        if e in ambiguous_espn:
+            reasons.append(f"espn_maps_to_{len(espn_to_gsises[e])}_gsis")
+        if reasons:
+            to_mark.append((r["_id"], ";".join(reasons)))
+
+    # Rows that currently carry ``ambiguous=True`` but no longer meet
+    # the ambiguity criterion → clear the flag (self-healing).
+    to_clear: list[Any] = []
+    marked_ids = {rid for rid, _ in to_mark}
+    async for r in coll.find({"sport": "nfl", "ambiguous": True},
+                             {"_id": 1}):
+        if r["_id"] not in marked_ids:
+            to_clear.append(r["_id"])
+
+    if not dry_run:
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        for rid, reason in to_mark:
+            await coll.update_one(
+                {"_id": rid},
+                {"$set": {
+                    "ambiguous": True,
+                    "ambiguity_reason": reason,
+                    "ambiguity_detected_at": now,
+                }},
+            )
+        if to_clear:
+            await coll.update_many(
+                {"_id": {"$in": to_clear}},
+                {"$unset": {
+                    "ambiguous": "",
+                    "ambiguity_reason": "",
+                    "ambiguity_detected_at": "",
+                }},
+            )
+
+    # Invalidate the resolver cache so already-cached ambiguous ids
+    # re-resolve against the newly-flagged rows.
+    clear_cache()
+
+    return {
+        "scanned": len(paired) + 0,
+        "paired_rows": len(paired),
+        "ambiguous_gsis_groups": len(ambiguous_gsis),
+        "ambiguous_espn_groups": len(ambiguous_espn),
+        "ambiguous_row_ids": [str(r) for r, _ in to_mark],
+        "cleared_row_ids": [str(r) for r in to_clear],
+        "dry_run": dry_run,
+    }
 
 
 def clear_cache() -> None:
@@ -382,5 +539,6 @@ __all__ = [
     "resolve_history_keys",
     "upsert_identity",
     "ensure_indexes",
+    "detect_and_mark_ambiguity",
     "clear_cache",
 ]

@@ -371,3 +371,156 @@ async def test_espn_keyed_ingestion_stays_idempotent_under_crosswalk(db):
     docs = [d async for d in db.player_game_logs.find(
         {"sport": "nfl", "player_id": "espn_4361741"})]
     assert len(docs) == 1, "ESPN-keyed ingestion must remain idempotent"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Hard-ambiguity enforcement — one GSIS → at most one ESPN
+# (and vice-versa).  Rows marked ``ambiguous: True`` by
+# ``detect_and_mark_ambiguity`` must fail closed everywhere.
+# ─────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_detect_and_mark_ambiguity_marks_one_espn_to_many_gsis(db):
+    """Seed two rows that share an ESPN id → detector flags both."""
+    from services.nfl_identity_crosswalk import (
+        upsert_identity, detect_and_mark_ambiguity, ensure_indexes,
+    )
+    await ensure_indexes(db)
+    # Two different real players share one ESPN id (the exact
+    # pattern the June 2026 audit found: "Michael Thomas").
+    await upsert_identity(db, gsis_id="00-0028908", espn_id="2976316",
+                          name="Michael Thomas", team="HOU",
+                          provenance=["db.players"])
+    await upsert_identity(db, gsis_id="00-0032765", espn_id="2976316",
+                          name="Michael Thomas", team="NO",
+                          provenance=["db.players"])
+    # Plus one safe unrelated identity.
+    await upsert_identity(db, gsis_id="00-0037834", espn_id="4361741",
+                          name="Brock Purdy", team="SF",
+                          provenance=["db.players"])
+
+    res = await detect_and_mark_ambiguity(db, dry_run=False)
+    assert res["ambiguous_espn_groups"] == 1
+    assert res["ambiguous_gsis_groups"] == 0
+    assert len(res["ambiguous_row_ids"]) == 2
+    # The safe row remains unmarked.
+    safe = await db.nfl_identity_crosswalk.find_one(
+        {"gsis_player_id": "00-0037834"})
+    assert safe.get("ambiguous") is not True
+
+
+@pytest.mark.asyncio
+async def test_resolver_fails_closed_on_ambiguous_rows(db):
+    """Marked-ambiguous rows must NEVER be returned by the resolver —
+    even on direct GSIS or ESPN alias lookup.  Upstream will see
+    ``identity_unresolved`` and refuse to attribute history."""
+    from services.nfl_identity_crosswalk import (
+        upsert_identity, detect_and_mark_ambiguity, resolve_identity,
+        ensure_indexes, clear_cache,
+    )
+    await ensure_indexes(db)
+    await upsert_identity(db, gsis_id="00-0028908", espn_id="2976316",
+                          name="Michael Thomas", team="HOU",
+                          provenance=["db.players"])
+    await upsert_identity(db, gsis_id="00-0032765", espn_id="2976316",
+                          name="Michael Thomas", team="NO",
+                          provenance=["db.players"])
+    await detect_and_mark_ambiguity(db, dry_run=False)
+    clear_cache()
+
+    # Direct GSIS alias lookup must fail closed (both GSIS rows are
+    # tagged ambiguous).
+    assert await resolve_identity(db, pick_cpid="00-0028908") is None
+    assert await resolve_identity(db, pick_cpid="00-0032765") is None
+    # Direct ESPN alias lookup — the one id that caused the collision —
+    # must also fail closed.
+    assert await resolve_identity(db, pick_cpid="2976316") is None
+    assert await resolve_identity(db, pick_cpid="espn_2976316") is None
+    # Name-only lookup against two ambiguous rows must also fail.
+    assert await resolve_identity(db, name="Michael Thomas") is None
+
+
+@pytest.mark.asyncio
+async def test_ambiguity_is_self_healing_when_bad_row_removed(db):
+    """If one of the two colliding rows is removed, the remaining
+    row is cleared of its ambiguous flag on the next detector run."""
+    from services.nfl_identity_crosswalk import (
+        upsert_identity, detect_and_mark_ambiguity, resolve_identity,
+        ensure_indexes, clear_cache, CROSSWALK_COLL,
+    )
+    await ensure_indexes(db)
+    await upsert_identity(db, gsis_id="00-0028908", espn_id="2976316",
+                          name="Michael Thomas", team="HOU",
+                          provenance=["db.players"])
+    await upsert_identity(db, gsis_id="00-0032765", espn_id="2976316",
+                          name="Michael Thomas", team="NO",
+                          provenance=["db.players"])
+    await detect_and_mark_ambiguity(db, dry_run=False)
+    # Operator removes the HOU row (ambiguity resolved upstream).
+    await db[CROSSWALK_COLL].delete_one({"gsis_player_id": "00-0028908"})
+    res = await detect_and_mark_ambiguity(db, dry_run=False)
+    assert res["ambiguous_espn_groups"] == 0
+    assert len(res["cleared_row_ids"]) == 1
+    clear_cache()
+    # The remaining NO row should now resolve cleanly.
+    hit = await resolve_identity(db, pick_cpid="00-0032765")
+    assert hit is not None
+    assert hit["gsis_player_id"] == "00-0032765"
+    assert hit["espn_player_id"] == "2976316"
+
+
+@pytest.mark.asyncio
+async def test_standalone_identities_not_touched_by_detector(db):
+    """Standalone GSIS-only or ESPN-only rows must not be marked
+    ambiguous — they don't participate in the alias bridge."""
+    from services.nfl_identity_crosswalk import (
+        upsert_identity, detect_and_mark_ambiguity, ensure_indexes,
+    )
+    await ensure_indexes(db)
+    # GSIS-only row.
+    await upsert_identity(db, gsis_id="00-0019999", name="Legacy Player",
+                          team="RET", provenance=["db.players"])
+    # ESPN-only row.
+    await upsert_identity(db, espn_id="9999999", name="Rookie Only",
+                          team="LAC", provenance=["player_game_actuals"])
+    res = await detect_and_mark_ambiguity(db, dry_run=False)
+    assert res["ambiguous_gsis_groups"] == 0
+    assert res["ambiguous_espn_groups"] == 0
+    assert len(res["ambiguous_row_ids"]) == 0
+    for row in await db.nfl_identity_crosswalk.find({}).to_list(None):
+        assert row.get("ambiguous") is not True
+
+
+@pytest.mark.asyncio
+async def test_history_shadow_fails_closed_on_ambiguous_identity(db):
+    """End-to-end: GSIS pick for an ambiguity-marked player must
+    yield ``identity_unresolved`` — NEVER silently pull the wrong
+    player's actuals.  This is the P0 production safety contract."""
+    from services.nfl_identity_crosswalk import (
+        upsert_identity, detect_and_mark_ambiguity, ensure_indexes,
+        clear_cache,
+    )
+    from services.history_intelligence import compute_history_shadow
+    await ensure_indexes(db)
+    await upsert_identity(db, gsis_id="00-0028908", espn_id="2976316",
+                          name="Michael Thomas", team="HOU",
+                          provenance=["db.players"])
+    await upsert_identity(db, gsis_id="00-0032765", espn_id="2976316",
+                          name="Michael Thomas", team="NO",
+                          provenance=["db.players"])
+    await detect_and_mark_ambiguity(db, dry_run=False)
+    clear_cache()
+    # Seed actuals under the shared ESPN id — these would be WRONG
+    # to serve to either player.
+    await _seed_actuals_row(db, "2976316", "2026-10-04", "2026-10-04T20:00:00",
+                            {"receiving_yards": 150})
+    pick = {
+        "sport": "nfl", "market": "Receiving Yards Over/Under",
+        "canonical_player_id": "00-0028908",
+        "player_name": "Michael Thomas",
+        "line": 60, "side": "Over",
+        "event_time": "2026-10-18T20:00:00",
+    }
+    bundle = await compute_history_shadow(db, pick)
+    assert bundle["data_quality"] == "identity_unresolved"
+    assert bundle["career_n"] == 0

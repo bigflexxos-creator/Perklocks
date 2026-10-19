@@ -50,6 +50,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from services.nfl_identity_crosswalk import (
     upsert_identity, ensure_indexes, _norm_name, CROSSWALK_COLL,
+    detect_and_mark_ambiguity,
 )
 
 GSIS_RE = re.compile(r"^\d{2}-\d{7}$")
@@ -234,6 +235,20 @@ async def main(args):
         {"gsis_player_id": {"$ne": None, "$exists": True},
          "espn_player_id": {"$ne": None, "$exists": True}}
     )
+
+    # ── 4. Ambiguity enforcement (fail-closed one-to-many invariant) ──
+    # Any identity involved in a hard ambiguity (one GSIS → >1 ESPN,
+    # or one ESPN → >1 GSIS) is marked ``ambiguous: True`` with an
+    # explicit reason + timestamp.  The resolver fails closed on those
+    # rows (returns None, upstream sees ``identity_unresolved``).
+    # No winner is chosen, no team/name heuristic is applied, and
+    # standalone GSIS- or ESPN-only rows are not touched.
+    print("Phase 4: detecting + marking hard-ambiguous pairings …")
+    amb = await detect_and_mark_ambiguity(db, dry_run=not args.commit)
+    stats["ambiguous_rows_marked"] = len(amb["ambiguous_row_ids"])
+    stats["ambiguous_rows_cleared"] = len(amb["cleared_row_ids"])
+    stats["ambiguous_gsis_groups"] = amb["ambiguous_gsis_groups"]
+    stats["ambiguous_espn_groups"] = amb["ambiguous_espn_groups"]
     print("\n── Summary ──")
     for k, v in stats.items():
         print(f"  {k}: {v}")
