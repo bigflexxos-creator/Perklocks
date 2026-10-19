@@ -393,13 +393,44 @@ class _IdentityRegistry:
 
     def hydrate_from_dicts(self, docs: list[dict]) -> None:
         for d in docs:
+            # DEPLOY-GATE (2026-06-19): defensive coercion for the
+            # ``provider_ids`` field — legacy rows may persist it as
+            # a list of 1-tuples, a stringified JSON blob, or ``None``.
+            # Previously ``dict(d.get("provider_ids") or {})`` would
+            # raise ``dictionary update sequence element #0 has length
+            # 1; 2 is required`` on those shapes and skip the entire
+            # row.  Now we normalise every known malformed shape and
+            # fall back to an empty dict so the identity still hydrates.
+            raw_pids = d.get("provider_ids")
+            if isinstance(raw_pids, dict):
+                provider_ids = dict(raw_pids)
+            elif raw_pids is None:
+                provider_ids = {}
+            elif isinstance(raw_pids, (list, tuple)):
+                provider_ids = {}
+                for item in raw_pids:
+                    if isinstance(item, (list, tuple)) and len(item) == 2:
+                        provider_ids[str(item[0])] = item[1]
+                    elif isinstance(item, dict):
+                        provider_ids.update(item)
+                    # else: unknown shape — skip silently.
+            elif isinstance(raw_pids, str):
+                try:
+                    import json as _json
+                    parsed = _json.loads(raw_pids)
+                    provider_ids = parsed if isinstance(parsed, dict) else {}
+                except Exception:
+                    provider_ids = {}
+            else:
+                provider_ids = {}
+
             ident = PlayerIdentity(
                 canonical_player_id=d["canonical_player_id"],
                 name=d.get("name") or "",
                 name_norm=d.get("name_norm") or _norm(d.get("name") or ""),
                 sport=d.get("sport") or "",
                 league=d.get("league") or "",
-                provider_ids=dict(d.get("provider_ids") or {}),
+                provider_ids=provider_ids,
                 aliases=list(d.get("aliases") or []),
                 position=d.get("position"),
                 role=d.get("role"),

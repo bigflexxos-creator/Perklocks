@@ -85,8 +85,11 @@ _INDEX_SPECS: list[IndexSpec] = [
               owner_service="server_startup",
               purpose="settlement scan"),
     IndexSpec("picks", "id_1", keys=(("id", 1),), unique=True,
+              partial_filter={"id": {"$type": "string"}},
               owner_service="server_startup",
-              purpose="stable pick id lookup"),
+              purpose="stable pick id lookup (partial unique: null/missing "
+                      "ids are tolerated so a drifted deploy DB does not "
+                      "block index build; valid string ids remain unique)"),
     IndexSpec("picks", "pick_date_1_signal_score_-1",
               keys=(("pick_date", 1), ("signal_score", -1)),
               critical=False,
@@ -103,8 +106,13 @@ _INDEX_SPECS: list[IndexSpec] = [
     IndexSpec("prediction_snapshots", "prediction_snapshot_version_uniq",
               keys=(("prediction_id", 1), ("snapshot_version", 1)),
               unique=True,
+              partial_filter={
+                  "prediction_id":    {"$type": "string"},
+                  "snapshot_version": {"$exists": True},
+              },
               owner_service="prediction_publication_service",
-              purpose="unique versioned snapshots"),
+              purpose="unique versioned snapshots (partial: tolerates "
+                      "legacy rows missing prediction_id/snapshot_version)"),
     IndexSpec("prediction_snapshots", "prediction_idempotency_uniq",
               keys=(("prediction_id", 1), ("idempotency_key", 1)),
               unique=True,
@@ -251,8 +259,12 @@ _INDEX_SPECS: list[IndexSpec] = [
 
     IndexSpec("parlay_history", "id_1",
               keys=(("id", 1),), unique=True, critical=False,
+              partial_filter={"id": {"$type": "string"}},
               owner_service="parlay_routes",
-              purpose="legacy compat with future Phase 3G migration"),
+              purpose="legacy compat with future Phase 3G migration "
+                      "(partial unique: null/missing ids tolerated — "
+                      "fixes repeated E11000 at startup from legacy "
+                      "null-id rows in canonical_parlay_history)"),
     IndexSpec("parlay_history", "user_id_1_created_at_-1",
               keys=(("user_id", 1), ("created_at", -1)), critical=False,
               owner_service="parlay_routes"),
