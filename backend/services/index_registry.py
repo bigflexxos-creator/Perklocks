@@ -528,6 +528,34 @@ async def verify_collection_indexes(
             result.equivalent_duplicates.append(
                 (spec_keysets[live_pairs], live_name, info)
             )
+    # 3. DEPLOY-GATE (2026-06-19) — a required spec that is missing by
+    # NAME but exists under a DIFFERENT name with the same key-set,
+    # same uniqueness, same sparse, and same TTL semantics is NOT a
+    # readiness failure — Mongo serves queries off key-sets, not
+    # index names.  Previously such a spec stayed in ``missing`` and
+    # kept ``critical_ok`` false, which held ``/api/ready`` at 503 on
+    # fresh deploys where legacy index names survived the rename.
+    # Promote these specs out of ``missing`` and keep the equivalent-
+    # duplicate record so operators can still rename on-demand.
+    def _duplicate_satisfies(spec: IndexSpec, info: dict) -> bool:
+        unique_ok = bool(info.get("unique")) == spec.unique
+        sparse_ok = bool(info.get("sparse")) == spec.sparse
+        if spec.expire_after_seconds is not None:
+            ttl_ok = info.get("expireAfterSeconds") == spec.expire_after_seconds
+        else:
+            ttl_ok = "expireAfterSeconds" not in info
+        return unique_ok and sparse_ok and ttl_ok
+
+    if result.missing and result.equivalent_duplicates:
+        satisfied_by_duplicate: set[tuple[str, str]] = set()
+        for dup_spec, dup_live_name, dup_info in result.equivalent_duplicates:
+            if _duplicate_satisfies(dup_spec, dup_info):
+                satisfied_by_duplicate.add((dup_spec.collection, dup_spec.name))
+        if satisfied_by_duplicate:
+            result.missing = [
+                s for s in result.missing
+                if (s.collection, s.name) not in satisfied_by_duplicate
+            ]
     return result
 
 
