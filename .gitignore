@@ -1,14 +1,14 @@
 
-# Secrets — never commit env files with REAL secrets (SEC-002, 2026-06-25)
-# Deploy-gate (2026-06-19): narrowed so .env.example, .env.schema,
-# .env.deploy.example and similar deploy-manifest files remain visible.
-.env
-backend/.env
-frontend/.env
+# Secrets — never commit .LOCAL env files with REAL secrets.
+# DEPLOY-GATE (2026-06-19): Emergent's deploy pipeline rewrites and
+# consumes .env, backend/.env, and frontend/.env at deploy time, so
+# those three files MUST remain visible to the repo state.  Only
+# per-developer `.local` overrides are ignored.
 frontend/.env.local
 .env.local
 .env.*.local
-# allow .env.example, .env.schema, .env.deploy etc.
+# allow .env, backend/.env, frontend/.env, .env.example, .env.schema,
+# .env.deploy etc.
 
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
@@ -87,6 +87,10 @@ agenthub/agents/youtube/db
 
 # Build caches
 .cache/
+frontend/.metro-cache/
+.metro-cache/
+.expo/
+.expo-shared/
 
 memory/test_credentials.md
 
