@@ -7,57 +7,57 @@
       {
         "label": "T0: cold",
         "status": 200,
-        "revision": "411",
-        "boardVersion": "63f113fe29d7416b",
-        "generationId": "gen_20261019T020610_d23d1081",
+        "revision": "452",
+        "boardVersion": "3d8513a5cd8a4146",
+        "generationId": "gen_20261019T061948_0affc90b",
         "etag": "",
-        "pickCount": 176,
-        "pickIdHash": "7f6db8befedc9648",
-        "elapsedMs": 1593
+        "pickCount": 238,
+        "pickIdHash": "e96099a6e437ef1a",
+        "elapsedMs": 2173
       },
       {
         "label": "T+1s",
         "status": 200,
-        "revision": "411",
-        "boardVersion": "63f113fe29d7416b",
-        "generationId": "gen_20261019T020610_d23d1081",
+        "revision": "452",
+        "boardVersion": "3d8513a5cd8a4146",
+        "generationId": "gen_20261019T061948_0affc90b",
         "etag": "",
-        "pickCount": 176,
-        "pickIdHash": "7f6db8befedc9648",
-        "elapsedMs": 1554
+        "pickCount": 238,
+        "pickIdHash": "e96099a6e437ef1a",
+        "elapsedMs": 1664
       },
       {
         "label": "T+3s",
         "status": 200,
-        "revision": "411",
-        "boardVersion": "63f113fe29d7416b",
-        "generationId": "gen_20261019T020610_d23d1081",
+        "revision": "452",
+        "boardVersion": "3d8513a5cd8a4146",
+        "generationId": "gen_20261019T061948_0affc90b",
         "etag": "",
-        "pickCount": 176,
-        "pickIdHash": "7f6db8befedc9648",
-        "elapsedMs": 1819
+        "pickCount": 238,
+        "pickIdHash": "e96099a6e437ef1a",
+        "elapsedMs": 2779
       },
       {
         "label": "foreground-simulated",
         "status": 200,
-        "revision": "411",
-        "boardVersion": "63f113fe29d7416b",
-        "generationId": "gen_20261019T020610_d23d1081",
+        "revision": "452",
+        "boardVersion": "3d8513a5cd8a4146",
+        "generationId": "gen_20261019T061948_0affc90b",
         "etag": "",
-        "pickCount": 176,
-        "pickIdHash": "7f6db8befedc9648",
-        "elapsedMs": 1518
+        "pickCount": 238,
+        "pickIdHash": "e96099a6e437ef1a",
+        "elapsedMs": 1689
       },
       {
         "label": "manual-refresh",
         "status": 200,
-        "revision": "411",
-        "boardVersion": "63f113fe29d7416b",
-        "generationId": "gen_20261019T020610_d23d1081",
+        "revision": "452",
+        "boardVersion": "3d8513a5cd8a4146",
+        "generationId": "gen_20261019T061948_0affc90b",
         "etag": "",
-        "pickCount": 176,
-        "pickIdHash": "7f6db8befedc9648",
-        "elapsedMs": 1749
+        "pickCount": 238,
+        "pickIdHash": "e96099a6e437ef1a",
+        "elapsedMs": 1887
       }
     ],
     "logins": [
@@ -73,5 +73,5 @@
       }
     ]
   },
-  "ts": "2026-10-19T02:06:57.008Z"
+  "ts": "2026-10-19T06:20:44.391Z"
 }

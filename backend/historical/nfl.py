@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
+from pymongo.errors import DuplicateKeyError
 
 logger = logging.getLogger("lockscore.historical.nfl")
 
@@ -258,27 +259,69 @@ def _safe_int(v) -> Optional[int]:
 
 
 async def _ingest_summary(cx: httpx.AsyncClient, db, event_id, season: Optional[int] = None) -> int:
-    """Pull the boxscore summary for a single event and store per-player stats."""
+    """Pull the boxscore summary for a single event and store per-player stats.
+
+    ──────────────────────────────────────────────────────────────────
+    2026-06 Historical-Ingestion Fix (NFL + CFB adapters)
+    ──────────────────────────────────────────────────────────────────
+    ESPN groups box-score numbers by STAT BLOCK (``passing`` /
+    ``rushing`` / ``receiving`` / …) and a single player can appear in
+    multiple blocks of the same game — e.g. a dual-threat QB shows up
+    in BOTH ``passing`` AND ``rushing``.
+
+    The previous adapter wrote ONE Mongo doc per (player, game,
+    stat_block) using an upsert filter that included ``stat_block``.
+    Because the authoritative unique index on this collection is
+    ``(sport, game_id, player_id)`` (no ``stat_block``), the second
+    stat-block upsert for the same player/game raced the first and
+    the server raised ``DuplicateKeyError`` → NFL historical
+    ingestion has been stalled since 2026-10-11 and CFB inherited the
+    same defect.
+
+    FIX: collect every ESPN stat block for a given (player, game)
+    FIRST, merge them into a SINGLE canonical doc, and upsert with
+    the exact filter ``{sport, game_id, player_id}``.  Every stat
+    family is preserved on the merged doc — the previously
+    collision-prone legacy fields (``nfl_yds``, ``nfl_td``, etc.) are
+    now written under namespaced keys (``nfl_passing_yds``,
+    ``nfl_rushing_yds``) so passing never clobbers rushing never
+    clobbers receiving.  The normalized family fields
+    (``passing_yards``, ``rushing_yards``, ``receiving_yards``,
+    ``receptions``, ``any_td``) already live on their own keys and
+    merge trivially.
+
+    Downstream readers that previously filtered by
+    ``stat_block == <family>`` continue to work by filtering against
+    the new ``stat_blocks`` array (``{"stat_blocks": "passing"}``
+    matches any element) OR against the legacy per-block rows that
+    may still exist from before this fix.
+    """
     if not event_id:
         return 0
     data = await _get(cx, "/summary", {"event": event_id})
     if not data:
         return 0
-    inserted = 0
     boxscore = data.get("boxscore") or {}
+
+    # ── Pass 1: collect every stat block per athlete into one merged doc.
+    # Keyed by ESPN athlete id — bounded to this event, so a dict is
+    # safe and avoids multiple DB round-trips per block.
+    merged: dict[str, dict] = {}
+
     for team_block in boxscore.get("players") or []:
         team_name = (team_block.get("team") or {}).get("displayName")
         for stat_block in team_block.get("statistics") or []:
-            stat_name = (stat_block.get("name") or "").lower()  # passing/rushing/receiving/etc
+            stat_name = (stat_block.get("name") or "").lower()  # passing/rushing/receiving/…
             label_keys = [lbl.lower() for lbl in stat_block.get("labels") or []]
             for athlete in stat_block.get("athletes") or []:
                 ath = athlete.get("athlete") or {}
                 pid = ath.get("id")
                 if not pid:
                     continue
-                stats = athlete.get("stats") or []
-                # zip labels with stats
-                mapped = {k: v for k, v in zip(label_keys, stats)}
+                stats_list = athlete.get("stats") or []
+                mapped = {k: v for k, v in zip(label_keys, stats_list)}
+
+                # Persist the player master row (idempotent).
                 await db.players.update_one(
                     {"player_id": f"espn_{pid}", "sport": "nfl"},
                     {"$set": {
@@ -290,29 +333,80 @@ async def _ingest_summary(cx: httpx.AsyncClient, db, event_id, season: Optional[
                     }},
                     upsert=True,
                 )
-                log_doc = {
-                    "player_id": f"espn_{pid}",
-                    "game_id": f"espn_{event_id}",
-                    "sport": "nfl",
-                    "name": ath.get("displayName"),
-                    "team": team_name,
-                    "stat_block": stat_name,
-                }
-                if season is not None:
-                    log_doc["season"] = int(season)
-                # Map ESPN labels into normalized prop-engine field names.
-                # Engine reads: passing_yards, passing_tds, rushing_yards,
-                # receiving_yards, receptions, any_td. We mirror BOTH the
-                # nfl_* legacy fields and the normalized fields so existing
-                # readers + props_engine stay in sync.
-                log_doc.update({f"nfl_{k}": v for k, v in mapped.items()})
-                _normalize_nfl_stats(stat_name, mapped, log_doc)
-                await db.player_game_logs.update_one(
-                    {"player_id": f"espn_{pid}", "game_id": f"espn_{event_id}", "stat_block": stat_name},
-                    {"$set": log_doc},
-                    upsert=True,
-                )
-                inserted += 1
+
+                # Fetch / seed the merged in-memory doc for this player.
+                key = str(pid)
+                doc = merged.get(key)
+                if doc is None:
+                    doc = {
+                        "player_id": f"espn_{pid}",
+                        "game_id":   f"espn_{event_id}",
+                        "sport":     "nfl",
+                        "name":      ath.get("displayName"),
+                        "team":      team_name,
+                        "stat_blocks": [],
+                    }
+                    if season is not None:
+                        doc["season"] = int(season)
+                    merged[key] = doc
+
+                # Record the family on the array (unique, order-preserving).
+                if stat_name and stat_name not in doc["stat_blocks"]:
+                    doc["stat_blocks"].append(stat_name)
+
+                # Namespaced legacy raw fields: ``nfl_<family>_<label>``
+                # so a QB's rushing yards never overwrites their
+                # passing yards.  We also keep the flat ``nfl_<label>``
+                # for the FIRST block that supplied it (compat with
+                # the handful of rationales / lookups that still read
+                # the flat name) — later blocks ONLY write a flat
+                # value when the key is still unset, i.e. we never
+                # overwrite a stat family with another.
+                for lbl, val in mapped.items():
+                    doc[f"nfl_{stat_name}_{lbl}"] = val
+                    flat = f"nfl_{lbl}"
+                    if flat not in doc:
+                        doc[flat] = val
+
+                # Family-normalized fields — passing_yards /
+                # rushing_yards / receiving_yards / receptions /
+                # any_td are each on their own key, so sequential
+                # calls merge cleanly.
+                _normalize_nfl_stats(stat_name, mapped, doc)
+
+    # ── Pass 2: upsert ONE row per (sport, game_id, player_id).
+    inserted = 0
+    for doc in merged.values():
+        try:
+            await db.player_game_logs.update_one(
+                {"sport": "nfl",
+                 "game_id":   doc["game_id"],
+                 "player_id": doc["player_id"]},
+                {"$set": doc},
+                upsert=True,
+            )
+            inserted += 1
+        except DuplicateKeyError as e:
+            # Defensive: if the pre-fix per-block rows are still in
+            # the collection under the same (sport, game_id,
+            # player_id) and a unique index exists, resolve by
+            # deleting the legacy duplicates and retrying ONCE.  No-op
+            # on collections without a unique index.
+            logger.warning("nfl merged upsert hit DuplicateKey, resolving legacy duplicates: %s", e)
+            await db.player_game_logs.delete_many({
+                "sport": "nfl",
+                "game_id":   doc["game_id"],
+                "player_id": doc["player_id"],
+                "stat_block": {"$exists": True},
+            })
+            await db.player_game_logs.update_one(
+                {"sport": "nfl",
+                 "game_id":   doc["game_id"],
+                 "player_id": doc["player_id"]},
+                {"$set": doc},
+                upsert=True,
+            )
+            inserted += 1
     return inserted
 
 

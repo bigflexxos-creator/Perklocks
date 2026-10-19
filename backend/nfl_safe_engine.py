@@ -186,26 +186,52 @@ _STAT_BLOCK = {
 async def _gather_player_logs(
     db, player_id: str, prop: str, *, window: int = EVAL_WINDOW,
 ) -> list[dict]:
-    """Pull last `window` logs for a (player, prop) pair."""
+    """Pull last `window` logs for a (player, prop) pair.
+
+    2026-06 Historical-Ingestion Fix compat: ``historical/nfl.py`` now
+    writes one MERGED row per (player, game) carrying a
+    ``stat_blocks: [list]`` array instead of one row per stat family.
+    Queries accept BOTH shapes via ``$or`` so legacy per-block rows
+    (pre-fix) and new merged rows (post-fix) both match.  The
+    merged doc preserves per-family stats under namespaced legacy
+    keys (``nfl_rushing_td`` / ``nfl_receiving_td`` / …) AND
+    normalized family keys (``rushing_yards`` / ``receiving_yards``
+    / ``any_td``) so the engine never confuses rushing with
+    receiving when synthesising ATD.
+    """
     block = _STAT_BLOCK.get(prop)
     if prop == "any_td":
-        # Pull both rushing + receiving blocks
+        # Pull both rushing + receiving contributions.  Accept legacy
+        # per-block rows AND merged rows (merged rows match either
+        # "rushing" OR "receiving" element on stat_blocks).
         cursor = db.player_game_logs.find(
             {"player_id": player_id, "sport": "nfl",
-             "stat_block": {"$in": ["rushing", "receiving"]}},
+             "$or": [
+                 {"stat_block":  {"$in": ["rushing", "receiving"]}},
+                 {"stat_blocks": {"$in": ["rushing", "receiving"]}},
+             ]},
             {"_id": 0},
         ).sort("date", -1).limit(window * 2)
         rows = [d async for d in cursor]
-        # Collapse per game_id: ATD is True if ANY block had TD
+        # Collapse per game_id: ATD is True if ANY block had TD.  On
+        # a merged row the per-family counts live under namespaced
+        # keys (``nfl_rushing_td``, ``nfl_receiving_td``) — fall back
+        # to the shared flat ``nfl_td`` only when the namespaced key
+        # is absent (legacy per-block rows).
         by_game: dict = {}
         for r in rows:
             gid = r.get("game_id")
             if not gid:
                 continue
+            # On a merged row, prefer the namespaced per-family numbers.
+            td = (_to_int(r.get("nfl_rushing_td"))
+                  or _to_int(r.get("nfl_receiving_td"))
+                  or _to_int(r.get("nfl_td")) or 0)
+            tgts = (_to_int(r.get("nfl_receiving_tgts"))
+                    or _to_int(r.get("nfl_tgts")) or 0)
+            car = (_to_int(r.get("nfl_rushing_car"))
+                   or _to_int(r.get("nfl_car")) or 0)
             existing = by_game.get(gid)
-            td = _to_int(r.get("nfl_td")) or 0
-            tgts = _to_int(r.get("nfl_tgts")) or 0
-            car = _to_int(r.get("nfl_car")) or 0
             if not existing:
                 by_game[gid] = {
                     "game_id": gid, "date": r.get("date"),
@@ -216,12 +242,12 @@ async def _gather_player_logs(
                 existing["nfl_td"] = max(existing["nfl_td"], td)
                 existing["nfl_car"] = max(existing["nfl_car"], car)
                 existing["nfl_tgts"] = max(existing["nfl_tgts"], tgts)
-        # Sort by date desc, keep last `window`
         out = list(by_game.values())
         out.sort(key=lambda r: r.get("date") or "", reverse=True)
         return out[:window]
     cursor = db.player_game_logs.find(
-        {"player_id": player_id, "sport": "nfl", "stat_block": block},
+        {"player_id": player_id, "sport": "nfl",
+         "$or": [{"stat_block": block}, {"stat_blocks": block}]},
         {"_id": 0},
     ).sort("date", -1).limit(window)
     return [d async for d in cursor]
@@ -443,13 +469,27 @@ async def compute_safe_bets(
     extreme chalk. Caller-provided `min_probability` is honored as a
     soft floor — anything below `ACCEPTABLE_PROB_MIN` is still rejected.
     """
-    # Find players with logs in our active blocks.
+    # Find players with logs in our active blocks.  Legacy rows carry
+    # a scalar ``stat_block``; merged rows (post 2026-06 historical-
+    # ingestion fix) carry a ``stat_blocks`` array.  Normalize both
+    # shapes into a per-row ``_blocks`` array before unwinding so
+    # (player, family) pairs enumerate correctly across both shapes.
     blocks = ["rushing", "receiving", "passing"]
     cursor = db.player_game_logs.aggregate([
-        {"$match": {"sport": "nfl", "stat_block": {"$in": blocks}}},
+        {"$match": {"sport": "nfl",
+                    "$or": [{"stat_block":  {"$in": blocks}},
+                            {"stat_blocks": {"$in": blocks}}]}},
+        {"$set": {"_blocks": {"$cond": [
+            {"$isArray": "$stat_blocks"},
+            "$stat_blocks",
+            {"$cond": [{"$ifNull": ["$stat_block", False]},
+                       ["$stat_block"], []]},
+        ]}}},
+        {"$unwind": "$_blocks"},
+        {"$match": {"_blocks": {"$in": blocks}}},
         {"$group": {
             "_id": {"player_id": "$player_id", "name": "$name", "team": "$team",
-                    "stat_block": "$stat_block"},
+                    "stat_block": "$_blocks"},
             "n": {"$sum": 1},
         }},
         {"$match": {"n": {"$gte": MIN_GAMES_SAMPLE}}},
