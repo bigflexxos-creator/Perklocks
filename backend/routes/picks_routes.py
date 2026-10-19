@@ -4046,6 +4046,18 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
         # honestly labelled so clients never persist it as last-known-good.
         try:
             from services import board_generation as _bg
+            # P0 Cross-Pod Authority Fix (2026-06) — the read path must
+            # consult the DB active-generation document directly (via
+            # the 2.5 s TTL cache) so this response reflects the shared
+            # cross-pod source of truth, not just pod-local memory.
+            # ``load_active_cached`` also reconciles ``_active`` as a
+            # side-effect so the generation manifest below carries the
+            # authoritative value.
+            try:
+                _db_active = await _bg.load_active_cached()
+            except Exception as _db_active_err:
+                logger.debug("load_active_cached failed, falling back to local: %s", _db_active_err)
+                _db_active = _bg.active()
             _ev = {str((p or {}).get("canonical_event_id") or (p or {}).get("event_id") or (p or {}).get("event"))
                    for p in canonical if isinstance(p, dict)}
             _gm = _bg.manifest(_manifest_bv, len(canonical), len(_ev))
@@ -4056,6 +4068,74 @@ async def picks_today(user: Annotated[UserPublic, Depends(current_user)],
             response.headers["X-Generation-State"] = _gm["generation_state"]
             if _gm.get("generation_id"):
                 response.headers["X-Generation-Id"] = str(_gm["generation_id"])
+
+            # ── P0 CROSS-POD DIAGNOSTICS BUNDLE ───────────────────────
+            # Bounded structured headers so operators can grep for
+            # stale/false-zero responses without instrumenting a full
+            # telemetry pipeline.  Response-local snapshot includes:
+            # pod_id, db active gen, local active gen, snapshot gen,
+            # response count, 85+ eligible count, cache hit/miss,
+            # timestamp, build SHA.  If the three generation ids
+            # disagree we emit a high-signal anomaly log so the
+            # stuck-on-Oct-6 state can never be invisible again.
+            try:
+                _local_active = _bg.active() or {}
+                _snapshot_gen = (
+                    (_gm or {}).get("building_generation_ids") or []
+                ) or _local_active.get("generation_id")
+                _elite_count = sum(
+                    1 for p in canonical
+                    if isinstance(p, dict) and (
+                        (p.get("lock_score") or 0) >= 85
+                        or p.get("tier") in ("ELITE", "LEGENDARY", "elite", "legendary")
+                    )
+                )
+                _db_gen    = (_db_active or {}).get("generation_id")
+                _local_gen = _local_active.get("generation_id")
+                _snap_gen  = _snapshot_gen if isinstance(_snapshot_gen, str) else (_snapshot_gen[0] if _snapshot_gen else None)
+                _cache_hit = bool(response.headers.get("x-pt-cache") == "hit" or
+                                  response.headers.get("X-PT-Cache") == "hit")
+
+                response.headers["X-Board-Pod-ID"]       = str(_bg.POD_ID)
+                response.headers["X-Board-DB-Gen"]       = str(_db_gen or "")
+                response.headers["X-Board-Local-Gen"]    = str(_local_gen or "")
+                response.headers["X-Board-Snapshot-Gen"] = str(_snap_gen or "")
+                response.headers["X-Board-Response-Count"] = str(len(canonical))
+                response.headers["X-Board-Elite-Count"]  = str(_elite_count)
+                response.headers["X-Board-Cache-Hit"]    = "1" if _cache_hit else "0"
+                response.headers["X-Build-SHA"]          = str(_bg.BACKEND_REVISION)
+
+                _final_response.setdefault("truth_manifest", {})
+                _final_response["truth_manifest"].update({
+                    "pod_id":       _bg.POD_ID,
+                    "db_active_generation_id":    _db_gen,
+                    "local_active_generation_id": _local_gen,
+                    "snapshot_generation_id":     _snap_gen,
+                    "elite_count_85":             _elite_count,
+                    "cache_hit":                  _cache_hit,
+                    "build_sha":                  _bg.BACKEND_REVISION,
+                })
+
+                # High-signal anomaly: DB ≠ local, OR snapshot drifted.
+                # Suppress when fields are missing (fresh pod boot) or
+                # we are inside a BUILDING window where divergence is
+                # expected by the contract.
+                _mismatch = False
+                if _db_gen and _local_gen and _db_gen != _local_gen:
+                    _mismatch = True
+                if (_snap_gen and _db_gen and _snap_gen != _db_gen
+                        and not _bg.is_building()):
+                    _mismatch = True
+                if _mismatch:
+                    logger.error(
+                        "BOARD_GEN_DRIFT pod=%s db_gen=%s local_gen=%s "
+                        "snapshot_gen=%s count=%s elite85=%s cache_hit=%s build=%s",
+                        _bg.POD_ID, _db_gen, _local_gen, _snap_gen,
+                        len(canonical), _elite_count, _cache_hit,
+                        _bg.BACKEND_REVISION,
+                    )
+            except Exception as _diag_err:
+                logger.debug("picks_today diagnostics bundle skipped: %s", _diag_err)
         except Exception as _bg_err:
             logger.debug("generation manifest skipped: %s", _bg_err)
     except Exception as _tm_err:
