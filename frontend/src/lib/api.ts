@@ -81,18 +81,20 @@ function dropLegacySgoPicks<T extends { id?: string }>(picks: T[]): T[] {
 //   * When it is missing on a production build we FAIL LOUDLY —
 //     `resolveBaseUrl()` returns "" and every API call throws a
 //     descriptive error via `getBackendUrl()`.  No silent fall-through
-//     to the preview URL.
-//   * Dev builds may enable `FORCE_PREVIEW_BACKEND` for QA on the
-//     preview backend (opt-in only).
+//     to any pinned preview URL.
 //
 // Web:
 //   * Prefer EXPO_PUBLIC_BACKEND_URL (dev / preview / native builds)
 //   * Fall back to the app's own origin in the browser so the
 //     published web app automatically uses its own production domain
 //   * Empty string as last resort (relative URL)
+//
+// DEPLOY-GATE (2026-06-19): the previously-inlined
+// ``PINNED_PREVIEW_URL`` constant was removed to satisfy the
+// deployment health check — any backend URL MUST come from env, never
+// from source.  Preview-domain parity logic uses ``PREVIEW_DOMAIN``
+// (a non-URL token for substring matching) only.
 // ═══════════════════════════════════════════════════════════════════
-const FORCE_PREVIEW_BACKEND = false;
-const PINNED_PREVIEW_URL = "https://canonical-parity.preview.emergentagent.com";
 const PREVIEW_DOMAIN = ".preview.emergentagent.com";
 
 /** Expo Go only: when the inlined preview URL and the live dev-server host
@@ -118,7 +120,6 @@ function _nativePreviewOriginGuard(envUrl: string): string {
 }
 
 function resolveBaseUrl(): string {
-  if (FORCE_PREVIEW_BACKEND) return PINNED_PREVIEW_URL;
   const envUrl = process.env.EXPO_PUBLIC_BACKEND_URL;
 
   // ── Native (Expo Go / built app) — EXPO_PUBLIC_BACKEND_URL required ──

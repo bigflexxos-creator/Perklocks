@@ -138,12 +138,33 @@ _lock  = threading.Lock()
 def _resolve_env_config() -> tuple[str, str]:
     """Resolve MONGO_URL and DB_NAME from environment, applying safe
     non-production defaults.  Production enforcement lives in
-    :class:`services.settings.AppSettings`."""
+    :class:`services.settings.AppSettings`.
+
+    DEPLOY-GATE (2026-06-19): when ``ENVIRONMENT`` is ``production``
+    or ``preview``, a missing ``DB_NAME`` **MUST FAIL LOUDLY** rather
+    than silently falling back to the hard-coded development default.
+    This closes the deployment-check finding that a hardcoded db-name
+    fallback could route the live service against the wrong Mongo
+    database.  Local/dev/test keep the convenience fallback so
+    standalone CLIs and tests work without an .env.
+    """
     mongo_url = (os.environ.get("MONGO_URL") or "").strip()
     db_name   = (os.environ.get("DB_NAME") or "").strip()
+    env_name  = (os.environ.get("ENVIRONMENT") or "").strip().lower()
+    is_prod   = env_name in {"production", "preview"}
     if not mongo_url:
+        if is_prod:
+            raise DatabaseError(
+                "MONGO_URL is required in production/preview — refusing "
+                "to fall back to a hard-coded development URL."
+            )
         mongo_url = "mongodb://localhost:27017"
     if not db_name:
+        if is_prod:
+            raise DatabaseError(
+                "DB_NAME is required in production/preview — refusing "
+                "to fall back to a hard-coded development database name."
+            )
         db_name = "perkslocks_production"
     return mongo_url, db_name
 
