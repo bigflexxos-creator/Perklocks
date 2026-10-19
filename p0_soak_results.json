@@ -7,57 +7,57 @@
       {
         "label": "T0: cold",
         "status": 200,
-        "revision": "368",
-        "boardVersion": "5e53be16f50d07d7",
-        "generationId": "gen_20261018T071054_31878124",
+        "revision": "411",
+        "boardVersion": "63f113fe29d7416b",
+        "generationId": "gen_20261019T020610_d23d1081",
         "etag": "",
-        "pickCount": 86,
-        "pickIdHash": "874c7e095d7e1fa3",
-        "elapsedMs": 1631
+        "pickCount": 176,
+        "pickIdHash": "7f6db8befedc9648",
+        "elapsedMs": 1593
       },
       {
         "label": "T+1s",
         "status": 200,
-        "revision": "368",
-        "boardVersion": "5e53be16f50d07d7",
-        "generationId": "gen_20261018T071054_31878124",
+        "revision": "411",
+        "boardVersion": "63f113fe29d7416b",
+        "generationId": "gen_20261019T020610_d23d1081",
         "etag": "",
-        "pickCount": 86,
-        "pickIdHash": "874c7e095d7e1fa3",
-        "elapsedMs": 1251
+        "pickCount": 176,
+        "pickIdHash": "7f6db8befedc9648",
+        "elapsedMs": 1554
       },
       {
         "label": "T+3s",
         "status": 200,
-        "revision": "368",
-        "boardVersion": "5e53be16f50d07d7",
-        "generationId": "gen_20261018T071054_31878124",
+        "revision": "411",
+        "boardVersion": "63f113fe29d7416b",
+        "generationId": "gen_20261019T020610_d23d1081",
         "etag": "",
-        "pickCount": 86,
-        "pickIdHash": "874c7e095d7e1fa3",
-        "elapsedMs": 1279
+        "pickCount": 176,
+        "pickIdHash": "7f6db8befedc9648",
+        "elapsedMs": 1819
       },
       {
         "label": "foreground-simulated",
         "status": 200,
-        "revision": "368",
-        "boardVersion": "5e53be16f50d07d7",
-        "generationId": "gen_20261018T071054_31878124",
+        "revision": "411",
+        "boardVersion": "63f113fe29d7416b",
+        "generationId": "gen_20261019T020610_d23d1081",
         "etag": "",
-        "pickCount": 86,
-        "pickIdHash": "874c7e095d7e1fa3",
-        "elapsedMs": 1244
+        "pickCount": 176,
+        "pickIdHash": "7f6db8befedc9648",
+        "elapsedMs": 1518
       },
       {
         "label": "manual-refresh",
         "status": 200,
-        "revision": "368",
-        "boardVersion": "5e53be16f50d07d7",
-        "generationId": "gen_20261018T071054_31878124",
+        "revision": "411",
+        "boardVersion": "63f113fe29d7416b",
+        "generationId": "gen_20261019T020610_d23d1081",
         "etag": "",
-        "pickCount": 86,
-        "pickIdHash": "874c7e095d7e1fa3",
-        "elapsedMs": 1231
+        "pickCount": 176,
+        "pickIdHash": "7f6db8befedc9648",
+        "elapsedMs": 1749
       }
     ],
     "logins": [
@@ -73,5 +73,5 @@
       }
     ]
   },
-  "ts": "2026-10-18T07:16:46.700Z"
+  "ts": "2026-10-19T02:06:57.008Z"
 }
