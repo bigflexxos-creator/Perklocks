@@ -113,13 +113,25 @@ async def _fetch_last_games(db, player_name: str, stat_block: str,
 
     ESPN game_id sorts lexicographically → not strictly time-ordered but
     close enough for a "recent form" signal. If we later persist a
-    `played_at` datetime we should sort by that instead."""
+    `played_at` datetime we should sort by that instead.
+
+    2026-06 Historical-Ingestion Fix compat: ``historical/nfl.py`` now
+    writes ONE merged row per (player, game) carrying the
+    ``stat_blocks: [...]`` array instead of one row per family.  Query
+    accepts BOTH shapes so legacy per-block rows and new merged rows
+    both participate in rationale.
+    """
     if not player_name:
         return []
     try:
         rows: list[dict] = []
         async for d in db.player_game_logs.find(
-            {"sport": "nfl", "stat_block": stat_block,
+            {"sport": "nfl",
+             # Legacy row: stat_block == <family>.  Merged row:
+             # <family> ∈ stat_blocks (Mongo equality against an
+             # array matches if any element equals the value).
+             "$or": [{"stat_block": stat_block},
+                     {"stat_blocks": stat_block}],
              "name": {"$regex": f"^{re.escape(player_name)}$", "$options": "i"}}
         ).sort("game_id", -1).limit(limit):
             rows.append(d)

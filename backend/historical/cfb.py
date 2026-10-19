@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
+from pymongo.errors import DuplicateKeyError
 
 logger = logging.getLogger("lockscore.historical.cfb")
 
@@ -114,14 +115,27 @@ def _normalize_cfb_stats(stat_name: str, mapped: dict, log_doc: dict) -> None:
 
 
 async def _ingest_summary(cx: httpx.AsyncClient, db, event_id, season: Optional[int] = None) -> int:
-    """Pull boxscore summary for one CFB event and store per-player stats."""
+    """Pull boxscore summary for one CFB event and store per-player stats.
+
+    See ``historical/nfl.py:_ingest_summary`` for the full rationale.
+    This adapter inherits the SAME structural bug (``stat_block`` in
+    the upsert filter → duplicate-key against the authoritative
+    ``(sport, game_id, player_id)`` index when a QB appears in both
+    ``passing`` and ``rushing`` blocks) and the SAME surgical fix:
+    merge every ESPN stat block for a given (player, game) into a
+    single canonical doc and upsert with filter
+    ``{sport, game_id, player_id}``.
+    """
     if not event_id:
         return 0
     data = await _get(cx, "/summary", {"event": event_id})
     if not data:
         return 0
-    inserted = 0
     boxscore = data.get("boxscore") or {}
+
+    # ── Pass 1: collect every stat block per athlete into one merged doc.
+    merged: dict[str, dict] = {}
+
     for team_block in boxscore.get("players") or []:
         team_name = (team_block.get("team") or {}).get("displayName")
         for stat_block in team_block.get("statistics") or []:
@@ -132,8 +146,9 @@ async def _ingest_summary(cx: httpx.AsyncClient, db, event_id, season: Optional[
                 pid = ath.get("id")
                 if not pid:
                     continue
-                stats = athlete.get("stats") or []
-                mapped = {k: v for k, v in zip(label_keys, stats)}
+                stats_list = athlete.get("stats") or []
+                mapped = {k: v for k, v in zip(label_keys, stats_list)}
+
                 await db.players.update_one(
                     {"player_id": f"espn_cfb_{pid}", "sport": "cfb"},
                     {"$set": {
@@ -145,24 +160,62 @@ async def _ingest_summary(cx: httpx.AsyncClient, db, event_id, season: Optional[
                     }},
                     upsert=True,
                 )
-                log_doc = {
-                    "player_id": f"espn_cfb_{pid}",
-                    "game_id": f"espn_cfb_{event_id}",
-                    "sport": "cfb",
-                    "name": ath.get("displayName"),
-                    "team": team_name,
-                    "stat_block": stat_name,
-                }
-                if season is not None:
-                    log_doc["season"] = int(season)
-                log_doc.update({f"cfb_{k}": v for k, v in mapped.items()})
-                _normalize_cfb_stats(stat_name, mapped, log_doc)
-                await db.player_game_logs.update_one(
-                    {"player_id": f"espn_cfb_{pid}", "game_id": f"espn_cfb_{event_id}", "stat_block": stat_name},
-                    {"$set": log_doc},
-                    upsert=True,
-                )
-                inserted += 1
+
+                key = str(pid)
+                doc = merged.get(key)
+                if doc is None:
+                    doc = {
+                        "player_id": f"espn_cfb_{pid}",
+                        "game_id":   f"espn_cfb_{event_id}",
+                        "sport":     "cfb",
+                        "name":      ath.get("displayName"),
+                        "team":      team_name,
+                        "stat_blocks": [],
+                    }
+                    if season is not None:
+                        doc["season"] = int(season)
+                    merged[key] = doc
+
+                if stat_name and stat_name not in doc["stat_blocks"]:
+                    doc["stat_blocks"].append(stat_name)
+
+                # Namespaced legacy raw fields + first-wins flat fallback.
+                for lbl, val in mapped.items():
+                    doc[f"cfb_{stat_name}_{lbl}"] = val
+                    flat = f"cfb_{lbl}"
+                    if flat not in doc:
+                        doc[flat] = val
+
+                _normalize_cfb_stats(stat_name, mapped, doc)
+
+    # ── Pass 2: upsert ONE row per (sport, game_id, player_id).
+    inserted = 0
+    for doc in merged.values():
+        try:
+            await db.player_game_logs.update_one(
+                {"sport": "cfb",
+                 "game_id":   doc["game_id"],
+                 "player_id": doc["player_id"]},
+                {"$set": doc},
+                upsert=True,
+            )
+            inserted += 1
+        except DuplicateKeyError as e:
+            logger.warning("cfb merged upsert hit DuplicateKey, resolving legacy duplicates: %s", e)
+            await db.player_game_logs.delete_many({
+                "sport": "cfb",
+                "game_id":   doc["game_id"],
+                "player_id": doc["player_id"],
+                "stat_block": {"$exists": True},
+            })
+            await db.player_game_logs.update_one(
+                {"sport": "cfb",
+                 "game_id":   doc["game_id"],
+                 "player_id": doc["player_id"]},
+                {"$set": doc},
+                upsert=True,
+            )
+            inserted += 1
     return inserted
 
 
