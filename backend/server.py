@@ -5104,6 +5104,67 @@ async def _historical_props_loop():
 
 @app.on_event("startup")
 async def on_startup():
+    """DEPLOY-GATE (2026-06-19) — FAST lifespan.startup.
+
+    Heavy initialization (preflight, 62K identity hydration, index
+    ensures, Odds API seed, NFL bootstrap guard, slate index
+    creation, lease supervisor, universal historical authority, etc.)
+    is deferred to :func:`_full_startup_init` which runs as a
+    background task so uvicorn binds to port ``8001`` within
+    milliseconds and the k8s ``/health`` probe succeeds well under
+    the 180s readiness window.
+
+    Deployment symptom this fixes:
+      * ``nginx: connect() failed (111: Connection refused) ...
+        upstream: http://127.0.0.1:8001/health``
+      * ``WARNING: Backend didn't respond within 180s, but process
+        is running``
+
+    Both were caused by the lifespan.startup event doing minutes of
+    synchronous Mongo work before uvicorn could bind.  Background
+    tasks were running (we saw ingestion logs), but uvicorn never
+    reached ``start_serving()``.
+
+    ``/api/ready`` reflects true readiness via ``_READINESS_STATE``
+    which is populated by ``_full_startup_init`` as each phase
+    completes — the pod is "live" immediately but reports "not
+    ready" until the heavy work finishes.
+    """
+    # Fast sync setup — periodic malloc_trim loop.
+    try:
+        from services.memory_hygiene import start_periodic_trim as _start_trim
+        _start_trim()
+    except Exception as _mem_exc:
+        logger.debug("memory_hygiene: trim loop start skipped: %s", _mem_exc)
+
+    # Register the task registry + lifecycle singletons immediately so
+    # any route that reads ``app.state.lifecycle`` or
+    # ``app.state.task_registry`` is safe from the very first request.
+    # Both calls return cached singletons; ``_full_startup_init`` can
+    # safely re-fetch them idempotently.
+    try:
+        from services.runtime_task_registry import get_registry
+        from services.application_lifecycle import get_lifecycle
+        app.state.lifecycle = get_lifecycle()
+        app.state.task_registry = get_registry()
+    except Exception as _reg_err:
+        logger.warning(
+            "task-registry/lifecycle fast-wire skipped (non-fatal): %s",
+            _reg_err,
+        )
+
+    logger.info(
+        "on_startup FAST path complete — deferring heavy init to background",
+    )
+    asyncio.create_task(
+        _full_startup_init(), name="full_startup_deferred",
+    )
+
+
+async def _full_startup_init():
+    """Deferred heavy startup — see :func:`on_startup` above for the
+    rationale and k8s probe contract.  This runs in a background task
+    so uvicorn's lifespan event completes immediately."""
     # P0 SERVER-STABILITY — start the periodic malloc_trim loop.
     # Runs once the event loop is up so we can create the trim task.
     try:
