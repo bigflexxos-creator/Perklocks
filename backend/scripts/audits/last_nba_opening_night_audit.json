@@ -1,0 +1,292 @@
+{
+  "preview": {
+    "env": "PREVIEW (sandbox Mongo + preview-API)",
+    "mongo": "mongodb://localhost:27017",
+    "db": "lockscore_db",
+    "api": "https://canonical-parity.preview.emergentagent.com",
+    "stage1_odds_funnel": {
+      "canonical_odds_api_cache": {
+        "events_endpoint_rows_total": 31,
+        "events_body_items": 46,
+        "events_refreshed_iso": "2026-10-19T18:49:41.275412+00:00",
+        "events_url": "https://api.the-odds-api.com/v4/sports/basketball_nba/events",
+        "opening_night_events_in_body": 8,
+        "opening_night_matched_games": [
+          {
+            "away": "Boston Celtics",
+            "home": "Detroit Pistons",
+            "commence_time": "2026-10-20T19:00:00Z",
+            "event_id": "26b036ff107f3c658258eaf4a6f26228"
+          },
+          {
+            "away": "Philadelphia 76ers",
+            "home": "New York Knicks",
+            "commence_time": "2026-10-20T23:00:00Z",
+            "event_id": "2b042ddad3d3c6c6fe5b7005dc26c775"
+          },
+          {
+            "away": "Oklahoma City Thunder",
+            "home": "San Antonio Spurs",
+            "commence_time": "2026-10-21T01:30:00Z",
+            "event_id": "bccd283de56915e29af1788beb0abfc9"
+          }
+        ],
+        "per_event_line_coverage": [
+          {
+            "event_id": "26b036ff107f3c658258eaf4a6f26228",
+            "line_cache_rows": 1,
+            "markets_in_cache": [
+              "alternate_spreads",
+              "alternate_totals",
+              "player_assists_alternate",
+              "player_points_alternate",
+              "player_rebounds_alternate",
+              "player_threes_alternate"
+            ],
+            "nba_prop_markets_covered": [
+              "player_assists_alternate",
+              "player_points_alternate",
+              "player_rebounds_alternate",
+              "player_threes_alternate"
+            ],
+            "latest_refreshed_iso": "2026-10-19T18:49:41.660935+00:00"
+          },
+          {
+            "event_id": "2b042ddad3d3c6c6fe5b7005dc26c775",
+            "line_cache_rows": 1,
+            "markets_in_cache": [
+              "alternate_spreads",
+              "alternate_totals",
+              "player_assists_alternate",
+              "player_points_alternate",
+              "player_rebounds_alternate",
+              "player_threes_alternate"
+            ],
+            "nba_prop_markets_covered": [
+              "player_assists_alternate",
+              "player_points_alternate",
+              "player_rebounds_alternate",
+              "player_threes_alternate"
+            ],
+            "latest_refreshed_iso": "2026-10-19T18:49:58.621450+00:00"
+          },
+          {
+            "event_id": "bccd283de56915e29af1788beb0abfc9",
+            "line_cache_rows": 1,
+            "markets_in_cache": [
+              "alternate_spreads",
+              "alternate_totals",
+              "player_assists_alternate",
+              "player_points_alternate",
+              "player_rebounds_alternate",
+              "player_threes_alternate"
+            ],
+            "nba_prop_markets_covered": [
+              "player_assists_alternate",
+              "player_points_alternate",
+              "player_rebounds_alternate",
+              "player_threes_alternate"
+            ],
+            "latest_refreshed_iso": "2026-10-19T18:50:15.980627+00:00"
+          }
+        ]
+      }
+    },
+    "stage3_canonical": {
+      "canonical_games.total": 629,
+      "canonical_games.nba_total": 0,
+      "canonical_games.nba_opening_night": 0,
+      "games.total": 12457,
+      "games.nba_total": 0,
+      "games.nba_opening_night": 0,
+      "canonical_player_game_actuals": {
+        "nba_total_rows": 29481,
+        "latest_ingested_at": "2026-10-19T18:50:50.612265+00:00",
+        "latest_event_time": "2026-10-17T02:30:00.000+00:00",
+        "latest_player_name": "Harrison Barnes"
+      },
+      "player_game_actuals": {
+        "nba_total_rows": 51229,
+        "latest_ingested_at": "2026-10-06T13:16:25.038481+00:00",
+        "latest_event_time": "2026-10-06T02:00:00.000+00:00",
+        "latest_player_name": "Harrison Barnes"
+      },
+      "canonical_player_game_logs.nba_total": 0,
+      "player_game_logs.nba_total": 20415,
+      "canonical_funnel_telemetry.nba_total": 0,
+      "canonical_funnel_telemetry.nba_opening_night": 0,
+      "funnel_telemetry.nba_total": 0,
+      "funnel_telemetry.nba_opening_night": 0,
+      "canonical_fusion_predictions.nba_total": 0,
+      "canonical_fusion_predictions.nba_opening_night": 0,
+      "fusion_predictions.nba_total": 0,
+      "fusion_predictions.nba_opening_night": 0,
+      "canonical_prediction_snapshots.nba_total": 0,
+      "canonical_prediction_snapshots.nba_opening_night": 0,
+      "canonical_prediction_snapshots.nba_opening_night_ge85": 0,
+      "prediction_snapshots.nba_total": 0,
+      "prediction_snapshots.nba_opening_night": 0,
+      "prediction_snapshots.nba_opening_night_ge85": 0,
+      "canonical_picks.nba_total": 0,
+      "canonical_picks.nba_opening_night": 0,
+      "canonical_picks.nba_opening_night_ge85": 0,
+      "canonical_picks.nba_opening_night_by_class": {
+        "game_market": 0,
+        "player_prop": 0
+      },
+      "picks.nba_total": 0,
+      "picks.nba_opening_night": 0,
+      "picks.nba_opening_night_ge85": 0,
+      "picks.nba_opening_night_by_class": {
+        "game_market": 0,
+        "player_prop": 0
+      },
+      "canonical_candidate_dispositions.nba_disposition_counts": {}
+    },
+    "stage10_api_picks_today": {
+      "picks_count": 0,
+      "board_version": "empty",
+      "environment": "preview",
+      "elite_count_85": 0,
+      "event_count": 0,
+      "generation_state": "COMMITTED",
+      "generation_id": "gen_20261019T194135_5d0f6cdc",
+      "pick_count": 0,
+      "committed_at": "2026-10-19T19:41:35.863009+00:00",
+      "revision": 585,
+      "sample_pick": null
+    }
+  },
+  "production": null,
+  "umc_nba_capability": {
+    "entries": [
+      {
+        "family": "moneyline",
+        "provider_keys": [
+          "h2h"
+        ],
+        "market_class": "game_market",
+        "model_authority": null,
+        "capability_state": "MODEL_UNAVAILABLE"
+      },
+      {
+        "family": "point_spread",
+        "provider_keys": [
+          "spreads"
+        ],
+        "market_class": "game_market",
+        "model_authority": null,
+        "capability_state": "MODEL_UNAVAILABLE"
+      },
+      {
+        "family": "game_total",
+        "provider_keys": [
+          "totals"
+        ],
+        "market_class": "game_market",
+        "model_authority": null,
+        "capability_state": "MODEL_UNAVAILABLE"
+      },
+      {
+        "family": "nba_points",
+        "provider_keys": [
+          "player_points",
+          "player_points_alternate"
+        ],
+        "market_class": "player_prop",
+        "model_authority": "nba_points_model",
+        "capability_state": "MODEL_UNAVAILABLE"
+      },
+      {
+        "family": "nba_rebounds",
+        "provider_keys": [
+          "player_rebounds",
+          "player_rebounds_alternate"
+        ],
+        "market_class": "player_prop",
+        "model_authority": null,
+        "capability_state": "MODEL_UNAVAILABLE"
+      },
+      {
+        "family": "nba_assists",
+        "provider_keys": [
+          "player_assists",
+          "player_assists_alternate"
+        ],
+        "market_class": "player_prop",
+        "model_authority": null,
+        "capability_state": "MODEL_UNAVAILABLE"
+      },
+      {
+        "family": "nba_threes",
+        "provider_keys": [
+          "player_threes",
+          "player_threes_alternate"
+        ],
+        "market_class": "player_prop",
+        "model_authority": null,
+        "capability_state": "MODEL_UNAVAILABLE"
+      },
+      {
+        "family": "nba_pra",
+        "provider_keys": [
+          "player_points_rebounds_assists",
+          "player_points_rebounds_assists_alternate"
+        ],
+        "market_class": "player_prop",
+        "model_authority": null,
+        "capability_state": "MODEL_UNAVAILABLE"
+      },
+      {
+        "family": "nba_pts_reb",
+        "provider_keys": [
+          "player_points_rebounds"
+        ],
+        "market_class": "player_prop",
+        "model_authority": null,
+        "capability_state": "MODEL_UNAVAILABLE"
+      },
+      {
+        "family": "nba_pts_ast",
+        "provider_keys": [
+          "player_points_assists"
+        ],
+        "market_class": "player_prop",
+        "model_authority": null,
+        "capability_state": "MODEL_UNAVAILABLE"
+      },
+      {
+        "family": "nba_reb_ast",
+        "provider_keys": [
+          "player_rebounds_assists"
+        ],
+        "market_class": "player_prop",
+        "model_authority": null,
+        "capability_state": "MODEL_UNAVAILABLE"
+      },
+      {
+        "family": "nba_steals",
+        "provider_keys": [
+          "player_steals"
+        ],
+        "market_class": "player_prop",
+        "model_authority": null,
+        "capability_state": "MODEL_UNAVAILABLE"
+      },
+      {
+        "family": "nba_blocks",
+        "provider_keys": [
+          "player_blocks"
+        ],
+        "market_class": "player_prop",
+        "model_authority": null,
+        "capability_state": "MODEL_UNAVAILABLE"
+      }
+    ]
+  },
+  "refresh_sports_env": {
+    "PERKLOCKS_REFRESH_SPORTS": "(unset \u2014 default in-code list)",
+    "PERKLOCKS_REFRESH_SPORTS_EXCLUDE": "(unset \u2014 no explicit excludes)",
+    "in_code_default": "NFL,MLB,CFB,Soccer,Tennis,NHL  (NBA deliberately excluded per server.py:1787-1794)"
+  }
+}
