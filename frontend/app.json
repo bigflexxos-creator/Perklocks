@@ -10,6 +10,7 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Access photos to attach to your bet slip.",
         "NSPhotoLibraryAddUsageDescription": "Save betslip images to your Photos to share."
       },
       "bundleIdentifier": "app.emergent.betedgeai11ae77c4f"
@@ -19,6 +20,10 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#000000"
       },
+      "permissions": [
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ],
       "package": "com.emergent.betedgeai.c7c4p1"
     },
     "web": {
@@ -34,6 +39,14 @@
           "image": "./assets/images/brand-bg-v7.jpg",
           "resizeMode": "cover",
           "backgroundColor": "#000000"
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Access photos to attach to your bet slip.",
+          "savePhotosPermission": "Save betslip images to your Photos to share.",
+          "isAccessMediaLocationEnabled": false
         }
       ],
       "expo-font",

@@ -183,6 +183,24 @@ class ApplicationLifecycle:
             result.indexes_ready = bool(summary.get("critical_ok"))
             if not result.indexes_ready:
                 result.required_failures.append("index_registry_critical_not_ok")
+                # DEPLOY-GATE (2026-06-19) — surface the exact
+                # operator fix in the preflight payload so the
+                # deploy-logs reader can point the operator at the
+                # non-destructive heal script.  No automatic
+                # destructive action is taken.
+                verification = summary.get("verification") or {}
+                offenders = sorted(verification.keys())
+                hint = (
+                    "index_registry_critical_not_ok — probable deploy-env "
+                    "data drift blocking unique-index build (e.g. duplicate "
+                    "or null id rows). RESOLVE by running the explicit "
+                    "operator script:  python backend/scripts/maintenance/"
+                    "heal_critical_unique_indexes.py --commit  then re-deploy."
+                )
+                if offenders:
+                    hint += f"  Offending collections: {offenders}"
+                result.warnings.append(hint)
+                logger.error(hint)
         except Exception as e:
             result.required_failures.append(f"index_registry: {type(e).__name__}: {e}")
 
