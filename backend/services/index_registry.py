@@ -598,149 +598,40 @@ async def create_missing_indexes(
     return created
 
 
-async def heal_critical_unique_prerequisites(
-    db: AsyncIOMotorDatabase,
-) -> dict[str, Any]:
-    """DEPLOY-GATE self-heal — quarantine duplicates / null-key rows
-    that block creation of a *critical unique* index.
-
-    Idempotent and non-destructive on healthy DBs: when a collection
-    already satisfies the unique invariant, this function performs
-    exactly zero writes.  On a drifted deploy DB (e.g.
-    ``canonical_parlay_history`` with null ``id`` rows from a prior
-    schema), it:
-
-      * deletes rows whose indexed key fields are **all null**;
-      * for rows whose indexed key fields collide, KEEPS the newest
-        row (highest ``_id``) and MOVES the losers to a
-        quarantine collection named ``<coll>__dup_quarantine``.
-
-    No row data is destroyed — quarantined rows are preserved for
-    operator review.  Logs every action for auditability.
-
-    Returns a per-collection summary.  Only runs for
-    ``critical AND unique`` IndexSpecs so it cannot touch any
-    non-critical or non-unique collection by accident.
-
-    IMPORTANT: this function does **not** rebuild the index itself —
-    the subsequent ``create_missing_indexes`` call does that.  Keeping
-    the two responsibilities separate preserves the existing
-    non-destructive contract of ``ensure_all_indexes``.
-    """
-    out: dict[str, Any] = {}
-    critical_unique_specs = [
-        s for s in _INDEX_SPECS if s.critical and s.unique
-    ]
-    for spec in critical_unique_specs:
-        key_fields = [k for k, _dir in spec.keys]
-        coll = db[spec.collection]
-        actions: dict[str, Any] = {
-            "collection": spec.collection,
-            "spec":       spec.name,
-            "key_fields": key_fields,
-            "deleted_null_rows":    0,
-            "quarantined_duplicates": 0,
-        }
-
-        # 1. Null-key rows — any indexed field is null/missing.
-        try:
-            null_filter: dict[str, Any] = {
-                "$or": [
-                    {f: {"$in": [None]}} for f in key_fields
-                ] + [
-                    {f: {"$exists": False}} for f in key_fields
-                ]
-            }
-            null_count = await coll.count_documents(null_filter)
-            if null_count:
-                # Move to quarantine instead of hard-deleting.
-                quarantine = db[f"{spec.collection}__dup_quarantine"]
-                async for doc in coll.find(null_filter):
-                    doc["_quarantine_reason"] = "null_critical_unique_key"
-                    doc["_quarantine_spec"]   = spec.name
-                    try:
-                        await quarantine.insert_one(doc)
-                    except Exception:                             # pragma: no cover
-                        pass
-                deleted = await coll.delete_many(null_filter)
-                actions["deleted_null_rows"] = int(deleted.deleted_count or 0)
-                logger.warning(
-                    "index_registry.heal: quarantined %d null-key row(s) "
-                    "from %s before building %s",
-                    actions["deleted_null_rows"], spec.collection, spec.name,
-                )
-        except Exception as e:                                   # pragma: no cover
-            logger.warning(
-                "index_registry.heal: null-row scan failed for %s.%s: %s",
-                spec.collection, spec.name, e,
-            )
-
-        # 2. Duplicate rows on the key-set — keep newest ``_id``.
-        try:
-            group_id = {f: f"${f}" for f in key_fields}
-            pipeline = [
-                {"$group": {
-                    "_id":  group_id,
-                    "ids":  {"$push": "$_id"},
-                    "n":    {"$sum": 1},
-                }},
-                {"$match": {"n": {"$gt": 1}}},
-            ]
-            dup_losers: list[Any] = []
-            async for g in coll.aggregate(pipeline, allowDiskUse=True):
-                ids = g.get("ids") or []
-                if len(ids) <= 1:
-                    continue
-                # Keep the newest _id (lexicographic max on ObjectId
-                # ordering is a monotone time-based proxy); quarantine
-                # the rest.
-                try:
-                    winner = max(ids)
-                except TypeError:
-                    winner = ids[-1]
-                losers = [i for i in ids if i != winner]
-                dup_losers.extend(losers)
-            if dup_losers:
-                quarantine = db[f"{spec.collection}__dup_quarantine"]
-                async for doc in coll.find({"_id": {"$in": dup_losers}}):
-                    doc["_quarantine_reason"] = "duplicate_critical_unique_key"
-                    doc["_quarantine_spec"]   = spec.name
-                    try:
-                        await quarantine.insert_one(doc)
-                    except Exception:                             # pragma: no cover
-                        pass
-                deleted = await coll.delete_many({"_id": {"$in": dup_losers}})
-                actions["quarantined_duplicates"] = int(deleted.deleted_count or 0)
-                logger.warning(
-                    "index_registry.heal: quarantined %d duplicate row(s) "
-                    "from %s before building %s",
-                    actions["quarantined_duplicates"], spec.collection, spec.name,
-                )
-        except Exception as e:                                   # pragma: no cover
-            logger.warning(
-                "index_registry.heal: dup scan failed for %s.%s: %s",
-                spec.collection, spec.name, e,
-            )
-
-        if actions["deleted_null_rows"] or actions["quarantined_duplicates"]:
-            out.setdefault(spec.collection, []).append(actions)
-    return out
-
-
 async def ensure_all_indexes(
     db: AsyncIOMotorDatabase,
     critical_only: bool = False,
 ) -> dict[str, Any]:
-    """Ensure every declared index exists.  Idempotent.  Returns a
-    diagnostic summary."""
-    heal = await heal_critical_unique_prerequisites(db)
+    """Ensure every declared index exists.  Idempotent and strictly
+    NON-DESTRUCTIVE at startup.
+
+    DEPLOY-GATE (2026-06-19): previously this function invoked a
+    ``heal_critical_unique_prerequisites`` step that quarantined null-
+    key and duplicate rows before building unique indexes.  While
+    rows were preserved in a quarantine collection, the heal path
+    still ran ``delete_many`` on the source collection, which the
+    deployment-policy health check correctly flagged as destructive
+    automatic startup behaviour.
+
+    The heal has been MOVED to a standalone operator script
+    ``backend/scripts/maintenance/heal_critical_unique_indexes.py``
+    which must be invoked EXPLICITLY by an operator (``--commit``
+    required).  This function remains strictly:
+      1. non-destructive  (zero writes to any existing document);
+      2. idempotent        (safe to call every boot).
+
+    When a critical unique index cannot be created because of pre-
+    existing data violations, ``create_missing_indexes`` surfaces the
+    duplicate-key error in logs and ``critical_ok`` returns False —
+    the operator then runs the standalone heal script, re-deploys,
+    and the next boot completes the index creation cleanly.
+    """
     created = await create_missing_indexes(db, critical_only=critical_only)
     verified = await verify_all_indexes(db)
     return {
         "created":        {k: v for k, v in created.items() if v},
         "verification":   {k: r.summary() for k, r in verified.items()
                             if r.missing or r.same_name_conflict or r.equivalent_duplicates},
-        "heal":           heal,
         "critical_ok":    all(r.critical_ok for r in verified.values()),
     }
 
