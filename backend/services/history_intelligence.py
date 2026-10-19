@@ -194,9 +194,54 @@ async def compute_history_shadow(db, pick: dict) -> dict:
         bundle["data_quality"] = "no_canonical_player"
         return bundle
 
-    # Query career (up to CAREER_CAP most recent pregame rows)
-    q_career = {"sport": sport, "canonical_player_id": cpid,
-                "event_time": {"$lt": cutoff}}
+    # ── NFL Identity-Namespace Fix (2026-06 P0) ──────────────────────
+    # Picks can carry GSIS IDs (``00-00NNNNN``) while ``player_game_actuals``
+    # may be keyed by raw ESPN numeric (``4361741``), prefixed ESPN
+    # (``espn_4361741``), or GSIS depending on the writer era.  Resolve
+    # ANY shape to the full alias set BEFORE querying; fail closed
+    # (no silent name-only fallback) with explicit telemetry.
+    #
+    # Non-NFL sports keep the existing single-identity match for now;
+    # a parallel audit follows for NHL (P0-G).
+    identity_aliases: list[str] | None = None
+    identity_telem: dict[str, Any] = {}
+    if sport == "nfl":
+        try:
+            from services.nfl_identity_crosswalk import resolve_history_keys
+            name_hint = (
+                pick.get("player_name") or pick.get("player")
+                or (pick.get("subject") or "")
+            )
+            team_hint = pick.get("team") or pick.get("player_team")
+            identity_aliases, identity_telem = await resolve_history_keys(
+                db,
+                pick_cpid=cpid,
+                name=name_hint,
+                team=team_hint,
+            )
+        except Exception as exc:
+            # Resolver failure must NOT silently fall through to a
+            # name-based lookup — honour the fail-closed contract.
+            bundle["data_quality"] = f"identity_resolver_error:{type(exc).__name__}"
+            bundle["context"]["identity_resolver_error"] = str(exc)[:200]
+            return bundle
+        bundle["context"].update(identity_telem)
+        if not identity_aliases:
+            # Fail closed — no silent name fallback.
+            bundle["data_quality"] = "identity_unresolved"
+            return bundle
+
+    # Query career (up to CAREER_CAP most recent pregame rows).  When
+    # we have an NFL alias set the ``$in`` match spans every known
+    # external id for that identity — a single player identity with
+    # multiple aliases, not duplicate canonical players.
+    if identity_aliases:
+        q_career = {"sport": sport,
+                    "canonical_player_id": {"$in": identity_aliases},
+                    "event_time": {"$lt": cutoff}}
+    else:
+        q_career = {"sport": sport, "canonical_player_id": cpid,
+                    "event_time": {"$lt": cutoff}}
     rows = []
     try:
         cursor = db.player_game_actuals.find(q_career, {
@@ -256,7 +301,13 @@ async def compute_history_shadow(db, pick: dict) -> dict:
         return bundle
 
     if not rows:
-        bundle["data_quality"] = "no_history"
+        # Distinguish "identity resolved but no history" from the
+        # pre-fix silent-no_history case so operators can tell the
+        # difference in telemetry.
+        if sport == "nfl" and identity_telem.get("identity_resolved"):
+            bundle["data_quality"] = "no_history_after_resolve"
+        else:
+            bundle["data_quality"] = "no_history"
         return bundle
 
     now = datetime.now(timezone.utc)
