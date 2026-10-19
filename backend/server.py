@@ -1795,6 +1795,45 @@ async def _refresh_picks(
         sports = [s.strip() for s in os.environ.get(
             "PERKLOCKS_REFRESH_SPORTS",
             "NFL,MLB,CFB,Soccer,Tennis,NHL").split(",") if s.strip()]
+        # ── 2026-06 PROD-PARITY FLOOR (NHL Preview↔Prod reconciliation) ─
+        # ROOT-CAUSED divergence: Preview had NHL on the board but
+        # Production did not.  Mechanism: an operator-set
+        # ``PERKLOCKS_REFRESH_SPORTS`` secret on Production predated the
+        # 2026-10-03 fix that added NHL to the in-code default.  Because
+        # the env var is read as a wholesale override, a stale legacy
+        # value like ``NFL,MLB,CFB,Soccer,Tennis`` silently excluded
+        # NHL from every refresh cycle — no NHL picks ever landed in
+        # the committed canonical slate on Production.
+        #
+        # Fix contract:
+        #   * The env override still works for operators who legitimately
+        #     want to RESTRICT or REORDER the refresh set at runtime.
+        #   * BUT it can no longer SILENTLY drop a supported seasonal
+        #     sport.  The ``_REQUIRED_FLOOR`` is unioned back in and a
+        #     loud warning is logged so the drift is auditable.
+        #   * The ONLY way to intentionally pause a sport is the
+        #     explicit, visible ``PERKLOCKS_REFRESH_SPORTS_EXCLUDE``
+        #     opt-out (comma-separated, case-insensitive).  This makes
+        #     exclusion an INTENTIONAL act, not an accident of history.
+        _REQUIRED_FLOOR = ("NFL", "MLB", "CFB", "Soccer", "Tennis", "NHL")
+        _explicit_exclude = {
+            s.strip().upper() for s in os.environ.get(
+                "PERKLOCKS_REFRESH_SPORTS_EXCLUDE", "").split(",") if s.strip()
+        }
+        _current_upper = {s.upper() for s in sports}
+        _missing = [s for s in _REQUIRED_FLOOR
+                    if s.upper() not in _current_upper
+                    and s.upper() not in _explicit_exclude]
+        if _missing:
+            logger.warning(
+                "PERKLOCKS_REFRESH_SPORTS=%r omits supported sports %s. "
+                "Auto-unioning to prevent silent exclusion (the preview↔prod "
+                "NHL-drop defect).  To intentionally pause a sport set "
+                "PERKLOCKS_REFRESH_SPORTS_EXCLUDE.",
+                os.environ.get("PERKLOCKS_REFRESH_SPORTS", "(unset)"),
+                _missing,
+            )
+            sports = sports + _missing
         per_sport_timeout = float(os.environ.get("PERKLOCKS_REFRESH_SPORT_TIMEOUT_SEC", "420"))
         # 2026-09-18 MLB PROP BOARD RECOVERY — the 420s cap was killing the
         # MLB cycle ~80s BEFORE its insert step (fetch ~150s + BvP ~165s +
