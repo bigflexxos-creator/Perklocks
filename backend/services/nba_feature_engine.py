@@ -404,7 +404,27 @@ async def precompute_nba_prop_factors(
                         factors[name] = val
                         sources.append(tag)
                 if has_enough_real_data_nba(factors):
-                    per_player[mk] = {"factors": factors, "sources": sources}
+                    # ── 2026-10-20 P0-2 FIX ───────────────────────────
+                    # Attach the raw canonical rows alongside the factor
+                    # bundle so the sync emission branch
+                    # (``sports_engine._props_picks_from_event`` NBA
+                    # branch) can stamp ``player_recent_rows`` onto the
+                    # emitted pick dict.  Without this, ``brain/sim_nba``
+                    # could never reach EMPIRICAL_INDEPENDENT provenance
+                    # — the sim fell back to MODEL_CONDITIONED on every
+                    # NBA prop and the symmetric anchor
+                    # (``brain/sim_runner._anchor_pick_to_sim``) skipped
+                    # independent-evidence promotion.  Rows are the same
+                    # canonical-shape rows produced by
+                    # ``read_player_recent`` (via
+                    # ``canonical_history_resolver.resolve_player_row``)
+                    # — slice to the top 10 to match sim_nba's L10
+                    # window and keep per-pick memory bounded.
+                    per_player[mk] = {
+                        "factors": factors,
+                        "sources": sources,
+                        "recent_rows": rows[:10],
+                    }
                     break              # first qualifying bundle wins
         if per_player:
             out[pl] = per_player

@@ -529,11 +529,81 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
             )
             _lease_acquired = True  # fall open on infra errors
     if not _lease_acquired:
-        logger.info(
-            "REFRESH LEASE HELD BY ANOTHER INSTANCE — SKIP "
-            "lease=%s this=%s", _lease_key, _instance_id,
-        )
-        return 0
+        # ── 2026-10-20 P0-2 · SAFE STALE-LEASE RECOVERY ────────────
+        # Before giving up, inspect the existing lease.  If it's
+        # genuinely STALE (expires_at long passed, or age ≫ TTL, or
+        # heartbeat dead), scoped-force-release it and retry ONCE.
+        # The recovery is strictly scoped to this exact lease_key —
+        # it cannot touch other sports or other lease families
+        # (JobCoordinator leases live in a different collection and
+        # are untouched).  Idempotent + safe to rerun.
+        try:
+            from services.lease_recovery import (
+                inspect_lease as _inspect_lease,
+                force_release_if_stale as _force_release_if_stale,
+            )
+            _insp = await _inspect_lease(_lease_db, _lease_key)
+            logger.info(
+                "REFRESH LEASE blocked — inspection: lease=%s owner=%s "
+                "classification=%s reason=%s age_sec=%s ttl_remaining=%s",
+                _lease_key, _insp.owner, _insp.classification,
+                _insp.classification_reason, _insp.age_sec,
+                _insp.ttl_remaining_sec,
+            )
+            if _insp.classification == "STALE":
+                _rel = await _force_release_if_stale(
+                    _lease_db, _lease_key, caller=f"orchestrator:{_instance_id}",
+                )
+                logger.info(
+                    "REFRESH LEASE stale recovery result: %s", _rel,
+                )
+                if _rel.get("acted"):
+                    # Retry acquisition exactly once with a fresh
+                    # expires_at — never reacquire with the stale
+                    # owner's acquired_at, so two concurrent owners
+                    # cannot both think they hold the lease.
+                    try:
+                        _lease_now = datetime.now(timezone.utc)
+                        _lease_expires = _lease_now + timedelta(
+                            seconds=_lease_ttl_sec)
+                        _res2 = await _lease_db.scheduler_leases.find_one_and_update(
+                            {"lease_key": _lease_key,
+                             "$or": [
+                                 {"expires_at": {"$lt": _lease_now}},
+                                 {"expires_at": {"$exists": False}},
+                             ]},
+                            {"$set": {
+                                "lease_key":    _lease_key,
+                                "owner":        _instance_id,
+                                "acquired_at":  _lease_now,
+                                "expires_at":   _lease_expires,
+                                "cycle_date":   date_str,
+                                "sport_filter": sport_filter,
+                            }},
+                            upsert=True,
+                            return_document=True,
+                        )
+                        if _res2 and _res2.get("owner") == _instance_id:
+                            _lease_acquired = True
+                            _lease_owner = _instance_id
+                            logger.info(
+                                "REFRESH LEASE reacquired after stale "
+                                "recovery lease=%s owner=%s",
+                                _lease_key, _instance_id,
+                            )
+                    except Exception as _reacq_err:
+                        logger.warning(
+                            "REFRESH LEASE reacquire after stale recovery "
+                            "failed: %s", _reacq_err,
+                        )
+        except Exception as _rec_err:
+            logger.warning("REFRESH LEASE stale-recovery errored: %s", _rec_err)
+        if not _lease_acquired:
+            logger.info(
+                "REFRESH LEASE HELD BY ANOTHER INSTANCE — SKIP "
+                "lease=%s this=%s", _lease_key, _instance_id,
+            )
+            return 0
     logger.info(
         "REFRESH LEASE acquired lease=%s owner=%s ttl=%ds",
         _lease_key, _instance_id, _lease_ttl_sec,

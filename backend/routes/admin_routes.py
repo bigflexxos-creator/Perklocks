@@ -953,6 +953,79 @@ async def odds_circuit_reset(
     return reset_odds_api_circuit()
 
 
+# ── 2026-10-20 P0-2 · SAFE STALE-LEASE OPS ENDPOINTS ───────────────
+# These endpoints expose the lease_recovery helper so operators can
+# diagnose and (if STALE) scoped-force-release a stuck refresh lease
+# without a shell.  They never touch other sports' leases and never
+# touch the JobCoordinator lease family — strictly scoped by the
+# ``lease_key`` the caller passes in.
+
+@router.get("/admin/refresh-lease/inspect")
+async def admin_refresh_lease_inspect(
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+    lease_key: Optional[str] = None,
+    date_str: Optional[str] = None,
+    sport_filter: Optional[str] = None,
+):
+    """Inspect the scheduler lease(s) that govern picks_refresh.
+
+    * ``lease_key`` — inspect a single lease (full key, e.g.
+      ``picks_refresh:2026-10-20:NBA``).
+    * ``date_str`` + ``sport_filter`` — convenience form; builds
+      ``picks_refresh:{date_str}:{sport_filter or 'ALL'}``.
+    * Both omitted — returns every lease currently in
+      ``db.scheduler_leases`` with its classification.
+    """
+    from services.lease_recovery import (
+        inspect_lease as _inspect_lease,
+        LEASE_COLLECTION,
+    )
+    if lease_key is None and date_str is not None:
+        lease_key = f"picks_refresh:{date_str}:{sport_filter or 'ALL'}"
+    if lease_key is not None:
+        insp = await _inspect_lease(db, lease_key)
+        return insp.to_dict()
+    # No key — list all current leases with classification.
+    results = []
+    async for doc in db[LEASE_COLLECTION].find({}):
+        key = doc.get("lease_key")
+        if not key:
+            continue
+        insp = await _inspect_lease(db, key)
+        results.append(insp.to_dict())
+    return {"count": len(results), "leases": results}
+
+
+@router.post("/admin/refresh-lease/force-release")
+async def admin_refresh_lease_force_release(
+    user: Annotated[UserPublic, Depends(current_admin)] = None,
+    lease_key: Optional[str] = None,
+    date_str: Optional[str] = None,
+    sport_filter: Optional[str] = None,
+    dry_run: bool = False,
+):
+    """Scoped force-release of a STALE refresh lease.
+
+    Inspects first; only deletes if classification is ``STALE``.  Never
+    touches an active lease.  Scoped to the exact ``lease_key``.
+    Idempotent.  Pass ``dry_run=true`` to see what WOULD happen.
+    """
+    from services.lease_recovery import force_release_if_stale
+    if lease_key is None and date_str is not None:
+        lease_key = f"picks_refresh:{date_str}:{sport_filter or 'ALL'}"
+    if not lease_key:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "missing_lease_key",
+                    "hint": "Pass ?lease_key=... OR ?date_str=...&sport_filter=..."},
+        )
+    return await force_release_if_stale(
+        db, lease_key,
+        caller=f"admin:{getattr(user, 'id', 'unknown')}",
+        dry_run=bool(dry_run),
+    )
+
+
 @router.post("/admin/picks/force-refresh")
 async def admin_force_refresh(
     user: Annotated[UserPublic, Depends(current_admin)] = None,

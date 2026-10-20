@@ -37,7 +37,7 @@ _PLAYER_FIELD_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
         "opponent":     ("opponent", "opponent_abbrev", "opponent_team"),
         "home_away":    ("home_away", "is_home", "home"),
         "game_date":    ("game_date", "date", "event_date",
-                          "commence_time"),
+                          "commence_time", "event_time"),
         "event_id":     ("event_id", "game_id", "espn_id",
                           "provider_event_id"),
         "season":       ("season", "season_year"),
@@ -52,11 +52,33 @@ _PLAYER_FIELD_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
         "toi":          ("toi", "ice_time", "actuals.toi"),
     },
     "nba": {
-        "points":       ("points", "pts", "actuals.pts", "stats.pts"),
-        "rebounds":     ("rebounds", "reb", "actuals.reb"),
-        "assists":      ("assists", "ast", "actuals.ast"),
-        "threes":       ("threes", "fg3m", "actuals.fg3m"),
-        "minutes":      ("minutes", "min", "actuals.min"),
+        # P0-2 FIX (2026-10-20) — canonical NBA actuals store FULL stat
+        # names inside the ``actuals`` nested dict (``actuals.points``,
+        # ``actuals.rebounds``, ``actuals.assists``, ``actuals.steals``,
+        # ``actuals.blocks``, ``actuals.minutes``).  Previous aliases
+        # only looked up abbreviated keys (``pts``, ``reb``, ``ast``),
+        # which left every NBA factor engine call seeing a row with
+        # name/team but ZERO stat fields → factors={} → player prop
+        # dropped as MISSING_FEATURE_DATA.  Smallest NBA-scoped
+        # correction: add the full-name variants to each alias tuple.
+        "points":       ("points", "pts", "actuals.points",
+                          "actuals.pts", "stats.pts"),
+        "rebounds":     ("rebounds", "reb", "actuals.rebounds",
+                          "actuals.reb"),
+        "assists":      ("assists", "ast", "actuals.assists",
+                          "actuals.ast"),
+        "threes":       ("threes", "fg3m", "actuals.threes",
+                          "actuals.threes_made", "actuals.fg3m"),
+        "threes_made":  ("threes_made", "fg3m", "actuals.threes_made",
+                          "actuals.fg3m", "actuals.threes"),
+        "steals":       ("steals", "stl", "actuals.steals",
+                          "actuals.stl"),
+        "blocks":       ("blocks", "blk", "actuals.blocks",
+                          "actuals.blk"),
+        "turnovers":    ("turnovers", "to", "actuals.turnovers",
+                          "actuals.to"),
+        "minutes":      ("minutes", "min", "actuals.minutes",
+                          "actuals.min"),
     },
     "nfl": {
         "pass_yds":     ("pass_yds", "passing_yards",
@@ -163,6 +185,20 @@ def resolve_player_row(row: dict, *, sport: str) -> dict:
         if role != "pitcher" and "pitcher_strikeouts" not in out:
             # Nothing to clean.
             pass
+    # ── 2026-10-20 P0-2 FIX ───────────────────────────────────────────
+    # Mirror ``player_id`` → ``canonical_player_id`` and ``event_id`` →
+    # ``canonical_event_id`` on the normalized output so simulators that
+    # key off the canonical name (``brain.sim_nba`` line 273 filter)
+    # accept these rows as canonical-identity-keyed and admit them into
+    # the EMPIRICAL_INDEPENDENT branch.  Without this, every normalized
+    # NBA row was dropped by sim_nba's canonical gate and the sim
+    # silently fell back to MODEL_CONDITIONED (independent_evidence=False),
+    # starving the board_validator evidence recognizer.  Zero scoring
+    # change; purely a key-aliasing addition.
+    if out.get("player_id") is not None:
+        out.setdefault("canonical_player_id", out["player_id"])
+    if out.get("event_id") is not None:
+        out.setdefault("canonical_event_id", out["event_id"])
     out["_source_collection"] = row.get("_source_collection") or "unknown"
     return out
 

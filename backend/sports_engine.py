@@ -8803,6 +8803,15 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         # DROPPED (return None) — no random fallback anywhere.
         _mlb_features_used: list[str] = []
         _skip_pick = False
+        # ── 2026-10-20 P0-2 ──────────────────────────────────────────
+        # Per-pick carrier for raw canonical L10 rows (NBA only).  When
+        # ``nba_feature_engine`` precompute attaches ``recent_rows``,
+        # the NBA branch below sets this; it's then stamped on the
+        # emitted pick as ``player_recent_rows`` so
+        # ``brain/sim_runner`` can forward it to ``sim_nba`` for the
+        # EMPIRICAL_INDEPENDENT branch.  Reset per-outcome to prevent
+        # cross-pick carry-over.
+        _nba_recent_rows_for_pick: Optional[list[dict]] = None
         # Block 2D A1 — ATD engine may override model_win_prob with
         # its own independent probability.  Kept None otherwise so
         # existing paths remain unaffected.
@@ -9465,11 +9474,24 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             # now SKIP the pick and emit a diagnostic; only picks with
             # real NBA feature-engine data reach the board.  Missing
             # data stays missing.
+            # P0-2 FIX (2026-10-20) — _game_ctx was not initialized in
+            # this NBA branch (only inside the NFL branch above), so
+            # every NBA player prop raised UnboundLocalError and the
+            # whole event's prop batch was silently dropped by the
+            # outer try/except.  Smallest surgical scope: initialize
+            # locally for this branch only, mirroring the NFL pattern.
+            _game_ctx = (payload.get("_ctx") if isinstance(payload, dict) else None) or {}
             _nba_pc = ((_game_ctx.get("nba_precomputed") or {})
                         .get(player.strip().lower()) or {}).get(mk) or {}
             if _nba_pc.get("factors"):
                 factors = _nba_pc["factors"]
                 _mlb_features_used = _nba_pc.get("sources") or ["nba_feature_engine"]
+                # ── 2026-10-20 P0-2 FIX ────────────────────────────────
+                # Capture the raw canonical L10 rows so they can be
+                # stamped onto ``new_pick`` after _build_pick runs —
+                # ``brain/sim_runner`` reads this key to drive
+                # EMPIRICAL_INDEPENDENT provenance in ``brain/sim_nba``.
+                _nba_recent_rows_for_pick = _nba_pc.get("recent_rows") or None
             else:
                 _skip_pick = True
                 try:
@@ -9856,6 +9878,18 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             observed_quotes=_quotes_trail if _quotes_trail else None,
             canonical_wager_id=_cwid,
         )
+        # ── 2026-10-20 P0-2 FIX ─────────────────────────────────────
+        # Stamp canonical L10 rows onto the pick so
+        # ``brain/sim_runner`` can forward them to
+        # ``brain/sim_nba.simulate_nba_pick(recent_rows=...)`` and the
+        # simulator can derive EMPIRICAL_INDEPENDENT provenance from
+        # the real stat distribution (λ/σ) rather than falling back
+        # to MODEL_CONDITIONED (which stamps
+        # ``independent_evidence=False`` and starves the board
+        # validator evidence gate for NBA player props).
+        if (new_pick is not None and sport == "NBA"
+                and _nba_recent_rows_for_pick):
+            new_pick["player_recent_rows"] = _nba_recent_rows_for_pick
         # Block 2D · P0 (2026-06-09) — SURGICAL NFL TEAM ATTACH.
         # The identity gate rejects any player-prop lacking a
         # ``player_team`` / ``canonical_team_id`` (PLAYER_TEAM_UNRESOLVED).

@@ -784,6 +784,45 @@ def evidence_threshold(picks: list[dict]) -> tuple[list[dict], dict]:
                     or p.get("sim_mean_adjusted") is not None):
                 evidence += 1
 
+        # ── 2026-10-20 P0-2 · NBA independent-model evidence ─────────
+        # Mirror of NHL / NFL Platinum / CFB SP+ pattern. NBA player
+        # props that reached ``brain.sim_nba.simulate_nba_pick`` with
+        # the EMPIRICAL_INDEPENDENT branch (real L10 canonical rows
+        # from ``player_game_actuals`` normalized through
+        # ``services.canonical_history_resolver.read_player_recent``)
+        # carry two genuinely-independent evidence categories:
+        #   1. the exact-market Monte Carlo win probability
+        #      (``sim_win_probability``) stamped by sim_nba AFTER
+        #      calibrating λ/σ to the real stat distribution — this
+        #      is a different signal class than the NBA feature
+        #      engine's rolling-average / hit-rate factors.
+        #   2. the derived distribution-moment audit
+        #      (``sim_expected_stat`` + ``sim_ci_lower``/``sim_ci_upper``
+        #      or ``sim_runs``) — the realised L10 mean / minutes
+        #      variance / usage / pace signals that CONDITIONED the
+        #      distribution, which are themselves a separate signal
+        #      class from the exact-threshold probability.
+        # Without this recognizer, NBA props with a legitimate 20k
+        # Monte Carlo over real canonical history were failing
+        # EVIDENCE_THRESHOLD (only_2_of_3_signals) because the generic
+        # recognizer path above (rationale / bucket_n / factors ≥3 /
+        # EV / rationale-key) didn't align with the NBA pipeline's
+        # specific output shape.  Independence is strictly gated:
+        # requires BOTH ``independent_evidence=True`` AND
+        # ``decision_valid=True`` so a MODEL_CONDITIONED fallback (no
+        # recent_rows → sim_nba stamps independent_evidence=False) gets
+        # ZERO extra credit — fail-closed, identical to the NHL block.
+        if (p.get("sport") == "NBA"
+                and p.get("sim_win_probability") is not None
+                and p.get("independent_evidence") is True
+                and p.get("decision_valid") is True):
+            evidence += 1
+            if (p.get("sim_expected_stat") is not None
+                    or p.get("sim_ci_lower") is not None
+                    or p.get("sim_ci_upper") is not None
+                    or int(p.get("sim_runs") or 0) >= 10000):
+                evidence += 1
+
         # ── 2026-09-03 · TENNIS authoritative-model evidence ─────────
         # Preserves prior Tennis evidence recognition.  Missing before
         # this line: NFL PLAYER-PROP + NFL ATD evidence recognizers
