@@ -333,6 +333,52 @@ __all__ = [
 # Precompute — mirrors the NFL pattern.  Call once per slate before
 # emission; populates ctx["nba_precomputed"][player_lower][market_key]
 # ═══════════════════════════════════════════════════════════════════
+async def _lookup_nba_player_team(db: Any, player_name: str) -> dict:
+    """Resolve ``{team, team_name, team_id, canonical_player_id}`` from
+    ``canonical_players`` for an NBA player.  Case-insensitive against
+    both uppercase ``NBA`` and lowercase ``nba`` sport values so the
+    historical mismatch between ingest paths (lowercase) and
+    publication paths (uppercase) does not starve identity resolution.
+
+    Never raises; returns an empty dict when nothing resolves.
+    """
+    if not player_name:
+        return {}
+    try:
+        q = {
+            "sport": {"$in": ["nba", "NBA"]},
+            "$or": [
+                {"name":           {"$regex": f"^{player_name}$", "$options": "i"}},
+                {"canonical_name": {"$regex": f"^{player_name}$", "$options": "i"}},
+                {"player_name":    {"$regex": f"^{player_name}$", "$options": "i"}},
+            ],
+        }
+        row = await db.canonical_players.find_one(q)
+        if not row:
+            return {}
+        # Prefer canonical fields; fall back to raw aliases.
+        # Canonical team ID is stored as the TEAM NAME (full display),
+        # not the numeric roster-feed id, because
+        # ``services.player_event_identity_gate._extract_player_team``
+        # returns ``canonical_team_id`` FIRST and compares it against
+        # the event's home/away participant NAMES.  A numeric id would
+        # never match a team name → every pick would fail the identity
+        # gate as PLAYER_EVENT_IDENTITY_MISMATCH.
+        _team_name = row.get("team_name") or ""
+        _team_abbrev = row.get("team") or ""
+        _player_id = row.get("player_id") or row.get("canonical_player_id") or ""
+        return {
+            "player_team":          _team_name or _team_abbrev,
+            "team_abbrev":          _team_abbrev,
+            "canonical_team_id":    _team_name or _team_abbrev,
+            "team_id_numeric":      str(row.get("team_id") or "") or None,
+            "canonical_player_id":  str(_player_id) if _player_id else "",
+        }
+    except Exception as e:
+        logger.debug("nba player team lookup failed for %s: %s", player_name, e)
+        return {}
+
+
 async def precompute_nba_prop_factors(
     db: Any,
     *,
@@ -357,13 +403,27 @@ async def precompute_nba_prop_factors(
     -------
     dict :
         ``{"nba_precomputed": {player_lower: {market_key: {"factors": {...},
-        "sources": [...]}}}}`` — ready to be merged into ``ctx``.
+        "sources": [...], "player_team": "...", ...}}}, "nba_team_lookup":
+        {player_lower: {...}}}`` — ready to be merged into ``ctx``.
+
+    STEP A FIX (2026-10-20) — alongside the factor bundle, resolve
+    each player's canonical team from ``canonical_players`` so the
+    sync emission branch can stamp ``player_team`` /
+    ``canonical_team_id`` / ``canonical_player_id`` onto every NBA
+    pick.  This closes the ``PLAYER_TEAM_UNRESOLVED`` identity-gate
+    rejection without weakening any safety guard.
     """
     out: dict = {}
+    team_lookup: dict = {}
     for player in players:
         if not player:
             continue
         pl = player.strip().lower()
+        # STEP A — resolve team identity once per player.
+        if pl not in team_lookup:
+            team_info = await _lookup_nba_player_team(db, player)
+            if team_info:
+                team_lookup[pl] = team_info
         rows = await _player_recent_logs(db, player)
         if not rows:
             continue
@@ -428,4 +488,4 @@ async def precompute_nba_prop_factors(
                     break              # first qualifying bundle wins
         if per_player:
             out[pl] = per_player
-    return {"nba_precomputed": out}
+    return {"nba_precomputed": out, "nba_team_lookup": team_lookup}

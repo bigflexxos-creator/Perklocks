@@ -10045,6 +10045,51 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     new_pick["factor_sample_sizes"] = dict(_meta)
             except Exception:
                 pass
+        # ── 2026-10-20 · STEP A · NBA IDENTITY ATTACH ────────────────
+        # Mirrors the NFL block above: look up the player's canonical
+        # team from ``ctx["nba_team_lookup"]`` (populated by
+        # ``services.nba_feature_engine.precompute_nba_prop_factors``)
+        # and stamp ``player_team`` / ``canonical_team_id`` /
+        # ``canonical_player_id`` / ``identity_class`` onto the NBA
+        # player-prop pick so ``canonical_publication_boundary`` ->
+        # ``player_event_identity_gate.evaluate_identity`` can resolve
+        # team membership instead of returning PLAYER_TEAM_UNRESOLVED.
+        # Falls open silently (no attach) when the lookup is empty —
+        # the identity gate will then correctly reject.  Scope is
+        # strictly fields-only: no probability / Lock / factor mutation.
+        if (new_pick is not None and sport == "NBA"
+                and mk and str(mk).startswith("player_")):
+            try:
+                _nba_game_ctx = (payload.get("_ctx")
+                                 if isinstance(payload, dict) else None) or {}
+                _nba_tl = (_nba_game_ctx.get("nba_team_lookup") or {})
+                _nba_ti = _nba_tl.get(player.strip().lower()) or {}
+                if isinstance(_nba_ti, dict) and _nba_ti:
+                    _pt = _nba_ti.get("player_team")
+                    _ct = _nba_ti.get("canonical_team_id")
+                    _ta = _nba_ti.get("team_abbrev")
+                    _cp = _nba_ti.get("canonical_player_id")
+                    if isinstance(_pt, str) and _pt.strip():
+                        new_pick["player_team"] = _pt
+                        new_pick["player_team_name"] = _pt
+                    if isinstance(_ct, str) and _ct.strip():
+                        new_pick["canonical_team_id"] = _ct
+                    if isinstance(_ta, str) and _ta.strip():
+                        new_pick["team_abbrev"] = _ta
+                    if isinstance(_cp, str) and _cp.strip():
+                        new_pick["canonical_player_id"] = _cp
+                        new_pick.setdefault("player_id", _cp)
+                    # Identity class — AUTHORITATIVE requires both canonical
+                    # player id AND resolved team; PROVISIONAL covers the
+                    # partial case; leave unset otherwise so the boundary
+                    # fail-closes.
+                    if _cp and (_pt or _ct):
+                        new_pick.setdefault("identity_class", "AUTHORITATIVE")
+                    elif _cp or _pt or _ct:
+                        new_pick.setdefault("identity_class", "PROVISIONAL")
+            except Exception as _nba_tattach_err:
+                logger.debug("NBA team attach failed for %s/%s: %s",
+                             player, mk, _nba_tattach_err)
         # Block 2D A1 — attach ATD evidence block for downstream
         # consumers (rationale UI, telemetry).  This is
         # POST_SCORE_EXPLANATION_ONLY at the pick level — Lock Score
