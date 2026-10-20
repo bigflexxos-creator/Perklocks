@@ -1784,17 +1784,24 @@ async def _refresh_picks(
         # refresh (triggered from health-recovery, cron ticks, and the
         # ``_refresh_picks(today)`` orchestrator entry) never gave NHL
         # a chance to produce picks even when NHL games were on the
-        # slate.  Add NHL back to the default.  NBA is deliberately
-        # EXCLUDED here — NBA families are currently
-        # ``MODEL_UNAVAILABLE`` in the Universal Market Contract (see
-        # ``services/universal_market_contract.py:311-365``); forcing
-        # NBA generation would just burn provider quota producing
-        # picks that are correctly rejected at the publication
-        # boundary.  NBA will be re-added once its families clear the
-        # P0-B Block 10 capability audit.
+        # slate.  Add NHL back to the default.
+        #
+        # 2026-10-20 STEP-C ACTIVATION — NBA is now ACTIVE in the
+        # Universal Market Contract (`services/universal_market_contract.py`
+        # lines 311-365 ship the real `nba_game_model` ML / Spread /
+        # Total authority + player-prop simulator over
+        # `team_game_actuals` + `player_game_actuals`).  Preview
+        # validated the full A–S acceptance report (ML=11 / SPREAD=10
+        # / TOTAL=6 published, Lock≥85 = 103, HARD-FAIL inflation = 0,
+        # 28/30 teams).  Production support confirmed capability
+        # ACTIVE, 51,709 player rows, 5,544 team rows, 648 players,
+        # 31 current sportsbook events.  The ONLY remaining blocker
+        # on live Production was that NBA was omitted from the
+        # scheduled dispatch below — adding it here so NBA is
+        # refreshed by every ALL-sport tick, mirroring NHL / NFL.
         sports = [s.strip() for s in os.environ.get(
             "PERKLOCKS_REFRESH_SPORTS",
-            "NFL,MLB,CFB,Soccer,Tennis,NHL").split(",") if s.strip()]
+            "NFL,MLB,CFB,Soccer,Tennis,NHL,NBA").split(",") if s.strip()]
         # ── 2026-06 PROD-PARITY FLOOR (NHL Preview↔Prod reconciliation) ─
         # ROOT-CAUSED divergence: Preview had NHL on the board but
         # Production did not.  Mechanism: an operator-set
@@ -1815,7 +1822,7 @@ async def _refresh_picks(
         #     explicit, visible ``PERKLOCKS_REFRESH_SPORTS_EXCLUDE``
         #     opt-out (comma-separated, case-insensitive).  This makes
         #     exclusion an INTENTIONAL act, not an accident of history.
-        _REQUIRED_FLOOR = ("NFL", "MLB", "CFB", "Soccer", "Tennis", "NHL")
+        _REQUIRED_FLOOR = ("NFL", "MLB", "CFB", "Soccer", "Tennis", "NHL", "NBA")
         _explicit_exclude = {
             s.strip().upper() for s in os.environ.get(
                 "PERKLOCKS_REFRESH_SPORTS_EXCLUDE", "").split(",") if s.strip()
@@ -4764,6 +4771,164 @@ async def _nfl_pregame_loop():
             await asyncio.sleep(_NFL_REFRESH_INTERVAL_SECONDS)
 
 
+# ── 2026-10-20 · PRODUCTION NBA RUNTIME FIX ──────────────────────────
+# Emergent Support forensic confirmed NBA capability/model ACTIVE on
+# Production (51,709 player rows, 5,544 team rows, 648 players, 31
+# current sportsbook events) and that both pods are on the current
+# image — but NBA was never dispatched by the scheduled refresh,
+# only by manual triggers.  Preview worked only because tests force-
+# refreshed NBA directly.  Mirror the NFL in-season pregame loop so
+# NBA refreshes automatically through the normal cadence.  SAME
+# JobCoordinator lease + ProviderBudget guardrails as MLB / NFL loops.
+_NBA_REFRESH_INTERVAL_SECONDS = int(os.environ.get(
+    "NBA_PREGAME_INTERVAL_SECONDS", str(30 * 60)))      # 30 min in-season
+_NBA_OUT_OF_SEASON_SLEEP = int(os.environ.get(
+    "NBA_OUT_OF_SEASON_SLEEP_SECONDS", str(6 * 3600)))  # re-check every 6h
+
+
+def _nba_is_in_season(now: datetime) -> bool:
+    """Return True during NBA season window (Oct 1 → Jun 30).
+
+    Regular season tips off mid-October; the Finals finish mid-June.
+    Preseason props post from early October.  Outside this window we
+    sleep the loop to avoid burning provider credits.
+    """
+    m = now.month
+    # October through June — in season (covers preseason + playoffs).
+    if m >= 10 or m <= 6:
+        return True
+    return False
+
+
+async def _nba_pregame_loop():
+    """Refresh NBA picks on an in-season cadence so Production has
+    real picks without any manual admin force-refresh.
+
+    Contract (mirrors `_nfl_pregame_loop`):
+      • Refresh **today** at 30-min cadence while in season.
+      • Refresh **tomorrow** at 60-min cadence — books post the slate
+        days in advance.
+      • Acquire a JobCoordinator lease + ProviderBudget reservation
+        so overlapping refreshes cannot double-book credits or CPU.
+      • Sleep 6h out-of-season instead of spinning tight — memory
+        cliff protection.
+    """
+    # Let startup settle so the initial seed / bootstrap completes.
+    await asyncio.sleep(240)
+    from services.job_coordinator import JobCoordinator as _NBAJC
+    from services.provider_budget import ProviderBudget as _NBAPB
+    last_tomorrow_at: float = 0.0
+    tomorrow_cadence = max(
+        _NBA_REFRESH_INTERVAL_SECONDS,
+        2 * _NBA_REFRESH_INTERVAL_SECONDS // 2 + 60 * 60,
+    )
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            if not _nba_is_in_season(now):
+                logger.info(
+                    "NBA pregame loop: outside season window (m=%d), "
+                    "sleeping %dh.",
+                    now.month, _NBA_OUT_OF_SEASON_SLEEP // 3600,
+                )
+                await asyncio.sleep(_NBA_OUT_OF_SEASON_SLEEP)
+                continue
+
+            # ── Today's slate ─────────────────────────────────────
+            coord = _NBAJC(db)
+            budget = _NBAPB(db)
+            lease = await coord.acquire(
+                "nba_pregame_refresh_today",
+                lease_seconds=1800,           # NBA refresh envelope
+                min_interval_seconds=_NBA_REFRESH_INTERVAL_SECONDS,
+                caller="nba_pregame_loop",
+                reason="pregame_30min",
+            )
+            if lease:
+                token = lease.lease_token
+                r = await budget.reserve(
+                    estimated_credits=80,
+                    endpoint_type="picks_refresh_nba_today",
+                    caller="nba_pregame_loop",
+                    job_name="nba_pregame_refresh_today",
+                    reason="pregame_30min",
+                    request_key=f"nba_today:{token}",
+                    ttl_seconds=1800,
+                )
+                if r.get("allowed"):
+                    intent = r["intent_id"]
+                    try:
+                        await _refresh_picks(_today_str(), sport_filter="NBA")
+                        await budget.commit(intent)
+                        await coord.complete(
+                            "nba_pregame_refresh_today", token,
+                        )
+                    except Exception as e:
+                        await budget.release(intent, reason=f"err:{e}")
+                        await coord.fail(
+                            "nba_pregame_refresh_today", token,
+                            error=str(e), retry_after_seconds=300,
+                        )
+                else:
+                    await coord.fail(
+                        "nba_pregame_refresh_today", token,
+                        error=f"budget_denied:{r.get('outcome')}",
+                        retry_after_seconds=600,
+                    )
+            # ── Tomorrow's slate — slower cadence ─────────────────
+            t_now = asyncio.get_event_loop().time()
+            if t_now - last_tomorrow_at >= tomorrow_cadence:
+                last_tomorrow_at = t_now
+                coord = _NBAJC(db)
+                budget = _NBAPB(db)
+                lease = await coord.acquire(
+                    "nba_pregame_refresh_tomorrow",
+                    lease_seconds=1800,
+                    min_interval_seconds=tomorrow_cadence,
+                    caller="nba_pregame_loop",
+                    reason="pregame_tomorrow_60min",
+                )
+                if lease:
+                    token = lease.lease_token
+                    r = await budget.reserve(
+                        estimated_credits=50,
+                        endpoint_type="picks_refresh_nba_tomorrow",
+                        caller="nba_pregame_loop",
+                        job_name="nba_pregame_refresh_tomorrow",
+                        reason="pregame_tomorrow_60min",
+                        request_key=f"nba_tomorrow:{token}",
+                        ttl_seconds=1800,
+                    )
+                    if r.get("allowed"):
+                        intent = r["intent_id"]
+                        try:
+                            tomorrow_str = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+                            await _refresh_picks(tomorrow_str, sport_filter="NBA")
+                            await budget.commit(intent)
+                            await coord.complete(
+                                "nba_pregame_refresh_tomorrow", token,
+                            )
+                        except Exception as e:
+                            await budget.release(intent, reason=f"err:{e}")
+                            await coord.fail(
+                                "nba_pregame_refresh_tomorrow", token,
+                                error=str(e), retry_after_seconds=300,
+                            )
+                    else:
+                        await coord.fail(
+                            "nba_pregame_refresh_tomorrow", token,
+                            error=f"budget_denied:{r.get('outcome')}",
+                            retry_after_seconds=600,
+                        )
+            await asyncio.sleep(_NBA_REFRESH_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning("NBA pregame refresh failed: %s", e)
+            await asyncio.sleep(_NBA_REFRESH_INTERVAL_SECONDS)
+
+
+
 async def _settlement_loop():
     """Per-sport settlement cadence — fast where it's free, careful where it costs.
 
@@ -6323,6 +6488,17 @@ async def _full_startup_init():
     logger.info(
         "NFL pregame refresh loop armed (%d-sec cadence during NFL season)",
         _NFL_REFRESH_INTERVAL_SECONDS,
+    )
+    # ── 2026-10-20 · PRODUCTION NBA FIX — automatic scheduler ─────────
+    # Support confirmed NBA capability/model ACTIVE but Production
+    # never dispatched NBA via the scheduled refresh (manual only).
+    # Register the in-season pregame loop so Production regenerates
+    # the NBA slate on a 30-min cadence without any admin intervention.
+    # Out-of-season (Jul–Sep) the loop hibernates on a 6h re-check.
+    _deferred_task(_nba_pregame_loop,                       DEFER_BASE * 2)
+    logger.info(
+        "NBA pregame refresh loop armed (%d-sec cadence during NBA season)",
+        _NBA_REFRESH_INTERVAL_SECONDS,
     )
     # ── 2026-07-28 late-night one-shot MLB refresh ────────────────────
     # If the server boots between 23:00–03:00 UTC (i.e. late West Coast

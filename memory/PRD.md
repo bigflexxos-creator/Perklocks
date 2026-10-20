@@ -273,3 +273,20 @@ Added NBA game-market recognizer mirroring the NHL / CFB SP+ / NFL Platinum patt
 - OVERALL: ✅ PASS
 
 **Scripts**: `backend/scripts/nba_publish_batch.py`, `backend/scripts/nba_as_acceptance_report.py`
+
+## 2026-10-20 — P0 NBA Production Refresh Registration
+
+Support confirmed Production NBA data/model healthy. Live-board blocker was ONLY that NBA was missing from scheduled dispatch.
+
+**Changes (surgical, `backend/server.py` only):**
+1. `PERKLOCKS_REFRESH_SPORTS` default now ends with `NBA` → `"NFL,MLB,CFB,Soccer,Tennis,NHL,NBA"`
+2. `_REQUIRED_FLOOR` tuple now includes `"NBA"` (operator overrides can no longer silently drop it)
+3. Stale comment claiming NBA is MODEL_UNAVAILABLE replaced with the 2026-10-20 STEP-C ACTIVATION note referencing the shipped `nba_game_model` + validated A–S report
+4. New `_nba_pregame_loop` mirrors the NFL in-season pregame pattern (same `JobCoordinator` lease + `ProviderBudget` reservation + today@30min / tomorrow@60min cadence, 6h out-of-season sleep). Registered via `_deferred_task(_nba_pregame_loop, DEFER_BASE * 2)`.
+
+**Regression guard:** `backend/tests/test_refresh_dispatch_invariant.py`
+- Parses `AUTHORITY` registry → set of ACTIVE sports.
+- Asserts every ACTIVE sport is in BOTH `PERKLOCKS_REFRESH_SPORTS` default literal AND `_REQUIRED_FLOOR`.
+- Explicit NBA guard checks the dedicated pregame loop + today lease key are present.
+
+**Boot verification:** backend startup log emits `NBA pregame refresh loop armed (1800-sec cadence during NBA season)`. No touches to NBA models, lock score math, 85 threshold, provider acquisition, canonical publication, board_generation, identity logic, or any other sport.
