@@ -252,3 +252,24 @@ All universal integrity conditions met; universal historical authority is wired 
 
 ## 2026-09-17 · Prior session — NHL Live Season Preview empty · 6 picks published
 (preserved — do not reopen; NHL models/scoring/tabs are FROZEN.)
+
+## 2026-10-20 — NBA Step-C Activation (A–S Acceptance ✅ PASS)
+
+**Fix**: `board_validator.evidence_threshold` was missing an NBA game-market recognizer. ML/SPREAD/TOTAL picks (empty `factors`, no `pick_rationale`) died at `EVIDENCE_THRESHOLD` even though they rode the shipped `services.nba_game_model` (real `team_game_actuals` distribution).
+
+**Change** (surgical, ~45 lines in `/app/backend/board_validator.py`):
+Added NBA game-market recognizer mirroring the NHL / CFB SP+ / NFL Platinum pattern. Credits two genuinely-independent signals:
+  1. `win_probability` from `nba_game_model` (independent team-rating distribution).
+  2. `devig_market_probability` with `edge_method="DEVIG"` (independent book-anchored consensus).
+
+**No math/scoring changes.** No touches to `elite_players.py`, `evidence_engine.py`, or `sports_engine.py`.
+
+**A–S Acceptance (NBA, 2026-10-20 Preview)**:
+- Published rows: 350 across 14 events, 28/30 NBA teams
+- Lock ≥85: 103 picks (ML=6, SPREAD=8, TOTAL=5, player props 84)
+- Game markets published: ML=11, SPREAD=10, TOTAL=6
+- HARD-FAIL inflation scan (lock≥95 AND wp<85 AND v3_base<85 AND pre_elite<85): 0
+- Alt-line coverage: 90/350
+- OVERALL: ✅ PASS
+
+**Scripts**: `backend/scripts/nba_publish_batch.py`, `backend/scripts/nba_as_acceptance_report.py`

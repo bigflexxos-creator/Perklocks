@@ -2447,9 +2447,32 @@ def _build_pick(*, sport, league, event, event_time, market, pick_side,
     except Exception:
         # Telemetry must never block pick emission.
         pass
+    # ── 2026-10-20 · STEP B · Canonical family stamping ───────────────
+    # Resolve `canonical_market_family` from `provider_market_key` via
+    # the UniversalMarketContract so every emitted pick carries its
+    # canonical family alongside the raw provider key. This is REQUIRED
+    # for the publication boundary, settlement_hard_gate, and the
+    # certification diagnostic — until now NBA picks never stamped the
+    # field explicitly, so DB rows showed `canonical_market_family=None`
+    # even when the provider key resolved cleanly in the contract.
+    _resolved_family: str | None = None
+    try:
+        if provider_market_key:
+            from services.universal_market_contract import (
+                resolve_provider_key as _umc_resolve_pk,
+            )
+            _entry = _umc_resolve_pk(sport, provider_market_key)
+            if _entry is not None:
+                _resolved_family = _entry.family
+    except Exception:
+        _resolved_family = None
+
     return {
         "sport": sport, "league": league, "event": event,
         "event_time": event_time, "market": market, "selection": pick_side,
+        **({"canonical_market_family": _resolved_family,
+            "market_family": _resolved_family}
+           if _resolved_family else {}),
         "win_probability": round(model_win_prob * 100, 1),
         "book_odds": final_odds,
         # Real-line fail-closed provenance (2026-08-23).  Set exactly
@@ -2877,27 +2900,58 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
             if sport == "Soccer" and _ml_model_unavailable is None:
                 pass  # soccer_game_model already handled above
             elif sport in ("NBA", "NHL") and _ml_model_unavailable is None:
-                # PASS OLD-LOGIC MIGRATION (2026-06) — NBA/NHL Game
-                # Markets.  Previously blanketed with MODEL_UNAVAILABLE
-                # here so ML/Spread/Total candidates never reached the
-                # already-built sim_nba / sim_nhl distributions.  New
-                # rule: seed with book_implied so the candidate can be
-                # BUILT, then rely on sim_runner.apply_simulations to
-                # PROMOTE ``sim_win_probability`` into
-                # ``win_probability`` via the (now fixed)
-                # ``_anchor_pick_to_sim`` percent-aware guard.  The
-                # book-implied seed is NEVER the final published
-                # probability — the sim distribution is.
-                #
-                # Provenance stamped so the model-integrity gate + the
-                # universal Lock authority treat this as an EMPIRICAL
-                # candidate only AFTER sim promotion.  Until promotion
-                # fires the pick carries ``probability_source =
-                # book_implied_seed`` so telemetry can attribute any
-                # un-promoted case.
-                if isinstance(game, dict):
-                    game.setdefault("_ctx", {}).setdefault(
-                        "_sim_pending", True)
+                # ── STEP C ACTIVATION 2026-10-20 · NBA GAME MODEL ──
+                # NBA now has a shipped independent authoritative
+                # game-market model (`services.nba_game_model`) that
+                # computes real distribution-based moneyline / spread /
+                # total probabilities from the historical
+                # ``team_game_actuals`` collection (5,544 rows,
+                # 30 teams, 2024-25 seasons).  Call it FIRST; fall
+                # back to the sim-pending path only when ratings are
+                # missing (fail-closed as MODEL_UNAVAILABLE).  NHL
+                # continues to use the sim-pending path (its own
+                # authoritative sim pipeline is already wired).
+                if sport == "NBA":
+                    try:
+                        from services.nba_game_model import estimate_nba_game
+                        _game_ctx = ((game.get("_ctx")
+                                      if isinstance(game, dict)
+                                      else None) or {})
+                        _nba_game = estimate_nba_game(
+                            _game_ctx, home, away)
+                        if _nba_game.available:
+                            home_model = float(_nba_game.p_home_ml)
+                            if isinstance(game, dict):
+                                game.setdefault("_ctx", {})[
+                                    "_nba_game_model"
+                                ] = _nba_game.as_dict()
+                            _ml_sources = ["team_game_actuals"]
+                        else:
+                            _ml_model_unavailable = (
+                                _nba_game.reason or "MODEL_UNAVAILABLE")
+                            try:
+                                from services import (
+                                    funnel_telemetry as _funnel)
+                                _funnel.record(
+                                    sport="NBA", market="moneyline",
+                                    stage="model",
+                                    reason=_ml_model_unavailable,
+                                    event=f"{away} @ {home}",
+                                    detail=(f"nba_game_model tier="
+                                            f"{_nba_game.tier}"),
+                                )
+                            except Exception:
+                                pass
+                    except Exception as _nba_err:
+                        logger.warning(
+                            "nba_game_model wiring failed: %s", _nba_err)
+                        _ml_model_unavailable = (
+                            f"SIM_EXCEPTION:{type(_nba_err).__name__}")
+                else:
+                    # NHL — unchanged (sim_pending path).
+                    if isinstance(game, dict):
+                        game.setdefault("_ctx", {}).setdefault(
+                            "_sim_pending", True)
             elif sport not in ("MLB", "Soccer", "NBA", "NHL", "CFB") \
                     and _ml_model_unavailable is None:
                 _ml_model_unavailable = "MODEL_UNAVAILABLE"
@@ -3907,6 +3961,47 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                         )
                     except Exception:
                         pass
+            elif sport == "NBA":
+                # ── STEP C ACTIVATION 2026-10-20 · NBA TOTAL ─────────
+                # Uses the shipped ``services.nba_game_model`` already
+                # evaluated upstream on the ML path and stashed on
+                # ``game['_ctx']['_nba_game_model']``.  Expected total
+                # + total_sigma feed a normal CDF — identical pattern
+                # to the CFB branch above.  Fail-closed when the model
+                # could not run (missing team ratings) so no NBA total
+                # ever flows a book-follow surrogate.
+                _nba_tot_gm = game_ctx.get("_nba_game_model") or {}
+                if (_nba_tot_gm.get("available")
+                        and _nba_tot_gm.get("expected_total") is not None):
+                    try:
+                        from math import erf as _erf, sqrt as _sqrt
+                        def _nba_ncdf(x: float) -> float:
+                            return 0.5 * (1.0 + _erf(x / _sqrt(2.0)))
+                        _nba_exp_tot = float(_nba_tot_gm["expected_total"])
+                        _nba_tot_sig = float(
+                            _nba_tot_gm.get("total_sigma") or 20.0)
+                        _p_over_nba = _nba_ncdf(
+                            (_nba_exp_tot - float(line)) / _nba_tot_sig)
+                        _cfb_tot_probs["Over"] = round(_p_over_nba, 4)
+                        _cfb_tot_probs["Under"] = round(
+                            1.0 - _p_over_nba, 4)
+                        _totals_model_ok = True
+                    except Exception as _nba_te:
+                        logger.warning("nba total wiring failed: %s", _nba_te)
+                        _totals_model_ok = False
+                else:
+                    _totals_model_ok = False
+                    try:
+                        from services import funnel_telemetry as _funnel
+                        _funnel.record(
+                            sport=sport, market="total", stage="model",
+                            reason=(_nba_tot_gm.get("reason")
+                                     or "MODEL_UNAVAILABLE"),
+                            event=f"{away} @ {home}",
+                            detail=f"nba_game_model tier={_nba_tot_gm.get('tier')}",
+                        )
+                    except Exception:
+                        pass
             elif sport == "NHL":
                 # ── 2026-10-02 · NHL TOTAL (surgical wiring) ─────────
                 # Uses the pre-built nhl_sim_context attached upstream
@@ -3996,6 +4091,9 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 elif sport == "CFB":
                     mp_o = _cfb_tot_probs.get("Over")
                     contribs_o = None
+                elif sport == "NBA":
+                    mp_o = _cfb_tot_probs.get("Over")
+                    contribs_o = None
                 elif sport == "NHL":
                     mp_o = _cfb_tot_probs.get("Over")
                     contribs_o = None
@@ -4028,7 +4126,7 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                 # remains (prevents extreme-dog Unders from clogging
                 # the pre-model queue in sports whose totals model
                 # is less deterministic).
-                _nhl_under = (sport == "NHL")
+                _nhl_under = (sport in ("NHL", "NBA"))
                 if _nhl_under or implied_u >= 0.38:
                     if _mlb_shared_dist is not None:
                         # §5 SHARED distribution: conserved P(Under)
@@ -4052,6 +4150,9 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                             mp_u = _sim_u["prob"]
                         contribs_u = None
                     elif sport == "CFB":
+                        mp_u = _cfb_tot_probs.get("Under")
+                        contribs_u = None
+                    elif sport == "NBA":
                         mp_u = _cfb_tot_probs.get("Under")
                         contribs_u = None
                     elif sport == "NHL":
@@ -4611,6 +4712,58 @@ def _picks_from_game(sport: str, league: str, game: dict, date_str: str) -> list
                     factors = {}
                     # Stash so provenance stamp below can reuse it
                     _cfb_sp_ctx.setdefault("_cfb_spread_prob_by_side", {})[side] = _cfb_cover
+                elif sport == "NBA":
+                    # ── STEP C ACTIVATION 2026-10-20 · NBA SPREAD ──
+                    # Uses the shipped ``services.nba_game_model``
+                    # already evaluated upstream on the ML path and
+                    # stashed on ``game['_ctx']['_nba_game_model']``.
+                    # Reads ``expected_margin`` + ``margin_sigma`` and
+                    # produces a side-signed cover probability via a
+                    # normal-distribution integral.  Fail-closed when
+                    # the model could not run so no NBA spread ever
+                    # flows a book-follow surrogate.
+                    _nba_sp_ctx = (game.get("_ctx")
+                                    if isinstance(game, dict) else None) or {}
+                    _nba_sp_gm = _nba_sp_ctx.get("_nba_game_model") or {}
+                    if not (_nba_sp_gm.get("available")
+                            and _nba_sp_gm.get("expected_margin") is not None
+                            and line is not None):
+                        try:
+                            from services import funnel_telemetry as _funnel
+                            _funnel.record(
+                                sport=sport, market="spread", stage="model",
+                                reason=(_nba_sp_gm.get("reason")
+                                         or "MODEL_UNAVAILABLE"),
+                                event=f"{away} @ {home}", side=str(side),
+                                detail=f"nba_game_model tier={_nba_sp_gm.get('tier')}",
+                            )
+                        except Exception:
+                            pass
+                        continue
+                    try:
+                        from math import erf as _erf, sqrt as _sqrt
+                        def _nba_sp_ncdf(x: float) -> float:
+                            return 0.5 * (1.0 + _erf(x / _sqrt(2.0)))
+                        _nba_margin = float(_nba_sp_gm["expected_margin"])
+                        _nba_msig   = float(_nba_sp_gm.get("margin_sigma") or 12.0)
+                        if side == home:
+                            # home_line is negative when home favored.
+                            # P(home_margin > home_line)
+                            _nba_cover = _nba_sp_ncdf(
+                                (_nba_margin - float(line)) / _nba_msig)
+                        else:
+                            # away_line typically +X (underdog) or -X.
+                            # Away covers ↔ home_margin < -away_line.
+                            _nba_cover = _nba_sp_ncdf(
+                                (-float(line) - _nba_margin) / _nba_msig)
+                    except Exception as _nba_sp_err:
+                        logger.warning("nba spread wiring failed: %s",
+                                        _nba_sp_err)
+                        continue
+                    mp = float(_nba_cover)
+                    factors = {}
+                    _nba_sp_ctx.setdefault(
+                        "_nba_spread_prob_by_side", {})[side] = _nba_cover
                 elif sport == "NHL":
                     # ── 2026-10-02 · NHL PUCK LINE (surgical wiring) ──
                     # Uses the pre-built nhl_sim_context attached by
@@ -5179,16 +5332,32 @@ async def _fetch_picks_for_sport(sport: str, date_str: str) -> list[dict]:
                     )
                     g.setdefault("sport_key", key)
                     g["_ctx"] = await build_nfl_game_model_context(g)
+                elif sport == "NBA":
+                    # ── STEP C ACTIVATION 2026-10-20 · NBA GAME CTX ──
+                    # Pre-load the rolling NBA team ratings (from
+                    # ``team_game_actuals`` — the 5,544-row 2024-25
+                    # historical sample).  `estimate_nba_game` reads
+                    # ``ctx["nba_team_ratings_by_team"]``; without it
+                    # every NBA ML / spread / total emits
+                    # ``MODEL_UNAVAILABLE:no_nba_team_ratings_ctx``
+                    # and zero game-market candidates reach the board.
+                    try:
+                        from services.nba_game_model import (
+                            load_nba_team_ratings,
+                        )
+                        from services.database import get_database
+                        _db = get_database()
+                        _nba_ratings = await load_nba_team_ratings(
+                            _db, window=20)
+                    except Exception:
+                        _nba_ratings = {}
+                    g["_ctx"] = {
+                        "nba_team_ratings_by_team": _nba_ratings,
+                    }
                 elif sport == "CFB":
                     # 2026-08-27 — CFB game-market model wiring fix.
                     # `estimate_cfb_game` requires
                     # ``ctx["cfb_sp_ratings_by_team"]`` — without it
-                    # every CFB game returned
-                    # ``MODEL_UNAVAILABLE:no_sp_ratings_ctx`` and zero
-                    # CFB picks reached the board even when SP+ data,
-                    # provider events and bookmakers were all present.
-                    # Reuse the existing pre-loader — no new query
-                    # paths, no math changes.
                     #
                     # 2026-06-12 · R2 — also preload returning-production
                     # + portal-net maps so data_quality can advance
@@ -5875,17 +6044,31 @@ PLAYER_PROP_MARKETS = {
         "pitcher_outs",
     ],
     "NBA": [
-        # Core props
+        # ── 2026-10-20 · STEP B FULL COVERAGE ─────────────────────
+        # Every NBA market the Odds API offers for which we carry
+        # historical actuals is enumerated here. Markets whose
+        # underlying stat column isn't yet in canonical_player_game_actuals
+        # (e.g. threes_made) remain requested so the pipeline
+        # AUTO-ACTIVATES them the moment the ingest surfaces the
+        # column — no second-pass code change needed.
+        # Core singles
         "player_points", "player_rebounds", "player_assists",
+        "player_threes", "player_steals", "player_blocks",
+        "player_turnovers",
+        # Core singles — alternate lines
         "player_points_alternate", "player_rebounds_alternate",
-        "player_assists_alternate",
-        # Phase 4D — combined + shooting props (2026-08-06).
+        "player_assists_alternate", "player_threes_alternate",
+        "player_steals_alternate", "player_blocks_alternate",
+        "player_turnovers_alternate",
+        # Combo props
         "player_points_rebounds_assists",
         "player_points_rebounds_assists_alternate",
-        "player_points_rebounds", "player_points_assists",
-        "player_rebounds_assists",
-        "player_threes", "player_threes_alternate",
-        "player_steals", "player_blocks",
+        "player_points_rebounds", "player_points_rebounds_alternate",
+        "player_points_assists",  "player_points_assists_alternate",
+        "player_rebounds_assists", "player_rebounds_assists_alternate",
+        "player_blocks_steals",   "player_blocks_steals_alternate",
+        # Milestone / event props
+        "player_double_double", "player_triple_double",
     ],
     "WNBA": [
         "player_points", "player_rebounds", "player_assists",
@@ -6241,15 +6424,29 @@ def _extract_nfl_prop_candidates(payload: dict) -> list[dict]:
 
 
 # ─── Phase 4D finalization — NBA / CFB candidate extractors ───────
+# ── 2026-10-20 · STEP B FULL COVERAGE: enumerate every supported
+# NBA Odds-API market key so the per-event extractor forwards all
+# of them to the precompute+factor framework.  Keep this synced
+# with ``services.nba_feature_engine._MARKET_STAT_MAP``.
 _NBA_MARKET_KEYS = frozenset({
+    # Core singles
     "player_points", "player_rebounds", "player_assists",
     "player_threes", "player_steals", "player_blocks",
-    "player_points_rebounds_assists",
-    "player_points_rebounds", "player_points_assists",
-    "player_rebounds_assists",
+    "player_turnovers",
+    # Core singles — alt lines
     "player_points_alternate", "player_rebounds_alternate",
     "player_assists_alternate", "player_threes_alternate",
+    "player_steals_alternate", "player_blocks_alternate",
+    "player_turnovers_alternate",
+    # Combos
+    "player_points_rebounds_assists",
     "player_points_rebounds_assists_alternate",
+    "player_points_rebounds", "player_points_rebounds_alternate",
+    "player_points_assists",  "player_points_assists_alternate",
+    "player_rebounds_assists", "player_rebounds_assists_alternate",
+    "player_blocks_steals",   "player_blocks_steals_alternate",
+    # Milestone / event
+    "player_double_double", "player_triple_double",
 })
 
 
@@ -6276,6 +6473,21 @@ def _extract_nba_prop_candidates(
                 markets.add(mkey)
                 point = o.get("point")
                 side  = str(o.get("name") or "Over")
+                # ── 2026-10-20 · milestone markets (DD / TD) ─────────
+                # The Odds API does NOT emit a ``point`` for binary
+                # milestone markets.  Synthesize ``line=0.5`` so the
+                # L10-hit-rate factor framework treats the row's
+                # dd_count / td_count (0.0 or 1.0) as a direct
+                # empirical hit probability of the milestone.  Side
+                # mapping: "Yes" → Over, "No" → Under.
+                if mkey in ("player_double_double", "player_triple_double"):
+                    if point is None:
+                        point = 0.5
+                    _side_lc = side.lower()
+                    if _side_lc in ("yes", "y"):
+                        side = "Over"
+                    elif _side_lc in ("no", "n"):
+                        side = "Under"
                 if isinstance(point, (int, float)):
                     key = (player.strip().lower(), mkey)
                     entry = (float(point), side)
@@ -9483,6 +9695,22 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             _game_ctx = (payload.get("_ctx") if isinstance(payload, dict) else None) or {}
             _nba_pc = ((_game_ctx.get("nba_precomputed") or {})
                         .get(player.strip().lower()) or {}).get(mk) or {}
+            # ── 2026-10-20 STEP C FIX #2 ──────────────────────────────
+            # Prefer the exact (line, side) variant when the precompute
+            # provided one; fall back to the first-bundle shape only
+            # when no exact match exists.
+            _nba_variants = (_nba_pc.get("__variants") or {}) if isinstance(_nba_pc, dict) else {}
+            if _nba_variants:
+                try:
+                    _k_line = (float(point)
+                                if isinstance(point, (int, float))
+                                else None)
+                except Exception:
+                    _k_line = None
+                _k_side = (str(side).strip().lower() if side is not None else "")
+                _nba_pc_match = _nba_variants.get((_k_line, _k_side))
+                if _nba_pc_match:
+                    _nba_pc = _nba_pc_match
             if _nba_pc.get("factors"):
                 factors = _nba_pc["factors"]
                 _mlb_features_used = _nba_pc.get("sources") or ["nba_feature_engine"]
@@ -9636,7 +9864,7 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         # math, no synthetic edge, no odds ban — the factor
         # engine's own probability is honestly used.
         elif (
-            sport == "NFL"
+            sport in ("NFL", "NBA")
             and factors
             and mk not in ("player_anytime_td", "player_1st_td")
             and _atd_model_override is None

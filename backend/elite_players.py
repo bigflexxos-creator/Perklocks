@@ -717,7 +717,43 @@ def apply_elite_boost(picks: list[dict]) -> list[dict]:
         p["elite_player_name"] = canonical
         raw_lock = float(p.get("lock_score") or 0)
         p["pre_elite_lock_score"] = round(raw_lock, 1)
-        new_lock = max(ELITE_LOCK_FLOOR, min(99.0, raw_lock + ELITE_BOOST_PCT))
+        # 2026-10-20 STRUCTURAL FIX — PROBABILITY-GATED ELITE FLOOR
+        # ────────────────────────────────────────────────────────
+        # Previously ``new_lock = max(ELITE_LOCK_FLOOR, min(99, raw+BOOST))``
+        # forced any elite-tagged pick into the 95-99 Elite-Lock band
+        # regardless of win_probability.  That structurally inflated
+        # NBA picks like Paul George @ wp=84.5 (raw 68.5) to 99 — the
+        # HARD-FAIL case the user flagged.
+        #
+        # New rule: ALWAYS apply the +BOOST_PCT bump capped at 99 so
+        # elite names still rise above comparable non-elite picks, but
+        # the ELITE_LOCK_FLOOR (95) is only applied when the pick's
+        # empirical math already supports Lock tier — i.e. raw_lock
+        # >= 85 OR calibrated win_probability >= 0.85.  This preserves
+        # the user intent ("Kane/Mbappé always make the board when
+        # starting") because any real striker pick with wp ≥ 85 % still
+        # floors to 95, while killing the structural inflation path
+        # for weak picks that merely happen to carry an elite name.
+        _wp = p.get("calibrated_win_probability")
+        if _wp is None:
+            _wp = p.get("win_probability")
+        try:
+            _wp_f = float(_wp or 0.0)
+        except (TypeError, ValueError):
+            _wp_f = 0.0
+        # Normalize percent → fraction if needed (score >1 ⇒ already %).
+        _wp_pct = _wp_f if _wp_f > 1.0 else _wp_f * 100.0
+        _boosted = min(99.0, raw_lock + ELITE_BOOST_PCT)
+        if raw_lock >= 85.0 or _wp_pct >= 85.0:
+            new_lock = max(ELITE_LOCK_FLOOR, _boosted)
+        else:
+            # Empirical math does NOT support Lock-tier — DO NOT floor.
+            new_lock = _boosted
+            p["elite_floor_suppressed"] = True
+            p["elite_floor_suppressed_reason"] = (
+                f"raw_lock={raw_lock:.1f}<85 and wp={_wp_pct:.1f}<85 — "
+                "floor would structurally inflate; boost-only applied"
+            )
         p["lock_score"] = round(new_lock, 1)
         # Make sure no_bet flag isn't set on elite picks.
         p["no_bet"] = False

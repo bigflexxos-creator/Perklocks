@@ -74,19 +74,51 @@ def _factor(pick: dict, key: str, default: float = 50.0) -> float:
 
 
 def _classify_nba_market(market: str) -> str:
+    """Classify an NBA market label into a simulator category.
+    Order matters — most specific checks first so composite labels
+    don't collapse into a single-stat branch.
+    """
     m = (market or "").lower()
-    if "3-pointer" in m or "3 pointer" in m or "threes" in m or "three-pointer" in m:
-        return "threes"
-    if "assists" in m and "points" not in m:
-        return "assists"
-    if "rebounds" in m and "points" not in m:
-        return "rebounds"
-    if "pra" in m or ("points + rebounds + assists" in m):
-        return "pra"
+    # ── Milestone / binary markets ──────────────────────────────
+    if "triple" in m and "double" in m:
+        return "triple_double"
+    if "double" in m and "double" in m and (
+            "double-double" in m or "double double" in m):
+        return "double_double"
+    # ── Game markets ────────────────────────────────────────────
     if "moneyline" in m:
         return "moneyline"
-    if "total points" in m or m.startswith("total ") and "points" in m:
+    if "point spread" in m or (" spread " in f" {m} "):
+        return "point_spread"
+    if "game total" in m or m.startswith("total ") or "team total" in m:
         return "team_total"
+    # ── Composite player stats (check BEFORE singles) ───────────
+    if ("pra" in m or
+            "points + rebounds + assists" in m or
+            ("points" in m and "rebounds" in m and "assists" in m)):
+        return "pra"
+    if "points" in m and "rebounds" in m:
+        return "pr"
+    if "points" in m and "assists" in m:
+        return "pa"
+    if "rebounds" in m and "assists" in m:
+        return "ra"
+    if "blocks" in m and "steals" in m:
+        return "bs"
+    # ── Single-stat shooting / counting markets ─────────────────
+    if ("3-pointer" in m or "3 pointer" in m or "threes" in m
+            or "three-pointer" in m or "3pm" in m):
+        return "threes"
+    if "turnover" in m:
+        return "turnovers"
+    if "blocks" in m:
+        return "blocks"
+    if "steals" in m:
+        return "steals"
+    if "assists" in m:
+        return "assists"
+    if "rebounds" in m:
+        return "rebounds"
     if "points" in m:
         return "points"
     return "unknown"
@@ -237,7 +269,7 @@ def simulate_nba_pick(pick: dict, recent_rows: list[dict] | None = None) -> Opti
         }, sim_prob=p_win, model_prob=model_wp)
 
     # Player counting props
-    if cat in ("points", "pra"):
+    if cat in ("points", "pra", "pr", "pa", "ra"):
         count_dist = "normal"
     else:
         count_dist = "poisson"
@@ -255,13 +287,18 @@ def simulate_nba_pick(pick: dict, recent_rows: list[dict] | None = None) -> Opti
     closure_p = None
     n_games_real = None
     _stat_key_by_cat = {
-        "points":    "points",
-        "rebounds":  "rebounds",
-        "assists":   "assists",
-        "pra":       "pra",   # handled specially — pts + reb + ast
-        "threes":    "threes",
-        "steals":    "steals",
-        "blocks":    "blocks",
+        "points":        "points",
+        "rebounds":      "rebounds",
+        "assists":       "assists",
+        "pra":           "pra",   # handled specially — pts + reb + ast
+        "pr":            "pr",
+        "pa":            "pa",
+        "ra":            "ra",
+        "bs":            "bs",
+        "threes":        "threes_made",
+        "steals":        "steals",
+        "blocks":        "blocks",
+        "turnovers":     "turnovers",
     }
     # P1.6 — MODEL and Historical Intelligence must resolve from the SAME
     # canonical observations.  Rows that are not canonical-identity

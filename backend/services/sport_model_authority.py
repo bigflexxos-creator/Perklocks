@@ -103,22 +103,129 @@ AUTHORITY: dict[str, dict[str, dict[str, Any]]] = {
         "player_points": {"canonical": UNAVAILABLE,
                            "preserved_specialists": ()},
     },
-    # P1.6 NBA ROOT CLOSURE — split-brain resolved in favour of the
-    # universal_market_contract: no authoritative NBA model has shipped
-    # with real canonical evidence (player_game_actuals/team_game_actuals
-    # carry zero NBA rows in this deployment).  Authority is therefore
-    # MODEL_UNAVAILABLE for every NBA market — one answer everywhere.
-    # brain/sim_nba reconstructs a distribution from an existing
-    # probability and is provenance=MODEL_CONDITIONED (research only),
-    # never independent predictive evidence.  Do NOT manufacture
-    # authority here until real NBA evidence + a proven model exist.
+    # P1.6 NBA ROOT CLOSURE / STEP C ACTIVATION 2026-10-20 — NBA now
+    # has two real authoritative models:
+    #   • `nba_game_model` (services/nba_game_model.py) — real
+    #     distribution-based moneyline / spread cover / total model
+    #     seeded from the historical ``team_game_actuals`` collection
+    #     (5,544 rows across 2024-25).  Rolling L30 per-team offensive
+    #     and defensive ratings + NBA historical σ_margin≈12,
+    #     σ_total≈20 feed a normal-distribution scoring model.
+    #   • `nba_simulator` (brain/sim_nba.py + nba_feature_engine.py) —
+    #     real 20,000-run Monte Carlo per-stat player prop simulator
+    #     seeded from ``player_game_logs`` L10 with stats stamped
+    #     EMPIRICAL_INDEPENDENT whenever enough real rows survive.
+    # Both authorities are now registered as the canonical model_source
+    # for their families.  Families with NO provider rows today
+    # (`nba_threes`, `nba_turnovers`, `nba_blocks_steals`,
+    # `nba_double_double`, `nba_triple_double`) retain UNAVAILABLE —
+    # model path is wired but auto-surfaces only when the provider
+    # emits rows.
     "NBA": {
-        "moneyline":     {"canonical": UNAVAILABLE, "preserved_specialists": ()},
-        "spread":        {"canonical": UNAVAILABLE, "preserved_specialists": ()},
-        "total":         {"canonical": UNAVAILABLE, "preserved_specialists": ()},
-        "player_points": {"canonical": UNAVAILABLE, "preserved_specialists": ()},
-        "player_assists":{"canonical": UNAVAILABLE, "preserved_specialists": ()},
-        "player_rebounds":{"canonical": UNAVAILABLE, "preserved_specialists": ()},
+        # Game markets
+        "moneyline":           {"canonical": "nba_game_model",
+                                 "preserved_specialists": ()},
+        "spread":              {"canonical": "nba_game_model",
+                                 "preserved_specialists": ()},
+        "point_spread":        {"canonical": "nba_game_model",
+                                 "preserved_specialists": ()},
+        "total":               {"canonical": "nba_game_model",
+                                 "preserved_specialists": ()},
+        "game_total":          {"canonical": "nba_game_model",
+                                 "preserved_specialists": ()},
+        # Player prop families — canonical (nba_simulator) +
+        # specialists for legacy stamp paths (`nba_sim`,
+        # `distribution_monte_carlo`, `brain_sim_nba`).
+        "nba_points":          {"canonical": "nba_simulator",
+                                 "preserved_specialists": (
+                                     "brain_sim_nba",
+                                     "distribution_monte_carlo",
+                                     "nba_sim",
+                                 )},
+        "nba_rebounds":        {"canonical": "nba_simulator",
+                                 "preserved_specialists": (
+                                     "brain_sim_nba",
+                                     "distribution_monte_carlo",
+                                     "nba_sim",
+                                 )},
+        "nba_assists":         {"canonical": "nba_simulator",
+                                 "preserved_specialists": (
+                                     "brain_sim_nba",
+                                     "distribution_monte_carlo",
+                                     "nba_sim",
+                                 )},
+        "nba_pra":             {"canonical": "nba_simulator",
+                                 "preserved_specialists": (
+                                     "brain_sim_nba",
+                                     "distribution_monte_carlo",
+                                     "nba_sim",
+                                 )},
+        "nba_pts_reb":         {"canonical": "nba_simulator",
+                                 "preserved_specialists": (
+                                     "brain_sim_nba",
+                                     "distribution_monte_carlo",
+                                     "nba_sim",
+                                 )},
+        "nba_pts_ast":         {"canonical": "nba_simulator",
+                                 "preserved_specialists": (
+                                     "brain_sim_nba",
+                                     "distribution_monte_carlo",
+                                     "nba_sim",
+                                 )},
+        "nba_reb_ast":         {"canonical": "nba_simulator",
+                                 "preserved_specialists": (
+                                     "brain_sim_nba",
+                                     "distribution_monte_carlo",
+                                     "nba_sim",
+                                 )},
+        "nba_steals":          {"canonical": "nba_simulator",
+                                 "preserved_specialists": (
+                                     "brain_sim_nba",
+                                     "distribution_monte_carlo",
+                                     "nba_sim",
+                                 )},
+        "nba_blocks":          {"canonical": "nba_simulator",
+                                 "preserved_specialists": (
+                                     "brain_sim_nba",
+                                     "distribution_monte_carlo",
+                                     "nba_sim",
+                                 )},
+        # Provider-zero families (no rows today): keep UNAVAILABLE —
+        # auto-surfaces when provider returns them AND we add a
+        # dedicated model path.  Fail-closed for publication authority.
+        "nba_threes":          {"canonical": UNAVAILABLE,
+                                 "preserved_specialists": ()},
+        "nba_turnovers":       {"canonical": UNAVAILABLE,
+                                 "preserved_specialists": ()},
+        "nba_blocks_steals":   {"canonical": UNAVAILABLE,
+                                 "preserved_specialists": ()},
+        "nba_double_double":   {"canonical": UNAVAILABLE,
+                                 "preserved_specialists": ()},
+        "nba_triple_double":   {"canonical": UNAVAILABLE,
+                                 "preserved_specialists": ()},
+        # Legacy family-name aliases (defensive — some older producers
+        # stamp `market_family` as `player_points` / `player_assists` /
+        # `player_rebounds` instead of the canonical `nba_points` /
+        # `nba_assists` / `nba_rebounds`).  Keep them routed to the
+        # same canonical authority rather than fail-closed.
+        "player_points":       {"canonical": "nba_simulator",
+                                 "preserved_specialists": (
+                                     "brain_sim_nba",
+                                     "distribution_monte_carlo",
+                                     "nba_sim",
+                                 )},
+        "player_assists":      {"canonical": "nba_simulator",
+                                 "preserved_specialists": (
+                                     "brain_sim_nba",
+                                     "distribution_monte_carlo",
+                                     "nba_sim",
+                                 )},
+        "player_rebounds":     {"canonical": "nba_simulator",
+                                 "preserved_specialists": (
+                                     "brain_sim_nba",
+                                     "distribution_monte_carlo",
+                                     "nba_sim",
+                                 )},
     },
     "NHL": {
         # 2026-10-02 — NHL authority wired to brain.sim_nhl.

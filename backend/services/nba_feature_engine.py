@@ -55,23 +55,55 @@ def has_enough_real_data_nba(factors: dict) -> bool:
 # Per-market stat mapping
 # ═══════════════════════════════════════════════════════════════════
 # Maps Odds API market_key → gamelog stat column + display name.
+# ── 2026-10-20 · STEP B · FULL NBA MARKET COVERAGE EXPANSION ────────
+# Any Odds API market key listed here is auto-processed by the
+# precompute → factor-attach → sim → publish pipeline as long as
+# ``canonical_player_game_actuals`` (via
+# ``canonical_history_resolver.read_player_recent``) carries the
+# referenced stat column(s).  Markets whose underlying stat column
+# is NOT yet surfaced by the actuals (e.g. ``threes_made``) remain
+# wired but will skip at the evidence gate (``has_enough_real_data_nba``)
+# until the ingest adds those columns — zero code change needed then.
+# Composite families (``pra``/``pr``/``pa``/``ra``/``bs``) are summed
+# from their atomic components in ``_stat_value`` below.
 _MARKET_STAT_MAP = {
+    # ── Core singles ─────────────────────────────────────────────
     "player_points":                     ("points",      "PTS"),
     "player_rebounds":                   ("rebounds",    "REB"),
     "player_assists":                    ("assists",     "AST"),
     "player_threes":                     ("threes_made", "3PM"),
     "player_steals":                     ("steals",      "STL"),
     "player_blocks":                     ("blocks",      "BLK"),
+    "player_turnovers":                  ("turnovers",   "TOV"),
+    # ── Combos / composites ──────────────────────────────────────
     "player_points_rebounds_assists":    ("pra",         "PRA"),
     "player_points_rebounds":            ("pr",          "PTS+REB"),
     "player_points_assists":             ("pa",          "PTS+AST"),
     "player_rebounds_assists":           ("ra",          "REB+AST"),
-    # Alternate lines share the same stat column.
+    "player_blocks_steals":              ("bs",          "BLK+STL"),
+    # ── Alternate-line variants (same stat column) ───────────────
     "player_points_alternate":           ("points",      "PTS"),
     "player_rebounds_alternate":         ("rebounds",    "REB"),
     "player_assists_alternate":          ("assists",     "AST"),
     "player_threes_alternate":           ("threes_made", "3PM"),
+    "player_steals_alternate":           ("steals",      "STL"),
+    "player_blocks_alternate":           ("blocks",      "BLK"),
+    "player_turnovers_alternate":        ("turnovers",   "TOV"),
     "player_points_rebounds_assists_alternate": ("pra", "PRA"),
+    "player_points_rebounds_alternate":  ("pr",          "PTS+REB"),
+    "player_points_assists_alternate":   ("pa",          "PTS+AST"),
+    "player_rebounds_assists_alternate": ("ra",          "REB+AST"),
+    "player_blocks_steals_alternate":    ("bs",          "BLK+STL"),
+    # ── Milestone (binary) markets ───────────────────────────────
+    # ``dd_count``/``td_count`` are COMPUTED pseudo-stats representing
+    # whether the row hit DD / TD respectively (0.0 or 1.0).  The
+    # L10 hit-rate factor therefore turns into a direct empirical
+    # probability of hitting that milestone, which is the correct
+    # model for binary / event markets.  ``line=0.5`` is injected
+    # by the extractor so the factor framework scores "Yes" (>0.5)
+    # vs "No" (<0.5) consistently.
+    "player_double_double":              ("dd_count",    "DD"),
+    "player_triple_double":              ("td_count",    "TD"),
 }
 
 
@@ -98,6 +130,27 @@ def _stat_value(row: dict, stat_key: str) -> Optional[float]:
         if r is None or a is None:
             return None
         return float(r) + float(a)
+    if stat_key == "bs":
+        b = row.get("blocks"); s = row.get("steals")
+        if b is None or s is None:
+            return None
+        return float(b) + float(s)
+    if stat_key in ("dd_count", "td_count"):
+        # Double-double / triple-double: count the standard five
+        # categories (PTS, REB, AST, STL, BLK) that reach the 10+
+        # threshold in this row.  dd_count returns 1.0 iff >=2
+        # categories hit 10+; td_count iff >=3.  Returns None when
+        # ANY source stat is missing so the row isn't scored on
+        # partial evidence.
+        _p = row.get("points");   _r = row.get("rebounds")
+        _a = row.get("assists");  _s = row.get("steals")
+        _b = row.get("blocks")
+        if any(x is None for x in (_p, _r, _a, _s, _b)):
+            return None
+        _cnt = sum(1 for x in (_p, _r, _a, _s, _b) if float(x) >= 10.0)
+        if stat_key == "dd_count":
+            return 1.0 if _cnt >= 2 else 0.0
+        return 1.0 if _cnt >= 3 else 0.0
     v = row.get(stat_key)
     if v is None:
         return None
@@ -117,18 +170,70 @@ async def _player_recent_logs(db, player_name: str, *,
     2026-06 Universal canonical history wiring: canonical
     ``player_game_actuals`` is consulted first; legacy
     ``player_game_logs`` remains the fail-closed fallback.
+
+    2026-10-20 · STEP B threes_made BACKFILL
+    ────────────────────────────────────────
+    Canonical ``player_game_actuals`` for NBA currently stores only
+    ``{points, rebounds, assists, steals, blocks, turnovers}`` inside
+    its ``actuals`` sub-dict — ``threes_made`` is NOT ingested yet.
+    That starved every ``player_threes[_alternate]`` prop at the
+    evidence gate (``has_enough_real_data_nba``) because every factor
+    returned None.  Fail-closed fallback: when the canonical rows are
+    missing ``threes_made``, enrich them from the legacy
+    ``player_game_logs`` collection (which DOES carry ``threes_made``
+    per the NBA gamelog ingest) by date-matching on the same player.
     """
     if not player_name:
         return []
     # Canonical first via the shared resolver (zero formula change).
+    resolved: list[dict] = []
     try:
         from services.canonical_history_resolver import read_player_recent
         resolved = await read_player_recent(
-            db, sport="nba", player_name=player_name, limit=limit)
-        if resolved:
-            return resolved
+            db, sport="nba", player_name=player_name, limit=limit) or []
     except Exception:
-        pass
+        resolved = []
+    if resolved:
+        # ── threes_made backfill (missing-column safe fallback) ─────
+        try:
+            # Only run backfill when at least one canonical row is
+            # missing ``threes_made`` — the common case right now.
+            if any(r.get("threes_made") is None for r in resolved):
+                q = {"sport": "nba",
+                     "player_name": {"$regex": f"^{player_name}$",
+                                     "$options": "i"}}
+                legacy_cursor = db.player_game_logs.find(
+                    q, {"_id": 0, "date": 1, "threes_made": 1,
+                        "threes_attempted": 1}
+                ).sort("date", -1).limit(max(limit * 2, 30))
+                legacy_map: dict[str, dict] = {}
+                async for lrow in legacy_cursor:
+                    _d = lrow.get("date")
+                    if _d is not None:
+                        legacy_map[str(_d)[:10]] = lrow
+                for row in resolved:
+                    if row.get("threes_made") is not None:
+                        continue
+                    _date = (row.get("game_date") or row.get("date")
+                             or row.get("event_time"))
+                    if _date is None:
+                        continue
+                    _key = str(_date)[:10]
+                    lrow = legacy_map.get(_key)
+                    if lrow is None:
+                        continue
+                    _tm = lrow.get("threes_made")
+                    if _tm is not None:
+                        row["threes_made"] = _tm
+                    _ta = lrow.get("threes_attempted")
+                    if _ta is not None and row.get("threes_attempted") is None:
+                        row["threes_attempted"] = _ta
+        except Exception:
+            # Backfill failures must NEVER break the feature path —
+            # just leave threes_made=None (pick drops at evidence gate).
+            pass
+        return resolved
+    # Legacy fallback (no canonical rows at all).
     q = {"sport": "nba", "player_name": {"$regex": f"^{player_name}$",
                                             "$options": "i"}}
     cursor = db.player_game_logs.find(q, {"_id": 0}).sort("date", -1).limit(limit)
@@ -436,6 +541,21 @@ async def precompute_nba_prop_factors(
             # this (player, market) so the sync emission path can dip in.
             lines_sides = ((lines_by_player_market or {}).get((pl, mk))
                              or [(None, "Over"), (None, "Under")])
+            # ── 2026-10-20 STEP C SCORING-DEFECT FIX #2 ───────────────
+            # The previous implementation iterated ``lines_sides`` and
+            # ``break``-ed after the first qualifying bundle, then
+            # stored that single bundle under ``per_player[mk]`` and
+            # reused it for EVERY (line, side) pick on that (player,
+            # market).  Picks on different lines got the FIRST line's
+            # factors — a textbook stale-evidence inflation defect
+            # (Khaman Maluach 4.5 Rebounds showed REB L10 Hit Rate=0.0
+            # because the 7.5-line bundle was reused).  New shape:
+            # ``per_player[mk]`` is a mapping of ``(line_f, side_lc)``
+            # -> bundle, plus a ``__first_bundle`` fallback for callers
+            # that don't carry (line, side) context.  The sync
+            # emission branch picks the exact bundle by (line, side).
+            per_market_variants: dict = {}
+            first_bundle = None
             for (line, side) in lines_sides:
                 factors: dict = {}
                 sources: list[str] = []
@@ -464,28 +584,33 @@ async def precompute_nba_prop_factors(
                         factors[name] = val
                         sources.append(tag)
                 if has_enough_real_data_nba(factors):
-                    # ── 2026-10-20 P0-2 FIX ───────────────────────────
-                    # Attach the raw canonical rows alongside the factor
-                    # bundle so the sync emission branch
-                    # (``sports_engine._props_picks_from_event`` NBA
-                    # branch) can stamp ``player_recent_rows`` onto the
-                    # emitted pick dict.  Without this, ``brain/sim_nba``
-                    # could never reach EMPIRICAL_INDEPENDENT provenance
-                    # — the sim fell back to MODEL_CONDITIONED on every
-                    # NBA prop and the symmetric anchor
-                    # (``brain/sim_runner._anchor_pick_to_sim``) skipped
-                    # independent-evidence promotion.  Rows are the same
-                    # canonical-shape rows produced by
-                    # ``read_player_recent`` (via
-                    # ``canonical_history_resolver.resolve_player_row``)
-                    # — slice to the top 10 to match sim_nba's L10
-                    # window and keep per-pick memory bounded.
-                    per_player[mk] = {
+                    bundle = {
                         "factors": factors,
                         "sources": sources,
                         "recent_rows": rows[:10],
+                        "line": line,
+                        "side": side,
                     }
-                    break              # first qualifying bundle wins
+                    try:
+                        _k_line = (float(line)
+                                    if isinstance(line, (int, float))
+                                    else None)
+                    except Exception:
+                        _k_line = None
+                    _k_side = (str(side).strip().lower()
+                                if side is not None else "")
+                    per_market_variants[(_k_line, _k_side)] = bundle
+                    if first_bundle is None:
+                        first_bundle = bundle
+            if per_market_variants:
+                # Back-compat shape: callers that still read
+                # ``per_player[mk]`` as a single bundle get the first
+                # one (identical to the old behavior); callers that
+                # read ``per_player[mk]["__variants"]`` get the full
+                # per-(line, side) map.
+                _bundle_out = dict(first_bundle or {})
+                _bundle_out["__variants"] = per_market_variants
+                per_player[mk] = _bundle_out
         if per_player:
             out[pl] = per_player
     return {"nba_precomputed": out, "nba_team_lookup": team_lookup}

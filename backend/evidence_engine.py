@@ -796,15 +796,34 @@ def govern_pick(
         pick["lock_score_v2_raw"] = round(float(raw_lock_v2), 1)
         pick["lock_score_v2"]      = governed_lock_v2
     # ── Lock-score canonical alignment ──
-    # The read path applies `lock_score = max(v1, v2)` (see
-    # `_canonicalize_lock_score` in server.py). If V2 wins that max,
-    # the persisted lock_score_raw must ALSO track V2's raw — otherwise
-    # the inspector reports "Lock 92 > Raw 87.5" (the iter-49 canary
-    # corruption) because lock_score_raw was only tracking V1.
+    # HISTORICAL BEHAVIOUR: `lock_score = max(v1, v2)` to protect
+    # against a V1 regression dragging a pick off the board.
+    #
+    # 2026-10-20 STRUCTURAL FIX — V3 TRUST GATE
+    # ─────────────────────────────────────────
+    # When Magic/APEX (V3) actually runs on a pick we stamp
+    # `lock_score_v3_base` + `lock_score_v3_delta` on the pick before
+    # control reaches this governor.  V3 is the EVIDENCE-GOVERNED
+    # authority — its refined score is the empirical truth.  V2 is a
+    # legacy composite that NEVER flows through the Magic delta +
+    # APEX anti-promotion checks, so taking the max of V2 vs V3 can
+    # structurally inflate a pick (e.g. V3 says 75 because win-prob
+    # is 77 %, but V2's confidence-first composite reads 93 and wins
+    # the max — this is the exact HARD-FAIL the user reported).
+    #
+    # Rule: if V3 ran (its stamps are present) its canonical lock
+    # stands as-is; V2 cannot promote it.  Only pre-V3 legacy picks
+    # (no v3 stamp) fall back to the max() behaviour.
     canonical_lock = pick.get("lock_score")
     canonical_v2   = pick.get("lock_score_v2")
+    _v3_present = (
+        pick.get("lock_score_v3_base") is not None
+        or pick.get("lock_score_v3_delta") is not None
+        or pick.get("apex_evaluated_at") is not None
+    )
     if (
-        canonical_lock is not None and canonical_v2 is not None
+        not _v3_present
+        and canonical_lock is not None and canonical_v2 is not None
         and float(canonical_v2) > float(canonical_lock)
     ):
         pick["lock_score"]      = canonical_v2

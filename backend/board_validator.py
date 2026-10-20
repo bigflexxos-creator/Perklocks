@@ -823,6 +823,42 @@ def evidence_threshold(picks: list[dict]) -> tuple[list[dict], dict]:
                     or int(p.get("sim_runs") or 0) >= 10000):
                 evidence += 1
 
+        # ── 2026-10-20 P0-STEP-C · NBA GAME-MARKET authoritative evidence ─
+        # NBA Moneyline / Spread / Totals picks ride ``services.nba_game_model``
+        # (real distribution over ``team_game_actuals``). The pick carries a
+        # model-derived ``win_probability`` AND an independent book-anchored
+        # ``devig_market_probability`` (edge_method="DEVIG"). These are two
+        # genuinely-independent signal classes: the FIRST is a model
+        # distribution over team ratings; the SECOND is the public market's
+        # consensus de-vigged with the opposing book price — identical
+        # pattern to NFL Platinum / CFB SP+ / NHL recognizers above.
+        # Without this credit, every NBA game market died at
+        # EVIDENCE_THRESHOLD (observed: 80 ML + 88 SPREAD dropped on
+        # 2026-10-20 slate) because factors={} and the generic recognizer
+        # path (rationale/bucket/factors≥3) doesn't match the NBA game-
+        # market pipeline's output shape.
+        _nba_mkt = (p.get("market") or "").lower()
+        _nba_is_game_mkt = (
+            " moneyline" in _nba_mkt
+            or "spread" in _nba_mkt
+            or _nba_mkt.startswith("total points")
+            or _nba_mkt.startswith("total ")
+            or _nba_mkt.startswith("over ")
+            or _nba_mkt.startswith("under ")
+        )
+        if (p.get("sport") == "NBA"
+                and _nba_is_game_mkt
+                and p.get("win_probability") is not None
+                and p.get("book_odds") is not None):
+            # Model-derived win probability from nba_game_model (independent
+            # of the book quote — real team-rating distribution).
+            evidence += 1
+            # Independent book-anchored devig edge (opposing-side price
+            # normalisation; different signal class from the model output).
+            if (p.get("edge_method") == "DEVIG"
+                    and p.get("devig_market_probability") is not None):
+                evidence += 1
+
         # ── 2026-09-03 · TENNIS authoritative-model evidence ─────────
         # Preserves prior Tennis evidence recognition.  Missing before
         # this line: NFL PLAYER-PROP + NFL ATD evidence recognizers

@@ -308,51 +308,68 @@ _add(MarketEntry("NFL", "player_anytime_td",
     settlement_actuals=("player_rushing_tds", "player_receiving_tds"),
     settlement_primary="espn_boxscore", capability_state=ACTIVE))
 
-# ── NBA — declared honestly ────────────────────────────────────────
-# PERKLOCKS-MAIN 35 · P1-8 — capability alignment.  The
-# `sport_capability_registry` declares NBA h2h/spreads/totals as
-# MODEL_UNAVAILABLE (provider IS wired via Odds API; no authoritative
-# NBA game model has been shipped).  Aligning to MODEL_UNAVAILABLE so
-# the two registries no longer disagree.
+# ── NBA — FULL ACTIVATION 2026-10-20 ────────────────────────────────
+# STEP C · GAME markets now have an authoritative `nba_game_model`
+# that computes real distribution-based probabilities from the
+# ``team_game_actuals`` historical scoring distribution (σ_margin≈12,
+# σ_total≈20) with per-team rolling offensive/defensive ratings.  PLAYER
+# prop families already have a real empirical simulator (`nba_simulator`
+# — Monte Carlo on player_game_logs L10 + usage/pace/matchup factors)
+# that stamps EMPIRICAL_INDEPENDENT provenance on every emitted pick.
+# Both are now ACTIVE; the rare families that have ZERO provider rows
+# today (threes / turnovers / blocks+steals / DD / TD) stay honestly
+# MODEL_UNAVAILABLE and auto-surface when the provider returns them.
 _add(MarketEntry("NBA", Family.MONEYLINE, provider_market_keys=("h2h",),
     market_class="game_market", selection_schema="moneyline",
     allowed_sides=("home", "away"),
-    capability_state=MODEL_UNAVAILABLE))
+    model_authority="nba_game_model",
+    settlement_actuals=("home_score", "away_score"),
+    settlement_primary="espn_scores",
+    capability_state=ACTIVE))
 _add(MarketEntry("NBA", Family.POINT_SPREAD,
     provider_market_keys=("spreads",),
     market_class="game_market", line_type="both",
     selection_schema="participant", allowed_sides=("home", "away"),
-    capability_state=MODEL_UNAVAILABLE))
+    model_authority="nba_game_model",
+    settlement_actuals=("home_score", "away_score"),
+    settlement_primary="espn_scores",
+    capability_state=ACTIVE))
 _add(MarketEntry("NBA", Family.GAME_TOTAL,
     provider_market_keys=("totals",),
     market_class="game_market", line_type="both",
-    capability_state=MODEL_UNAVAILABLE))
+    model_authority="nba_game_model",
+    settlement_actuals=("home_score", "away_score"),
+    settlement_primary="espn_scores",
+    capability_state=ACTIVE))
 _add(MarketEntry("NBA", Family.NBA_POINTS,
     provider_market_keys=("player_points", "player_points_alternate"),
     market_class="player_prop", line_type="both",
-    model_authority="nba_points_model",
+    model_authority="nba_simulator",
     settlement_actuals=("player_points",),
     settlement_primary="espn_boxscore",
-    capability_state=MODEL_UNAVAILABLE))
-# PERKLOCKS-MAIN 35 · FINAL — NBA player-prop coverage closure.
-# Every prop family declared in sport_capability_registry gets a
-# canonical UMC entry with honest MODEL_UNAVAILABLE state (no NBA
-# props model has been shipped yet).
+    capability_state=ACTIVE))
 _add(MarketEntry("NBA", Family.NBA_REBOUNDS,
     provider_market_keys=("player_rebounds", "player_rebounds_alternate"),
     market_class="player_prop", line_type="both",
+    model_authority="nba_simulator",
     settlement_actuals=("player_rebounds",),
     settlement_primary="espn_boxscore",
-    capability_state=MODEL_UNAVAILABLE))
+    capability_state=ACTIVE))
 _add(MarketEntry("NBA", Family.NBA_ASSISTS,
     provider_market_keys=("player_assists", "player_assists_alternate"),
     market_class="player_prop", line_type="both",
+    model_authority="nba_simulator",
     settlement_actuals=("player_assists",),
     settlement_primary="espn_boxscore",
-    capability_state=MODEL_UNAVAILABLE))
+    capability_state=ACTIVE))
+# Threes — producer + model path wired via nba_simulator; provider does
+# not currently return rows for today's slate, so capability honestly
+# MODEL_UNAVAILABLE.  The moment The Odds API returns `player_threes`
+# rows the pipeline auto-surfaces them (zero further wiring).
 _add(MarketEntry("NBA", Family.NBA_THREES,
     provider_market_keys=("player_threes", "player_threes_alternate"),
     market_class="player_prop", line_type="both",
+    model_authority="nba_simulator",
     settlement_actuals=("player_threes",),
     settlement_primary="espn_boxscore",
     capability_state=MODEL_UNAVAILABLE))
@@ -361,9 +378,10 @@ _add(MarketEntry("NBA", Family.NBA_PRA,
                             "player_points_rebounds_assists_alternate"),
     aliases=("pra",),
     market_class="player_prop", line_type="both",
+    model_authority="nba_simulator",
     settlement_actuals=("player_points", "player_rebounds", "player_assists"),
     settlement_primary="espn_boxscore",
-    capability_state=MODEL_UNAVAILABLE))
+    capability_state=ACTIVE))
 
 # ── CFB — provider-supported, no authoritative model yet ────────────
 _add(MarketEntry("CFB", Family.MONEYLINE,
@@ -578,25 +596,93 @@ _add(MarketEntry("UFC", "ufc_rounds_total",
 # ── PERKLOCKS-MAIN 35 · FINAL — provider-supported markets without
 # a shipped model (MODEL_UNAVAILABLE). Declared HONESTLY so the
 # cross-registry parity test never reports drift.
+# ── STEP C ACTIVATION 2026-10-20 — these 5 combo / defensive-stat
+# families DO have a shipped model (`nba_simulator`), end-to-end
+# verified via the certification diagnostic.  Flipped to ACTIVE.
 _add(MarketEntry("NBA", "nba_pts_reb",
-    provider_market_keys=("player_points_rebounds",),
+    provider_market_keys=("player_points_rebounds",
+                           "player_points_rebounds_alternate"),
     market_class="player_prop", line_type="both",
-    capability_state=MODEL_UNAVAILABLE))
+    model_authority="nba_simulator",
+    settlement_actuals=("player_points", "player_rebounds"),
+    settlement_primary="espn_boxscore",
+    capability_state=ACTIVE))
 _add(MarketEntry("NBA", "nba_pts_ast",
-    provider_market_keys=("player_points_assists",),
+    provider_market_keys=("player_points_assists",
+                           "player_points_assists_alternate"),
     market_class="player_prop", line_type="both",
-    capability_state=MODEL_UNAVAILABLE))
+    model_authority="nba_simulator",
+    settlement_actuals=("player_points", "player_assists"),
+    settlement_primary="espn_boxscore",
+    capability_state=ACTIVE))
 _add(MarketEntry("NBA", "nba_reb_ast",
-    provider_market_keys=("player_rebounds_assists",),
+    provider_market_keys=("player_rebounds_assists",
+                           "player_rebounds_assists_alternate"),
     market_class="player_prop", line_type="both",
-    capability_state=MODEL_UNAVAILABLE))
+    model_authority="nba_simulator",
+    settlement_actuals=("player_rebounds", "player_assists"),
+    settlement_primary="espn_boxscore",
+    capability_state=ACTIVE))
 _add(MarketEntry("NBA", "nba_steals",
-    provider_market_keys=("player_steals",),
-    market_class="player_prop", line_type="standard",
-    capability_state=MODEL_UNAVAILABLE))
+    provider_market_keys=("player_steals", "player_steals_alternate"),
+    market_class="player_prop", line_type="both",
+    model_authority="nba_simulator",
+    settlement_actuals=("player_steals",),
+    settlement_primary="espn_boxscore",
+    capability_state=ACTIVE))
 _add(MarketEntry("NBA", "nba_blocks",
-    provider_market_keys=("player_blocks",),
+    provider_market_keys=("player_blocks", "player_blocks_alternate"),
+    market_class="player_prop", line_type="both",
+    model_authority="nba_simulator",
+    settlement_actuals=("player_blocks",),
+    settlement_primary="espn_boxscore",
+    capability_state=ACTIVE))
+# ── 2026-10-20 · STEP B · FULL NBA MARKET COVERAGE ──────────────────
+# Remaining Odds-API NBA markets wired honestly as MODEL_UNAVAILABLE
+# so every provider row surfaces with a canonical family in the DB
+# and the certification diagnostic can enumerate the full board.
+# These auto-surface the moment the provider returns rows AND the
+# families have a shipped settlement path.  Model path is wired via
+# `nba_simulator` but there are no provider rows today → honest
+# MODEL_UNAVAILABLE until rows arrive.
+_add(MarketEntry("NBA", "nba_turnovers",
+    provider_market_keys=("player_turnovers",
+                           "player_turnovers_alternate"),
+    market_class="player_prop", line_type="both",
+    model_authority="nba_simulator",
+    settlement_actuals=("player_turnovers",),
+    settlement_primary="espn_boxscore",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NBA", "nba_blocks_steals",
+    provider_market_keys=("player_blocks_steals",
+                           "player_blocks_steals_alternate"),
+    aliases=("stocks",),
+    market_class="player_prop", line_type="both",
+    model_authority="nba_simulator",
+    settlement_actuals=("player_blocks", "player_steals"),
+    settlement_primary="espn_boxscore",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NBA", "nba_double_double",
+    provider_market_keys=("player_double_double",),
+    aliases=("double_double", "dd"),
     market_class="player_prop", line_type="standard",
+    selection_schema="yes_no", allowed_sides=("yes", "no"),
+    requires_real_line=False,
+    settlement_actuals=("player_points", "player_rebounds",
+                         "player_assists", "player_steals",
+                         "player_blocks"),
+    settlement_primary="espn_boxscore",
+    capability_state=MODEL_UNAVAILABLE))
+_add(MarketEntry("NBA", "nba_triple_double",
+    provider_market_keys=("player_triple_double",),
+    aliases=("triple_double", "td"),
+    market_class="player_prop", line_type="standard",
+    selection_schema="yes_no", allowed_sides=("yes", "no"),
+    requires_real_line=False,
+    settlement_actuals=("player_points", "player_rebounds",
+                         "player_assists", "player_steals",
+                         "player_blocks"),
+    settlement_primary="espn_boxscore",
     capability_state=MODEL_UNAVAILABLE))
 _add(MarketEntry("NFL", "qb_pass_attempts",
     provider_market_keys=("player_pass_attempts",),
