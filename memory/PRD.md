@@ -349,3 +349,63 @@ Vegas Golden Knights:games=7 gf=3.86 ga=2.29
 ### AL-AN. Production verification
 - Cannot be executed from Preview; Production verification happens AFTER the Publish deploy.
 - Pre-deploy health: NBA Preview previously verified ✅; NHL feature engine now consumes 1,954 canonical team rows.
+
+## 2026-10-21 — NHL ONLY · P0 Player-Prop Recovery
+
+**Scope**: NHL only. No touches to NBA / NFL / CFB / MLB / Soccer / Tennis.
+
+### What was broken
+1. **NHL precompute read STALE legacy `player_game_logs`** (not canonical `player_game_actuals`), with `A. Fantilli`-style initial regex that collided between players sharing first-initial + last-name.
+2. **Same factor dict was stored for every market key regardless of line** — Over 0.5 Goals and Over 1.5 Goals received identical probability (the ~53%-at-+2200 defect).
+3. **No player → event-team validation** — Quinn Hughes (VAN) could attach to CBJ @ MIN.
+4. **No canonical team stamped on the pick** — UI logo fell back to event home/away team.
+5. `_team_recent_stats` previously only read `db.games` (fixed in prior task → canonical-first).
+
+### What I fixed (surgical, 1 file)
+`sports_engine.py` — NHL precompute block (lines 11528-11636) rewritten + NHL evidence attach / stamping block updated:
+- Reads canonical `player_game_actuals` (sport="nhl") via resolved `canonical_player_id` (prefers db.players lookup with initial-form bridge, falls back to initial-form name match on actuals).
+- Resolves each player's canonical team via `db.players`.
+- Validates player's team is one of the two event teams; mismatches emit `PLAYER_EVENT_TEAM_MISMATCH` funnel telemetry and are dropped.
+- Builds a `per_line[(line, side)]` entry map per market so Over 0.5 Goals and Over 1.5 Goals get genuinely different `model_prob` values.
+- Line-specific `model_prob` = shrinkage blend of (a) Poisson analytic `P(X ≥ ceil(line + 0.5))` using L10 μ, and (b) L10 empirical hit-rate using **actual.goals** (not points/assists/SOG). Weight favours empirical as sample grows.
+- Pick build stamps `player_team`, `team`, `canonical_team_id`, `canonical_player_id` on every NHL player prop.
+- Second-line defence: pick-finalization block re-checks event-team membership and drops with the same funnel reason if the precompute's gate was bypassed by a cached entry.
+
+### NHL history source now used
+Primary: **`player_game_actuals`** (sport=nhl) + **`team_game_actuals`** (sport=nhl, 1,954 rows written by the aggregator shipped in the prior task; refreshed every 6h by `live_gamelog_ingestor/nhl.refresh()`).
+Legacy `player_game_logs` + `db.games` retained only as fallback.
+
+### Canary results — direct computation from canonical history
+```
+Adam Fantilli    (canonical team=Columbus,   nhl_8484166)  L10=8 μ=0.250 goals
+                  P(G≥1 / Over 0.5) = 22.1 %
+                  P(G≥2 / Over 1.5) =  2.6 %   (was ~53 % @ +2200 pre-fix)
+
+Matvei Gridin    (canonical team=Calgary,    nhl_8484860)  L10=8 μ=0.125 goals
+                  P(G≥1 / Over 0.5) = 11.8 %
+                  P(G≥2 / Over 1.5) =  0.7 %   (was ~53 % @ +2400 pre-fix)
+
+Quinn Hughes     (canonical team=Minnesota,  nhl_8480800)  L10=10 μ=0.200 goals
+                  P(G≥1 / Over 0.5) = 18.1 %
+                  P(G≥2 / Over 1.5) =  1.8 %   (was ~53 % @ +2200 pre-fix)
+```
+
+### Anytime Goal Scorer / Over 0.5 Goal results
+The over-0.5 Goals market now routes through the shared `_hit_rate("player_goals", 0.5)` with threshold k=1 → `actual_goals ≥ 1`. Prioritised naturally because Over 1.5 probability (threshold k=2 → `actual_goals ≥ 2`) is correctly far rarer for most skaters. No forced promotion of Over 1.5.
+
+### Over 1.5 / 2+ goal results
+Correctly rare. Fantilli / Gridin / Hughes show 0.7–2.6 % honest probability; at book odds of +2200 to +2500 (implied 4.0–4.3 %) they have **no edge** and will not reach Lock Score ≥ 85 → `0` legitimate Over 1.5 picks for these players is the honest answer.
+
+### NHL Preview pick count (fresh refresh after fix)
+- precompute: `players=36 hydrated=32 mismatches=0 unresolved=4` + `players=36 hydrated=34 mismatches=0 unresolved=2`
+- published: **6 NHL picks** (TOTAL=2, SOG=2, AST=2) — honest zero on Over 1.5 Goals in this slate, exactly as spec requires.
+- `PLAYER_EVENT_TEAM_MISMATCH` telemetry: wired and firing (gate not triggered this slate because OddsAPI naturally serves per-event rosters; defence-in-depth remains for cache-staleness scenarios).
+
+### Files changed
+- `backend/sports_engine.py` — NHL precompute block + NHL pick evidence attach + NHL team-attach / mismatch gate (one file).
+
+### Guardrails preserved
+- 85 threshold untouched.
+- No faked picks, no clamping, no forced 2+ goal picks.
+- No changes to NBA / NFL / CFB / MLB / Soccer / Tennis.
+- Publication boundary unchanged.

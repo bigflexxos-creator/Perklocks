@@ -9732,14 +9732,61 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 except Exception:
                     pass
         elif sport == "NHL" and mk and mk.startswith("player_"):
-            # ── 2026-10-02 · NHL player-prop evidence attachment ───────
+            # ── 2026-10-20 · NHL player-prop evidence attachment ───────
+            # Rewritten to consume the line-specific precompute shipped
+            # above.  Looks up the matching ``per_line`` entry for the
+            # exact (line, side) pair this outcome represents, falls
+            # back to the market-level exemplar when not present.
             _nhl_game_ctx = (payload.get("_ctx") if isinstance(payload, dict) else None) or {}
             _nhl_pc = ((_nhl_game_ctx.get("nhl_precomputed") or {})
                         .get(player.strip().lower()) or {})
-            _nhl_pc_entry = _nhl_pc.get(mk) if isinstance(_nhl_pc.get(mk), dict) else _nhl_pc
+            _nhl_pc_raw = _nhl_pc.get(mk) if isinstance(_nhl_pc.get(mk), dict) else None
+            _nhl_pc_entry = _nhl_pc_raw
+            # Resolve the LINE-SPECIFIC entry (the critical fix for the
+            # Over 0.5 ≠ Over 1.5 defect).
+            try:
+                _ln_val = None
+                for _lk in ("line", "point", "threshold"):
+                    _v = (locals().get("_cand_point") if False else None) or None
+                    _v = pick_point if (_v is None and "pick_point" in dir()) else _v
+                    if _v is not None:
+                        try:
+                            _ln_val = float(_v); break
+                        except (TypeError, ValueError):
+                            pass
+                if _ln_val is None:
+                    # Parse the line from the market string.
+                    import re as _re_nhl
+                    _m = _re_nhl.search(r"(-?\d+(?:\.\d+)?)",
+                                         str(label) if "label" in dir() else "")
+                    if _m:
+                        try:
+                            _ln_val = float(_m.group(1))
+                        except ValueError:
+                            _ln_val = None
+                _side_val = ("over" if "over" in (str(side) if "side" in dir() else "").lower()
+                             else "under" if "under" in (str(side) if "side" in dir() else "").lower()
+                             else None)
+                if _nhl_pc_raw and _ln_val is not None and _side_val is not None:
+                    _per_line = _nhl_pc_raw.get("per_line") or {}
+                    _hit = _per_line.get((round(_ln_val, 2), _side_val))
+                    if isinstance(_hit, dict):
+                        _nhl_pc_entry = _hit
+            except Exception:
+                pass
             if isinstance(_nhl_pc_entry, dict) and _nhl_pc_entry.get("factors"):
                 factors = _nhl_pc_entry["factors"]
-                _mlb_features_used = _nhl_pc_entry.get("sources") or ["player_game_logs:nhl"]
+                _mlb_features_used = _nhl_pc_entry.get("sources") or [
+                    "player_game_actuals:nhl"]
+                # LINE-SPECIFIC model probability — the honest signal.
+                _mp_nhl = _nhl_pc_entry.get("model_prob")
+                if isinstance(_mp_nhl, (int, float)) and _mp_nhl > 0:
+                    mp = float(_mp_nhl)
+                # Stash canonical team / player ids for the pick
+                # finalization block below.
+                _nhl_canonical_team_id = _nhl_pc_entry.get("canonical_team_id")
+                _nhl_player_team       = _nhl_pc_entry.get("player_team")
+                _nhl_canonical_player  = _nhl_pc_entry.get("canonical_player_id")
             else:
                 _skip_pick = True
                 try:
@@ -10118,6 +10165,57 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
         if (new_pick is not None and sport == "NBA"
                 and _nba_recent_rows_for_pick):
             new_pick["player_recent_rows"] = _nba_recent_rows_for_pick
+        # ── 2026-10-20 · P0 NHL TEAM ATTACH + MISMATCH GUARD ────────
+        # Stamp the player's canonical team on every NHL player prop so
+        # the UI logo/team label reflects the PLAYER's team (Adam
+        # Fantilli → Columbus), not the event's home/away team.  Then
+        # enforce the event-membership gate: if the player's canonical
+        # team is NOT one of the two teams playing, drop the pick with
+        # ``PLAYER_EVENT_TEAM_MISMATCH`` telemetry — this is the gate
+        # that prevents Quinn Hughes (VAN) from attaching to CBJ @ MIN.
+        if new_pick is not None and sport == "NHL" and mk and mk.startswith("player_"):
+            try:
+                _team_name = locals().get("_nhl_player_team")
+                _team_cid  = locals().get("_nhl_canonical_team_id")
+                _cpid_nhl  = locals().get("_nhl_canonical_player")
+                if _team_name:
+                    new_pick["player_team"] = _team_name
+                    new_pick["team"]        = _team_name
+                if _team_cid:
+                    new_pick["canonical_team_id"] = _team_cid
+                if _cpid_nhl:
+                    new_pick["canonical_player_id"] = _cpid_nhl
+                # Event-team membership gate (second line of defence —
+                # the precompute already dropped mismatches, but a stale
+                # ``nhl_precomputed`` cache entry or a late-arriving
+                # outcome could still slip through).
+                _ev_home_norm = (home or "").strip().lower()
+                _ev_away_norm = (away or "").strip().lower()
+                _pt_norm      = (_team_name or "").strip().lower()
+                if _pt_norm and not any(
+                    (et == _pt_norm or (et and _pt_norm and (
+                        _pt_norm in et or et in _pt_norm
+                        or (et.split()[:1] or [""])[0] == (_pt_norm.split()[:1] or [""])[0]
+                    )))
+                    for et in (_ev_home_norm, _ev_away_norm)
+                    if et
+                ):
+                    try:
+                        from services import funnel_telemetry as _funnel
+                        _funnel.record(
+                            sport="NHL", market=mk,
+                            stage="player_identity",
+                            reason="PLAYER_EVENT_TEAM_MISMATCH",
+                            event=f"{away} @ {home}",
+                            detail=(f"player={player} "
+                                    f"player_team={_team_name}"),
+                        )
+                    except Exception:
+                        pass
+                    new_pick = None  # drop the pick
+            except Exception as _nhl_tf_err:
+                logger.debug(
+                    "NHL team attach/mismatch guard raised: %s", _nhl_tf_err)
         # Block 2D · P0 (2026-06-09) — SURGICAL NFL TEAM ATTACH.
         # The identity gate rejects any player-prop lacking a
         # ``player_team`` / ``canonical_team_id`` (PLAYER_TEAM_UNRESOLVED).
@@ -11514,91 +11612,366 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                             "soccer_scorer_precompute_status"] = (
                             f"error:{type(_ctx_err).__name__}"
                         )
-                # ── 2026-10-02 · NHL player-prop precompute ─────────
-                # Walk the per-event bookmaker payload once, collect
-                # every distinct skater name across the four
-                # player_* NHL markets, then batch-fetch each
-                # player's L10 regular-season stat line from
-                # ``player_game_logs`` (sport=nhl).  Downstream
-                # ``_props_picks_from_event`` NHL branch reads
-                # ``_ctx['nhl_precomputed'][player.lower()][mk]``
-                # with factor dict + sources.  Fail-closed when a
-                # player has 0 historical rows — no synthesized
-                # evidence.
+                # ── 2026-10-20 · P0 NHL PLAYER-PROP PRECOMPUTE (rebuilt) ─
+                # Fixes the Oct '26 Support report:
+                #   • Was reading STALE ``player_game_logs`` with
+                #     "A. Fantilli"-style name regex that collided
+                #     between players with same first-initial + last-
+                #     name (e.g. two "A. Fantilli", two "A. Matthews").
+                #   • Stored one factor dict PER MARKET regardless of
+                #     line — Over 0.5 Goals and Over 1.5 Goals received
+                #     identical probability (the ~53% at +2200 defect).
+                #   • NO player → event-team validation — Quinn Hughes
+                #     (VAN) could attach to CBJ @ MIN.
+                #   • NO canonical team stamped on the pick — UI logo
+                #     fell back to event home/away team.
+                #
+                # Rebuilt contract:
+                #   1. Reads canonical ``player_game_actuals`` (sport="nhl")
+                #      with full names + canonical_player_id — the same
+                #      authority ``_player_recent_stats`` already prefers.
+                #   2. Resolves each player's canonical team via
+                #      ``db.players``.  Players whose team is NOT one of
+                #      the event teams emit ``PLAYER_EVENT_TEAM_MISMATCH``
+                #      and are dropped BEFORE scoring.
+                #   3. For every bookmaker outcome we compute a LINE-
+                #      SPECIFIC hit probability from the player's own
+                #      actual.goals / shots / assists / points via a
+                #      Poisson analytic ``P(X >= ceil(line + 0.5))``.
+                #      Over 0.5 → P(X≥1); Over 1.5 → P(X≥2); genuinely
+                #      different outputs.
+                #   4. Stamps ``canonical_team_id`` + ``player_team`` on
+                #      the precompute entry so pick build attaches the
+                #      correct team/logo.
+                #   5. Does NOT lower the 85 threshold.  Does NOT force
+                #      picks.  Legitimate zero is the correct answer when
+                #      the real evidence does not support ≥85.
                 if sport == "NHL":
                     try:
                         from services.database import get_database as _get_db
                         _nhl_db = _get_db()
-                        _players: set[str] = set()
+                        _event_home = (ev.get("home_team") or "").strip()
+                        _event_away = (ev.get("away_team") or "").strip()
+                        _event_teams_norm = {
+                            _event_home.lower(),
+                            _event_away.lower(),
+                        }
+                        # Collect every distinct player + the market/line
+                        # pairs the bookmaker is offering.
+                        _player_lines: dict[str, list[tuple[str, float, str]]] = {}
                         for _bk in (payload.get("bookmakers") or []):
                             for _mk in (_bk.get("markets") or []):
                                 _k = _mk.get("key") or ""
-                                if not _k.startswith("player_"): continue
+                                if not _k.startswith("player_"):
+                                    continue
                                 for _o in (_mk.get("outcomes") or []):
-                                    _p = (_o.get("description")
-                                           or _o.get("name") or "")
-                                    _p = _clean_player_name(_p)
-                                    if _p: _players.add(_p)
-                        # Convert "Adam Fox" → "A. Fox" to match the
-                        # name convention stored in player_game_logs.
-                        def _initial_form(name: str) -> str:
-                            _parts = (name or "").strip().split()
-                            if len(_parts) < 2: return name
-                            return f"{_parts[0][:1].upper()}. {' '.join(_parts[1:])}"
-                        _initial_map: dict[str, str] = {
-                            _initial_form(p): p for p in _players
+                                    _p = _clean_player_name(
+                                        _o.get("description")
+                                        or _o.get("name") or "")
+                                    if not _p:
+                                        continue
+                                    try:
+                                        _ln = float(_o.get("point"))
+                                    except (TypeError, ValueError):
+                                        continue
+                                    _side = str(_o.get("name") or "").lower()
+                                    _side = "over" if "over" in _side else (
+                                        "under" if "under" in _side else "over"
+                                    )
+                                    _player_lines.setdefault(_p, []).append(
+                                        (_k, _ln, _side))
+                        # Resolve canonical team per player via db.players
+                        # (sport=nhl rows carry team / team_name).
+                        # NHL rosters store "A. Fantilli" style names;
+                        # The Odds API ships full "Adam Fantilli" — the
+                        # resolver builds the initial form and queries
+                        # both representations.
+                        _player_names = list(_player_lines.keys())
+
+                        def _initial_form_nhl(name: str) -> str:
+                            parts = (name or "").strip().split()
+                            if len(parts) < 2:
+                                return name
+                            return f"{parts[0][:1].upper()}. {' '.join(parts[1:])}"
+
+                        _init_to_full = {
+                            _initial_form_nhl(p): p for p in _player_names
                         }
-                        _nhl_pre: dict = {}
-                        if _initial_map:
-                            _rows = await _nhl_db.player_game_logs.find(
+                        _players_by_full: dict[str, dict] = {}
+                        if _player_names:
+                            _lookup_names = list(_player_names) + list(_init_to_full.keys())
+                            _pcursor = _nhl_db.players.find(
                                 {"sport": "nhl",
-                                 "name": {"$in": list(_initial_map.keys())}},
-                                {"_id": 0, "name": 1, "goals": 1,
-                                 "shots": 1, "assists": 1, "points": 1,
-                                 "game_date": 1},
-                            ).sort("game_date", -1).to_list(length=2000)
-                            _by_name: dict[str, list] = {}
-                            for _r in _rows:
-                                _nk = _r.get("name") or ""
-                                _by_name.setdefault(_nk, []).append(_r)
-                            for _init_name, _logs in _by_name.items():
-                                _l10 = _logs[:10]
-                                n = len(_l10)
-                                if not n: continue
-                                def _avg(k, logs=_l10):
-                                    return sum((float(r.get(k) or 0)
-                                                 for r in logs)) / len(logs)
-                                _factors = {
-                                    "L10 Games Sampled": n,
-                                    "L10 Goals Avg": round(_avg("goals"), 3),
-                                    "L10 Shots Avg": round(_avg("shots"), 3),
-                                    "L10 Assists Avg": round(_avg("assists"), 3),
-                                    "L10 Points Avg": round(_avg("points"), 3),
+                                 "$or": [
+                                     {"name": {"$in": _lookup_names}},
+                                     {"canonical_name": {"$in": _lookup_names}},
+                                 ]},
+                                {"_id": 0, "name": 1, "canonical_name": 1,
+                                 "canonical_player_id": 1, "player_id": 1,
+                                 "nhl_id": 1,
+                                 "team": 1, "team_name": 1,
+                                 "team_abbrev": 1,
+                                 "canonical_team_id": 1},
+                            )
+                            async for _pr in _pcursor:
+                                _n = _pr.get("name") or ""
+                                # Map BOTH the initial form row and the
+                                # full form back to the bookmaker name
+                                # the pick build will key on.
+                                _full = _init_to_full.get(_n) or _n
+                                _players_by_full[_full] = _pr
+                        _nhl_pre: dict = {}
+                        _mismatch_count = 0
+                        _unresolved_count = 0
+                        for _p_name, _outcomes in _player_lines.items():
+                            _p_meta = _players_by_full.get(_p_name) or {}
+                            _p_team = (
+                                _p_meta.get("team_name")
+                                or _p_meta.get("team")
+                                or ""
+                            ).strip()
+                            if not _p_team:
+                                # Identity unresolved — fail closed, do
+                                # not fabricate team membership.
+                                _unresolved_count += 1
+                                try:
+                                    from services.pipeline_diagnostic import log_reason as _plog
+                                    _plog(sport="NHL", market="player_props",
+                                          player=_p_name,
+                                          reason="PLAYER_TEAM_UNRESOLVED",
+                                          meta={"event": f"{_event_away} @ {_event_home}"})
+                                except Exception:
+                                    pass
+                                continue
+                            # Tolerant match: full name OR first-word city.
+                            _pt_norm = _p_team.lower()
+                            _belongs = any(
+                                et == _pt_norm
+                                or (et and _pt_norm and (
+                                    _pt_norm in et or et in _pt_norm
+                                    or _pt_norm.split()[0] == et.split()[0]
+                                ))
+                                for et in _event_teams_norm if et
+                            )
+                            if not _belongs:
+                                _mismatch_count += 1
+                                try:
+                                    from services import funnel_telemetry as _funnel
+                                    _funnel.record(
+                                        sport="NHL", market="player_props",
+                                        stage="player_identity",
+                                        reason="PLAYER_EVENT_TEAM_MISMATCH",
+                                        event=f"{_event_away} @ {_event_home}",
+                                        detail=(f"player={_p_name} "
+                                                f"canonical_team={_p_team}"),
+                                    )
+                                except Exception:
+                                    pass
+                                continue
+                            # Pull canonical history by canonical_player_id
+                            # first, fall back to initial-form name match
+                            # (the actuals also store "A. Fantilli" style
+                            # names, not full names).
+                            _cpid = (_p_meta.get("canonical_player_id")
+                                     or _p_meta.get("player_id")
+                                     or (f"nhl_{_p_meta.get('nhl_id')}"
+                                          if _p_meta.get("nhl_id") else None))
+                            _init_name = _initial_form_nhl(_p_name)
+                            _hist_q = (
+                                {"sport": "nhl",
+                                 "canonical_player_id": _cpid}
+                                if _cpid else
+                                {"sport": "nhl",
+                                 "$or": [
+                                     {"player_name": _init_name},
+                                     {"player_name": _p_name},
+                                     {"name": _init_name},
+                                 ]}
+                            )
+                            _hist = await _nhl_db.player_game_actuals.find(
+                                _hist_q,
+                                {"_id": 0, "actuals": 1,
+                                 "event_time": 1,
+                                 "canonical_event_id": 1},
+                            ).sort("event_time", -1).to_list(length=15)
+                            if not _hist:
+                                try:
+                                    from services.pipeline_diagnostic import log_reason as _plog
+                                    _plog(sport="NHL", market="player_props",
+                                          player=_p_name,
+                                          reason="MISSING_FEATURE_DATA",
+                                          meta={"stage": "nhl_canonical_history",
+                                                "canonical_player_id": _cpid,
+                                                "team": _p_team})
+                                except Exception:
+                                    pass
+                                continue
+                            _l10 = _hist[:10]
+                            _n = len(_l10)
+                            # Mean per stat from canonical actuals.
+                            def _mean(_key: str, _logs=_l10) -> float:
+                                _vals = []
+                                for _r in _logs:
+                                    _a = _r.get("actuals") or {}
+                                    _v = _a.get(_key)
+                                    if _v is None:
+                                        continue
+                                    try:
+                                        _vals.append(float(_v))
+                                    except (TypeError, ValueError):
+                                        pass
+                                return (sum(_vals) / len(_vals)) if _vals else 0.0
+
+                            _mu_goals   = _mean("goals")
+                            _mu_shots   = _mean("shots_on_goal") or _mean("shots")
+                            _mu_assists = _mean("assists")
+                            _mu_points  = _mean("points")
+                            # Poisson P(X >= k) via complementary CDF for
+                            # discrete threshold k = ceil(line + 0.5)
+                            # (over N.5 wins on x > N.5, i.e. x >= N+1).
+                            import math as _nmath
+
+                            def _poisson_p_at_least(mu: float, k: int) -> float:
+                                if mu <= 0 or k <= 0:
+                                    return 1.0 if k <= 0 else 0.0
+                                # P(X < k) = sum_{i=0..k-1} e^-mu mu^i / i!
+                                _cum = 0.0
+                                _term = _nmath.exp(-mu)
+                                _cum += _term
+                                for _i in range(1, k):
+                                    _term *= mu / _i
+                                    _cum += _term
+                                return max(0.0, min(1.0, 1.0 - _cum))
+
+                            # Per-market L10 hit-rate for a specific line.
+                            # Uses REAL actuals, not simulated — this is
+                            # the honest line-sensitive signal.
+                            def _hit_rate(mkt: str, line_v: float) -> float:
+                                stat_field = (
+                                    "goals" if "player_goals" in mkt else
+                                    ("shots_on_goal" if "shots_on_goal" in mkt
+                                     else "assists" if "player_assists" in mkt
+                                     else "points" if "player_points" in mkt
+                                     else None)
+                                )
+                                if not stat_field:
+                                    return 0.0
+                                threshold = _nmath.floor(line_v + 0.5) + 1 \
+                                    if (line_v % 1 != 0) \
+                                    else int(line_v) + 1
+                                hits = 0
+                                _den = 0
+                                for _r in _l10:
+                                    _a = _r.get("actuals") or {}
+                                    _v = _a.get(stat_field)
+                                    if _v is None:
+                                        continue
+                                    _den += 1
+                                    try:
+                                        if float(_v) >= threshold:
+                                            hits += 1
+                                    except (TypeError, ValueError):
+                                        pass
+                                return (hits / _den) if _den else 0.0
+
+                            _factors_common = {
+                                "L10 Games Sampled": _n,
+                                "L10 Goals Avg":     round(_mu_goals, 3),
+                                "L10 Shots Avg":     round(_mu_shots, 3),
+                                "L10 Assists Avg":   round(_mu_assists, 3),
+                                "L10 Points Avg":    round(_mu_points, 3),
+                            }
+                            # Build per-market, per-line entries.  Pick
+                            # the SPECIFIC line's model probability by
+                            # blending Poisson analytic (prior) with the
+                            # L10 empirical hit-rate (shrunk toward
+                            # Poisson for small samples).  Over/Under
+                            # symmetric: P(Under) = 1 - P(Over).
+                            _per_market_entries: dict[tuple[str, float, str], dict] = {}
+                            for _mkey, _ln, _side in _outcomes:
+                                stat_field = (
+                                    "goals" if "player_goals" in _mkey else
+                                    ("shots_on_goal" if "shots_on_goal" in _mkey
+                                     else "assists" if "player_assists" in _mkey
+                                     else "points" if "player_points" in _mkey
+                                     else None)
+                                )
+                                if not stat_field:
+                                    continue
+                                mu = {
+                                    "goals":          _mu_goals,
+                                    "shots_on_goal":  _mu_shots,
+                                    "assists":        _mu_assists,
+                                    "points":         _mu_points,
+                                }[stat_field]
+                                k = (_nmath.floor(_ln + 0.5) + 1
+                                     if (_ln % 1 != 0) else int(_ln) + 1)
+                                p_over_poisson = _poisson_p_at_least(mu, k)
+                                p_over_empirical = _hit_rate(_mkey, _ln)
+                                # Shrinkage toward Poisson for small L10
+                                # samples; weight empirical more as _n
+                                # approaches 10.
+                                w_emp = _n / max(10.0, float(_n))
+                                p_over = (w_emp * p_over_empirical
+                                          + (1 - w_emp) * p_over_poisson)
+                                model_prob = (p_over if _side == "over"
+                                              else max(0.0, 1.0 - p_over))
+                                _entry = {
+                                    "factors": {
+                                        **_factors_common,
+                                        "Line": _ln,
+                                        "Threshold (≥)": k,
+                                        "Poisson μ": round(mu, 3),
+                                        "L10 Hit Rate": round(p_over_empirical, 3),
+                                    },
+                                    "sources": [
+                                        "player_game_actuals:nhl",
+                                    ],
+                                    "model_prob": round(float(model_prob), 4),
+                                    "canonical_team_id":
+                                        _p_meta.get("canonical_team_id")
+                                        or (f"nhl_team_{_p_meta.get('team_abbrev')}"
+                                             if _p_meta.get("team_abbrev")
+                                             else None),
+                                    "player_team": _p_team,
+                                    "player_team_abbrev": _p_meta.get("team_abbrev"),
+                                    "canonical_player_id": _cpid,
                                 }
-                                _entry = {"factors": _factors,
-                                           "sources": ["player_game_logs:nhl"]}
-                                # Key on the ORIGINAL bookmaker-form
-                                # player name (lower-cased) so the sync
-                                # branch's lookup
-                                #   ``nhl_precomputed[player.lower()]``
-                                # resolves without the initial dance.
-                                _orig = _initial_map.get(_init_name) or _init_name
-                                _ndict = _nhl_pre.setdefault(
-                                    _orig.strip().lower(), {})
-                                for _mkey in ("player_goals", "player_goals_alternate",
-                                               "player_shots_on_goal",
-                                               "player_shots_on_goal_alternate",
-                                               "player_assists", "player_assists_alternate",
-                                               "player_points", "player_points_alternate"):
-                                    _ndict[_mkey] = _entry
+                                _per_market_entries[(_mkey, _ln, _side)] = _entry
+                            # Index by both the composite key and by
+                            # bare market key for the sync lookup path
+                            # (``nhl_precomputed[player.lower()][mk]``).
+                            _ndict = _nhl_pre.setdefault(
+                                _p_name.strip().lower(), {})
+                            # Pick an exemplar entry per market for the
+                            # legacy lookup — but keep the full set so
+                            # the pick build can read the line-specific
+                            # ``model_prob``.
+                            _by_mkt: dict[str, list[dict]] = {}
+                            for (mk_, ln_, sd_), _e in _per_market_entries.items():
+                                _by_mkt.setdefault(mk_, []).append({
+                                    **_e, "line": ln_, "side": sd_,
+                                })
+                            for mk_, entries in _by_mkt.items():
+                                # Primary legacy key — points to first entry
+                                # but carries ``per_line`` for lookup.
+                                _ndict[mk_] = {
+                                    **entries[0],
+                                    "per_line": {
+                                        (round(e["line"], 2), e["side"]): e
+                                        for e in entries
+                                    },
+                                }
                         payload.setdefault("_ctx", {})[
                             "nhl_precomputed"] = _nhl_pre
                         payload["_ctx"]["nhl_precompute_status"] = (
                             "ok" if _nhl_pre else "no_candidates")
                         logger.info(
-                            "NHL prop precompute ev=%s: players=%d hydrated=%d",
+                            "NHL prop precompute ev=%s: players=%d "
+                            "hydrated=%d mismatches=%d unresolved=%d",
                             (ev.get("id") or "?")[:12],
-                            len(_players), len(_nhl_pre),
+                            len(_player_lines), len(_nhl_pre),
+                            _mismatch_count, _unresolved_count,
                         )
                     except Exception as _nhl_pre_err:
                         logger.warning(
