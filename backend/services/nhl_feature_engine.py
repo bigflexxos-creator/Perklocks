@@ -120,30 +120,69 @@ async def _team_recent_stats(db, team_name: str, window: int = _MAX_RECENT_WINDO
         return False
 
     try:
-        # Pull a wider candidate pool, then filter in Python using the
-        # tolerant matcher.  The DB query matches on first-token
-        # substrings to narrow the scan.
-        q = {"sport": "nhl", "status": "Final"}
-        cur = db.games.find(q, {"home": 1, "away": 1, "home_abbrev": 1,
-                                 "away_abbrev": 1, "result": 1}
-                            ).sort("game_id", -1).limit(window * 20)
-        async for g in cur:
-            r = g.get("result") or {}
-            hs = r.get("home")
-            as_ = r.get("away")
-            if hs is None or as_ is None:
-                continue
-            home_hit = _match_side(g.get("home") or "", g.get("home_abbrev") or "")
-            away_hit = _match_side(g.get("away") or "", g.get("away_abbrev") or "")
-            if home_hit:
-                gf_total += float(hs); ga_total += float(as_)
-            elif away_hit:
-                gf_total += float(as_); ga_total += float(hs)
-            else:
-                continue
-            games += 1
-            if games >= window:
-                break
+        # ── 2026-10-20 · P0 CANONICAL TEAM-HISTORY REPOINT ───────────
+        # Prefer the canonical ``team_game_actuals`` collection (same
+        # authority used by ``services.nba_game_model``) so NHL
+        # consumes the live-ingested team rows written by the
+        # ``live_gamelog_ingestor`` loop.  The legacy ``db.games``
+        # path remains as fallback for NHL rows the aggregator has
+        # not yet produced (zero behavior change when canonical rows
+        # are present; identical outputs when they're absent).
+        canonical_hit = False
+        try:
+            tq = {"sport": "nhl"}
+            cur = db.team_game_actuals.find(
+                tq,
+                {"canonical_team_id": 1, "team": 1, "team_abbrev": 1,
+                 "opponent": 1, "opponent_abbrev": 1,
+                 "team_score": 1, "opponent_score": 1,
+                 "event_time": 1, "home_away": 1},
+            ).sort("event_time", -1).limit(window * 20)
+            async for row in cur:
+                hs = row.get("team_score")
+                os_ = row.get("opponent_score")
+                if hs is None or os_ is None:
+                    continue
+                team_hit = _match_side(row.get("team") or "",
+                                        row.get("team_abbrev") or "")
+                if not team_hit:
+                    # match by canonical id suffix as a last resort
+                    cid = (row.get("canonical_team_id") or "").upper()
+                    if cid and cid.endswith("_" + tabbrev):
+                        team_hit = True
+                if not team_hit:
+                    continue
+                gf_total += float(hs); ga_total += float(os_)
+                games += 1
+                canonical_hit = True
+                if games >= window:
+                    break
+        except Exception as _ce:
+            logger.debug("nhl canonical team read failed for %s: %s",
+                          team_name, _ce)
+        if games < window and not canonical_hit:
+            # Legacy fallback — unchanged behavior.
+            q = {"sport": "nhl", "status": "Final"}
+            cur = db.games.find(q, {"home": 1, "away": 1, "home_abbrev": 1,
+                                     "away_abbrev": 1, "result": 1}
+                                ).sort("game_id", -1).limit(window * 20)
+            async for g in cur:
+                r = g.get("result") or {}
+                hs = r.get("home")
+                as_ = r.get("away")
+                if hs is None or as_ is None:
+                    continue
+                home_hit = _match_side(g.get("home") or "", g.get("home_abbrev") or "")
+                away_hit = _match_side(g.get("away") or "", g.get("away_abbrev") or "")
+                if home_hit:
+                    gf_total += float(hs); ga_total += float(as_)
+                elif away_hit:
+                    gf_total += float(as_); ga_total += float(hs)
+                else:
+                    continue
+                games += 1
+                if games >= window:
+                    break
     except Exception as e:
         logger.debug("nhl_feature_engine team stats query failed for %s: %s", team_name, e)
     out = {

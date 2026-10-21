@@ -290,3 +290,62 @@ Support confirmed Production NBA data/model healthy. Live-board blocker was ONLY
 - Explicit NBA guard checks the dedicated pregame loop + today lease key are present.
 
 **Boot verification:** backend startup log emits `NBA pregame refresh loop armed (1800-sec cadence during NBA season)`. No touches to NBA models, lock score math, 85 threshold, provider acquisition, canonical publication, board_generation, identity logic, or any other sport.
+
+## 2026-10-20 — P0 NBA/NHL Canonical-History Recovery (BALLDONTLIE Removal + NHL Stale-Reader Fix)
+
+**Scope**: Minimal surgical changes. No touches to Lock Score math, 85 threshold, provider acquisition, publication, or working NFL/CFB/MLB/Soccer/Tennis paths.
+
+### A. BALLDONTLIE dependencies found
+- `historical/nba.py` (balldontlie backfill — paid API, 234 lines) — invoked only from `universal_historical_authority._client_for("nba")` and `historical/multi_season.py` (admin backfill).
+- `services/universal_historical_authority.py:66-67` — single runtime dispatch site.
+- All scoring paths (`pick_refresh_orchestrator`, `sports_engine` NBA branch, `nba_game_model`, `canonical_history_resolver`) use **canonical collections**, not balldontlie.
+
+### B. BALLDONTLIE removed from runtime
+- `services/universal_historical_authority._client_for("nba")` → returns `None`. The authority loop writes `NO_SOURCE_DATA` for NBA; no HTTP call, no key required.
+- `services/universal_historical_authority._client_for("nhl")` → returns `None` (stale `historical/nhl.py` writer unwired same way).
+
+### C. Proof BALLDONTLIE_KEY is not required
+- Regression test `test_balldontlie_env_var_absent_import_safety` pops `BALLDONTLIE_KEY` and reimports — passes.
+- Live aggregation run (NHL): 977 events / 1,954 team rows written, idempotent on rerun, `BALLDONTLIE_KEY env present? False`.
+
+### D-H. ESPN infrastructure reused
+- NBA player: `services/nba_gamelog_ingest.py` (per-player ESPN gamelog, already active).
+- NBA live: `services/live_gamelog_ingestor/nba.py` (6h scheduled).
+- NHL live: `services/live_gamelog_ingestor/nhl.py` (6h scheduled, writes `player_game_actuals`).
+
+### I-O. NBA canonical already healthy
+- `player_game_actuals` sport=nba: 29,486 rows.
+- `team_game_actuals` sport=nba: 5,544 rows (legacy, read via `get_legacy_database()` fallback in `nba_game_model.load_nba_team_ratings`).
+- Preview acceptance report (prior task) already green: ML=11 / SPREAD=10 / TOTAL=6 published, Lock≥85=103, HARD-FAIL=0.
+
+### W-AA. NHL canonical repoint + freshness writer
+- Old team source: `db.games` (sport=nhl Final = 96 rows, stale/legacy).
+- NEW canonical team source: `db.team_game_actuals` (sport=nhl = **1,954 rows after first aggregation**, newest 2026-10-17).
+- `services/nhl_feature_engine.py::_team_recent_stats`: now queries `team_game_actuals` first, falls back to legacy `db.games` if the canonical row is absent — zero behavior change where canonical is present.
+- NEW aggregator `services/live_gamelog_ingestor/nhl.py::_aggregate_team_actuals`: runs at the end of every scheduled NHL refresh (6h), groups `player_game_actuals` by `(canonical_event_id, canonical_team_id)`, sums goals as `team_score`, cross-attaches opponent score, upserts idempotently keyed on `(sport, canonical_event_id, canonical_team_id)`.
+
+### AB. NHL canary (feature engine, canonical path)
+```
+Carolina Hurricanes: games=6 gf=4.83 ga=2.00
+Boston Bruins:       games=6 gf=3.67 ga=2.00
+Edmonton Oilers:     games=5 gf=4.00 ga=2.00
+Tampa Bay Lightning: games=6 gf=3.50 ga=2.50
+Vegas Golden Knights:games=7 gf=3.86 ga=2.29
+```
+`build_nhl_sim_context` returns real `home_lambda=3.89 away_lambda=2.36` (Carolina vs Winnipeg) — not fail-closed, not fabricated.
+
+### AH. Files changed
+- `services/universal_historical_authority.py` (adapter unwire)
+- `services/nhl_feature_engine.py` (`_team_recent_stats` canonical-first)
+- `services/live_gamelog_ingestor/nhl.py` (`refresh()` → aggregator call; new `_aggregate_team_actuals` writer)
+- `tests/test_nba_nhl_canonical_recovery.py` (NEW regression)
+
+### AI. Tests
+- `tests/test_nba_nhl_canonical_recovery.py` → **PASS** (6 invariants)
+- `tests/test_refresh_dispatch_invariant.py` → **PASS** (3 invariants)
+- Live aggregator run on real Preview DB → 1,954 upserts, idempotent on rerun.
+- Backend restarts cleanly.
+
+### AL-AN. Production verification
+- Cannot be executed from Preview; Production verification happens AFTER the Publish deploy.
+- Pre-deploy health: NBA Preview previously verified ✅; NHL feature engine now consumes 1,954 canonical team rows.

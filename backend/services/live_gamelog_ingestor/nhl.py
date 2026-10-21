@@ -281,8 +281,123 @@ async def refresh(db, *,
     tally["priority_hits"] = len(priority)
     tally["hot_list_only"] = hot_list_only
     tally["elapsed_sec"] = round(time.time() - started, 1)
+    # ── 2026-10-20 · P0 — NHL TEAM-ACTUALS AGGREGATION ──────────────
+    # The feature engine's game-market path (``_team_recent_stats``)
+    # reads ``team_game_actuals`` first; without a NHL team writer that
+    # collection stayed empty and every ML/puck-line/total pick fell
+    # through to the stale ``db.games`` legacy path (per the Oct '26
+    # Support audit).  Derive team scores by summing the goals every
+    # player on a team scored in each canonical event ID — same data
+    # we just ingested, no extra provider call, no extra credits.
+    try:
+        agg_stats = await _aggregate_team_actuals(db)
+        tally["team_actuals_upserted"] = agg_stats.get("upserted", 0)
+        tally["team_actuals_events"]   = agg_stats.get("events", 0)
+    except Exception as _agg_err:
+        logger.warning("NHL team-actuals aggregation failed: %s", _agg_err)
+        tally["team_actuals_error"] = str(_agg_err)[:200]
     logger.info("NHL live gamelog refresh: %s", tally)
     return tally
+
+
+async def _aggregate_team_actuals(db) -> dict:
+    """Build canonical ``team_game_actuals`` rows for NHL from the
+    freshly-written ``player_game_actuals`` rows.
+
+    Contract:
+      • Idempotent — keyed on
+        ``(sport, canonical_event_id, canonical_team_id)``.
+      • No fabrication — ``team_score`` is the honest sum of goals
+        scored by every player row we have for that team in that
+        game.  If box-score goals are missing for a game, the row is
+        skipped (fail-closed).
+      • ``opponent_score`` is pulled from the symmetric team row so
+        both sides agree.
+      • No future leakage — ``event_time`` is passed through from the
+        source player rows.
+    """
+    sport = "nhl"
+    pipeline = [
+        {"$match": {
+            "sport": sport,
+            "canonical_event_id": {"$ne": None},
+            "canonical_team_id":  {"$ne": None},
+            "actuals.goals":      {"$ne": None},
+        }},
+        {"$group": {
+            "_id": {
+                "event_id": "$canonical_event_id",
+                "team_id":  "$canonical_team_id",
+            },
+            "team":              {"$first": "$team"},
+            "team_abbrev":       {"$first": "$team_abbrev"},
+            "opponent":          {"$first": "$opponent"},
+            "opponent_abbrev":   {"$first": "$opponent_abbrev"},
+            "canonical_opponent_id": {"$first": "$canonical_opponent_id"},
+            "home_away":         {"$first": "$home_away"},
+            "event_time":        {"$first": "$event_time"},
+            "season":            {"$first": "$season"},
+            "team_goals":        {"$sum": "$actuals.goals"},
+            "players_contributing": {"$sum": 1},
+        }},
+    ]
+    try:
+        rows = await db.player_game_actuals.aggregate(pipeline).to_list(length=50000)
+    except Exception as e:
+        logger.warning("NHL team aggregation query failed: %s", e)
+        return {"upserted": 0, "events": 0}
+
+    # Index by event → both sides so we can set opponent_score symmetrically.
+    by_event: dict[str, list[dict]] = {}
+    for r in rows:
+        eid = r["_id"]["event_id"]
+        by_event.setdefault(eid, []).append(r)
+
+    upserted = 0
+    events_written = 0
+    now_ts = now_iso()
+    for eid, sides in by_event.items():
+        if len(sides) < 2:
+            # Only one team's players ingested → can't compute opponent_score honestly.
+            continue
+        # Use the two most-complete sides.
+        sides = sorted(sides, key=lambda r: r.get("players_contributing") or 0,
+                        reverse=True)[:2]
+        a, b = sides[0], sides[1]
+        for team_row, opp_row in ((a, b), (b, a)):
+            doc = {
+                "sport":                 sport,
+                "canonical_event_id":    eid,
+                "event_id":              eid,
+                "canonical_team_id":     team_row["_id"]["team_id"],
+                "team":                  team_row.get("team"),
+                "team_abbrev":           team_row.get("team_abbrev"),
+                "canonical_opponent_id": team_row.get("canonical_opponent_id")
+                                           or opp_row["_id"]["team_id"],
+                "opponent":              team_row.get("opponent"),
+                "opponent_abbrev":       team_row.get("opponent_abbrev"),
+                "home_away":             team_row.get("home_away"),
+                "event_time":            team_row.get("event_time"),
+                "season":                team_row.get("season"),
+                "team_score":            team_row.get("team_goals"),
+                "opponent_score":        opp_row.get("team_goals"),
+                "source":                "live_gamelog_nhl_v1.team_aggregate",
+                "backfill_version":      BACKFILL_VERSION,
+                "ingested_at":           now_ts,
+            }
+            try:
+                await db.team_game_actuals.update_one(
+                    {"sport": sport,
+                     "canonical_event_id": eid,
+                     "canonical_team_id":  team_row["_id"]["team_id"]},
+                    {"$set": doc, "$setOnInsert": {"first_seen": now_ts}},
+                    upsert=True,
+                )
+                upserted += 1
+            except Exception as _ue:
+                logger.debug("NHL team upsert failed for %s: %s", eid, _ue)
+        events_written += 1
+    return {"upserted": upserted, "events": events_written}
 
 
 async def _iter_nhl_players(db) -> list[dict]:

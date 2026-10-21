@@ -51,6 +51,21 @@ def _client_for(sport: str):
 
     Mirrors ``historical/orchestrator._client_for`` but also includes
     CFB which the legacy dispatcher missed.
+
+    2026-10-20 — NBA / NHL unwired.  Both legacy adapters wrote to
+    the LEGACY ``games``/``player_game_logs`` collections (NBA via the
+    paid balldontlie API, NHL via a manual-backfill-style path).  The
+    live scoring runtime no longer reads those collections —
+    ``services.canonical_history_resolver`` + ``nba_game_model`` +
+    ``nhl_feature_engine`` all target the canonical
+    ``player_game_actuals`` / ``team_game_actuals`` collections, which
+    are written by ``services.live_gamelog_ingestor`` on a 6-hour
+    automatic schedule.  Returning ``None`` here makes
+    ``BALLDONTLIE_KEY`` genuinely optional (no scoring-time path can
+    require it) and stops the stale/duplicative NHL/NBA writes from
+    the historical adapters.  Freshness status is written as
+    ``NO_SOURCE_DATA`` for these two sports — the live gamelog
+    ingestor loop remains the authoritative canonical writer.
     """
     try:
         if sport == "soccer":
@@ -63,11 +78,18 @@ def _client_for(sport: str):
             from historical import nfl
             return nfl
         if sport == "nba":
-            from historical import nba
-            return nba
+            # 2026-10-20 — BALLDONTLIE_KEY is NOT a required dependency.
+            # NBA canonical history is maintained by
+            # ``services.live_gamelog_ingestor`` + ``services.nba_gamelog_ingest``.
+            return None
         if sport == "nhl":
-            from historical import nhl
-            return nhl
+            # 2026-10-20 — NHL canonical history is maintained by
+            # ``services.live_gamelog_ingestor.nhl`` (player rows) +
+            # the derived team-actuals aggregation added in the same
+            # loop.  The legacy ``historical/nhl.py`` adapter wrote to
+            # a frozen ``db.games`` collection; keeping it running
+            # duplicates work and leaves stale rows behind.
+            return None
         if sport == "tennis":
             from historical import tennis
             return tennis
