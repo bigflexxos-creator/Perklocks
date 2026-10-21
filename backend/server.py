@@ -6684,7 +6684,7 @@ async def _full_startup_init():
     #   CFB = 130+ FBS teams × ~95 players ≈ 12k+ players (heavier — runs
     #         daily but takes ~3 min vs <15s for NBA/NFL)
     try:
-        from player_db.ingestors.espn_public import refresh_nba, refresh_nfl, refresh_cfb
+        from player_db.ingestors.espn_public import refresh_nba, refresh_nfl, refresh_cfb, refresh_nhl
         async def _espn_player_db_loop() -> None:
             await asyncio.sleep(60)
             while True:
@@ -6692,6 +6692,11 @@ async def _full_startup_init():
                     ("NBA", refresh_nba),
                     ("NFL", refresh_nfl),
                     ("CFB", refresh_cfb),
+                    # 2026-10-21 — NHL roster+headshot freshness so
+                    # trades propagate within one cycle and the
+                    # player-meta decorator can project real ESPN
+                    # headshots onto NHL player prop cards.
+                    ("NHL", refresh_nhl),
                 ):
                     try:
                         summary = await fn(db)
@@ -6705,9 +6710,9 @@ async def _full_startup_init():
             'espn_player_db_loop', lambda: _espn_player_db_loop(),
             task_type='recurring_loop', critical=False,
         )
-        logger.info("NBA + NFL + CFB player_db (free ESPN public) armed — daily roster + stats + injuries refresh")
+        logger.info("NBA + NFL + CFB + NHL player_db (free ESPN public) armed — daily roster + stats + injuries refresh")
     except Exception as e:
-        logger.warning("NBA/NFL/CFB player_db loop failed to start: %s", e)
+        logger.warning("NBA/NFL/CFB/NHL player_db loop failed to start: %s", e)
 
     # ── Live Game-Log Ingestor (MLB · NBA · NFL) — 2026-09-18 ───────
     # Keeps `player_game_actuals` current by pulling per-game logs

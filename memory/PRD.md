@@ -409,3 +409,36 @@ Correctly rare. Fantilli / Gridin / Hughes show 0.7–2.6 % honest probability; 
 - No faked picks, no clamping, no forced 2+ goal picks.
 - No changes to NBA / NFL / CFB / MLB / Soccer / Tennis.
 - Publication boundary unchanged.
+
+## 2026-10-21 — NHL Roster Freshness + Global Player Headshot Pipeline
+
+**Scope** — one surgical commit. Does NOT deploy; user deploys manually.
+
+### Files changed
+1. `backend/player_db/ingestors/espn_public.py` — added `refresh_nhl(db, season)` that calls the shared `_refresh_league` with the ESPN `hockey/nhl` slug. Same contract as `refresh_nba` / `refresh_nfl` / `refresh_cfb` — upserts `db.players` rows with `name`, `team`, `team_name`, `team_id`, `espn_id`, `player_id`, `canonical_name`, `photo_url` (ESPN headshot CDN URL), `jersey`, `position`, `status`, `source="espn_public"`.
+2. `backend/server.py` — added `"NHL"` to the existing `_espn_player_db_loop` daily refresh (same 24 h cadence as NBA/NFL/CFB, same `_TASK_REGISTRY.register_and_start`).
+
+No math, no scoring, no publication boundary, no 85 threshold changes.
+
+### Live verification (Preview DB, after one real `refresh_nhl` call)
+- `teams=32  players_upserted=851  injured=0  errors=0  elapsed_sec=5.1`
+- NHL `db.players.photo_url` coverage: **851 of 1,597 rows** (new ESPN-sourced current roster; legacy `A. Fantilli`-style rows remain untouched).
+- Canary resolution + headshot via existing `services/player_meta_decorator.py` (unchanged):
+  * **Adam Fantilli** → team "Columbus Blue Jackets", espn_id 5136617, `player_meta.headshot_url = https://a.espncdn.com/i/headshots/nhl/players/full/5136617.png`, source `espn_public`, verified `True`
+  * **Matvei Gridin** → team "Calgary Flames", espn_id 5216897, headshot verified
+  * **Quinn Hughes** → team "Minnesota Wild" (per ESPN current roster), espn_id 4320548, headshot verified — the `PLAYER_EVENT_TEAM_MISMATCH` gate will correctly accept him on MIN games and reject him on any non-MIN event.
+- Global photo coverage per sport: NBA 649/649 · MLB 1125/1125 · NFL 2613/4077 · NHL 851/1597 · CFB 3609/12134.
+
+### Existing pipeline reused (no duplication)
+- Writer field: `db.players.photo_url` (already consumed by `services/player_meta_decorator.py:208-218` + `services/player_media.py:68`).
+- Backend projection: `server.py:811-829` → `decorate_with_player_meta(...)` + `overlay_player_media(...)` → stamps `pick.player_meta.headshot_url` and `pick.player_media.headshot_url`.
+- Expo UI: `frontend/src/components/PlayerAvatar.tsx` + `PlayerIdentity.tsx` + `Intelligence2.tsx` already read these fields with team-logo fallback.
+
+### Everything the user asked for that was already shipped prior
+- NHL canonical-first team + player readers · NHL team_game_actuals aggregator (6 h) · NHL player → event team gate + funnel telemetry · Line-aware Over 0.5 vs Over 1.5 probability (Poisson + L10 shrinkage, uses `actual.goals` only) · Pick stamps `player_team`, `team`, `canonical_team_id`, `canonical_player_id` · Fantilli canary 22.1 % / 2.6 % · Gridin 11.8 % / 0.7 % · Hughes 18.1 % / 1.8 %.
+
+### Tests
+- `backend/tests/test_nba_nhl_canonical_recovery.py` → PASS
+- `backend/tests/test_refresh_dispatch_invariant.py` → PASS
+- `backend/server.py` imports clean; boot log emits `NBA + NFL + CFB + NHL player_db (free ESPN public) armed`.
+- No touches to NBA / NFL / CFB / MLB / Soccer / Tennis scoring or publication.

@@ -365,6 +365,29 @@ async def refresh_cfb(db: AsyncIOMotorDatabase, season: int | None = None) -> di
     )
 
 
+# ── NHL (2026-10-21) · P0 HEADSHOT + ROSTER FRESHNESS ──────────────
+# NHL `db.players` was previously populated by `historical/nhl.py`
+# with no `photo_url` field — Support traced that NHL player-prop
+# cards were falling back to the frontend's team-logo placeholder.
+# ESPN's hockey/nhl slug follows the same free /teams → /teams/{id}/roster
+# shape as NBA/NFL/CFB (verified by sampling the live endpoint during
+# the fix session), so one more `_refresh_league` call wires:
+#   • current team assignment  → `team`, `team_id`, `team_name`
+#     (so trades propagate within one scheduled cycle)
+#   • headshot URL             → `photo_url` (the field
+#     ``services/player_meta_decorator.py`` already projects onto
+#     ``pick.player_meta.headshot_url`` and the Expo UI consumes
+#     via ``PlayerAvatar`` / ``Intelligence2``).
+#   • canonical ESPN athlete id → ``espn_id`` + ``player_id`` so the
+#     identity resolver can bridge The Odds API full-name outcomes
+#     to the canonical ESPN record.
+async def refresh_nhl(db: AsyncIOMotorDatabase, season: int | None = None) -> dict:
+    return await _refresh_league(
+        db, sport="nhl", sport_slug="hockey", league_slug="nhl", season=season,
+    )
+
+
+
 # ── WTA tennis (Phase 3.5) ─────────────────────────────────────────
 # Sackmann's TML-Database mirror is ATP-only. ESPN exposes the WTA
 # tour under sport=tennis, league=wta. Same /teams → /roster pattern
