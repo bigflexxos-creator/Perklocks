@@ -1590,6 +1590,123 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     except Exception as _authority_err:  # pragma: no cover — never break scoring
         logger.debug("nfl_prop_lock_authority skipped: %s", _authority_err)
 
+    # ═════════════════════════════════════════════════════════════════
+    # NBA PLAYER-PROP LOCK AUTHORITY (2026-06 · P0 under-grading fix)
+    # ─────────────────────────────────────────────────────────────────
+    # Parity with the NFL block above.  Live canaries proved NBA player
+    # props with 80-85 % calibrated WP + strong evidence (canonical id,
+    # ≥ 3 real factors, DQ ≥ 55) were landing at Lock 55-72 because the
+    # NBA path only ran through the generic 6-component composite —
+    # which, under EXPLICIT-PREGAME weights, caps around 70-80 even for
+    # high-probability picks.  NFL already has an authority ceiling that
+    # lets its player props structurally reach 85-99 off the calibrated
+    # hit probability; NBA now gets the same path.
+    #
+    # Formula (identical to NFL):   LS_max = 60 + wp_frac * 40
+    #   wp=0.70 → 88   wp=0.80 → 92   wp=0.85 → 94
+    #   wp=0.90 → 96   wp=0.95 → 98   wp=0.975 → 99
+    #
+    # Evidence gate (identical philosophy to NFL):
+    #   * canonical_player_id OR player_id present (identity resolved)
+    #   * ≥ 3 real numeric factors (`_n_real_factors`)
+    #   * data_quality ≥ 55 (evidence-based DQ, not a placeholder)
+    #   * wp_frac ≥ 0.60 (don't manufacture Locks from longshots)
+    #
+    # No inflation: a weak-evidence pick fails the gate and keeps its
+    # composite score untouched.  A strong-evidence pick inherits the
+    # same reachability curve the NFL path already uses.  Does NOT
+    # touch team markets (Moneyline / Spread / Total), does NOT touch
+    # MLB / NHL / Soccer / Tennis / CFB.  Env flag
+    # ``NBA_PROP_LOCK_AUTHORITY=off`` disables for instant revert.
+    # ═════════════════════════════════════════════════════════════════
+    try:
+        import os as _os_nba
+        _nba_prop_authority_on = (_os_nba.environ.get(
+            "NBA_PROP_LOCK_AUTHORITY", "on").lower() != "off")
+        if _nba_prop_authority_on and pick:
+            _sport_up_nba = (pick.get("sport") or "").strip().upper()
+            _mkt_nba = (pick.get("market") or "").lower()
+            _is_nba_player_prop = (
+                _sport_up_nba in ("NBA", "BASKETBALL_NBA")
+                and (
+                    "player" in _mkt_nba
+                    or "points" in _mkt_nba
+                    or "rebounds" in _mkt_nba
+                    or "assists" in _mkt_nba
+                    or "threes" in _mkt_nba
+                    or "steals" in _mkt_nba
+                    or "blocks" in _mkt_nba
+                    or "alt lock" in _mkt_nba
+                )
+                # Team markets never carry a player prop
+                and not any(
+                    _mkt_nba.endswith(t) for t in
+                    (" moneyline", " spread", " total")
+                )
+            )
+            if _is_nba_player_prop:
+                _wp_source_nba = (
+                    win_prob if win_prob is not None
+                    else (pick.get("model_win_prob")
+                          if pick.get("model_win_prob") is not None
+                          else pick.get("win_probability"))
+                )
+                try:
+                    _wp_nba = float(_wp_source_nba or 0)
+                except (TypeError, ValueError):
+                    _wp_nba = 0.0
+                _wp_frac_nba = _wp_nba / 100.0 if _wp_nba > 1.0 else _wp_nba
+                _wp_frac_nba = max(0.0, min(1.0, _wp_frac_nba))
+                _authority_ceiling_nba = 60.0 + _wp_frac_nba * 40.0
+                _n_real_factors_nba = sum(
+                    1 for k, v in (factors or {}).items()
+                    if not (isinstance(k, str) and k.startswith("__"))
+                    and isinstance(v, (int, float)) and v is not None
+                )
+                _has_identity_nba = bool(
+                    pick.get("canonical_player_id")
+                    or pick.get("player_id")
+                    or pick.get("provider_player_id")
+                )
+                _evidence_ok_nba = (
+                    _has_identity_nba
+                    and _n_real_factors_nba >= 3
+                    and data_quality >= 55.0
+                    and _wp_frac_nba >= 0.60
+                )
+                if _evidence_ok_nba:
+                    # Evidence multiplier — narrow band mirrors NFL.
+                    if data_quality >= 75.0 and _n_real_factors_nba >= 4:
+                        _evidence_mult_nba = 1.00
+                    elif data_quality >= 65.0 and _n_real_factors_nba >= 3:
+                        _evidence_mult_nba = 0.98
+                    else:
+                        _evidence_mult_nba = 0.95
+                    _authority_score_nba = (
+                        _authority_ceiling_nba * _evidence_mult_nba)
+                    # Never demote — only raise toward the authority
+                    # score (identical to NFL semantics).
+                    score = max(score, _authority_score_nba)
+                    # Hard ceiling cap stays — strong 95 % WP can
+                    # reach ~98 but never 99 without further authority.
+                    score = min(_authority_ceiling_nba, score)
+                    pick["nba_prop_authority_applied"] = True
+                    pick["nba_prop_authority_wp"] = round(_wp_frac_nba, 4)
+                    pick["nba_prop_authority_ceiling"] = round(_authority_ceiling_nba, 2)
+                    pick["nba_prop_authority_evidence_mult"] = _evidence_mult_nba
+                else:
+                    pick["nba_prop_authority_applied"] = False
+                    pick["nba_prop_authority_skip_reason"] = (
+                        f"evidence_gate:id={_has_identity_nba},"
+                        f"n={_n_real_factors_nba},"
+                        f"dq={data_quality:.0f},"
+                        f"wp={_wp_frac_nba:.2f}"
+                    )
+        # Preserve the 0-99 clamp after the NBA authority adjustment.
+        score = min(99.0, score)
+    except Exception as _nba_authority_err:  # pragma: no cover
+        logger.debug("nba_prop_lock_authority skipped: %s", _nba_authority_err)
+
     # Store the 7 v4 components + evidence signals so the UI / analytics
     # can inspect them later.  ``confidence`` (v4, 2026-06-14) is the
     # new first-class calibrated-win-probability component; the shrunken
@@ -10055,6 +10172,18 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             if player:
                 _prop_pick_shim["player"] = player
                 _prop_pick_shim["player_name"] = player
+            # ── 2026-06 · P0 NBA UNDER-GRADING PARITY FIX ───────────────
+            # Mirror the NHL / Soccer shim blocks below: stamp the full
+            # metadata set BEFORE compute_lock_score so (a) the
+            # data-quality score can award identity + provenance +
+            # exact-market credit, and (b) the new NBA Prop Lock
+            # Authority block can read identity + evidence off the
+            # pick dict.  Fields are set from information the pipeline
+            # ALREADY produced upstream — nothing is fabricated.
+            _prop_pick_shim["player_identity_source"] = (
+                "canonical_player_id" if _nba_shim_cpid else "player_name_fallback"
+            )
+            _prop_pick_shim["player_identity_stable"] = bool(_nba_shim_cpid)
             # Simulator provenance — the NBA player sim writes
             # ``sim_win_probability`` + ``sim_ci_lower`` / ``sim_ci_upper``
             # into locals already.  Prefer EMPIRICAL_INDEPENDENT when the
@@ -10062,6 +10191,12 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             _sim_wp = locals().get("_sim_wp") or locals().get("sim_wp")
             if _sim_wp is not None:
                 _prop_pick_shim["simulator_provenance"] = "EMPIRICAL_INDEPENDENT"
+                # Promote to the TOP-LEVEL authoritative key the DQ
+                # scorer reads (same as NHL / Soccer paths).
+                _prop_pick_shim["probability_provenance"] = "EMPIRICAL_INDEPENDENT"
+            elif _nba_recent_rows_for_pick:
+                # No sim but we have canonical L10 rows → model_conditioned.
+                _prop_pick_shim["probability_provenance"] = "MODEL_CONDITIONED"
             _ci_lo = locals().get("_sim_ci_lower") or locals().get("sim_ci_lower")
             _ci_hi = locals().get("_sim_ci_upper") or locals().get("sim_ci_upper")
             if _ci_lo is not None and _ci_hi is not None:
@@ -10073,6 +10208,34 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     "player_game_actuals:nba",
                     "nba_player_sim:empirical_independent",
                 ]
+            # evidence_count — the number of real numeric factors the
+            # precompute attached.  Downstream UI reads this; NFL / NHL
+            # / Soccer already set it on their respective shim blocks.
+            try:
+                _nba_shim_fac = ((_nba_shim_ctx or {}).get(mk) or {}).get("factors") or {}
+                _nba_evidence_n = sum(
+                    1 for v in _nba_shim_fac.values()
+                    if isinstance(v, (int, float))
+                )
+                if _nba_evidence_n:
+                    _prop_pick_shim["evidence_count"] = int(_nba_evidence_n)
+            except Exception:
+                pass
+            # historical_hit_rate — surface the L10 Hit Rate factor as
+            # the top-level authority-recognised axis (same name the
+            # Soccer bridge uses) so UEA / DQ components can pick it up.
+            try:
+                _nba_shim_fac2 = ((_nba_shim_ctx or {}).get(mk) or {}).get("factors") or {}
+                for _k_hit, _v_hit in _nba_shim_fac2.items():
+                    if (isinstance(_k_hit, str)
+                        and "l10 hit rate" in _k_hit.lower()
+                        and isinstance(_v_hit, (int, float))):
+                        _prop_pick_shim["historical_hit_rate"] = float(_v_hit)
+                        _prop_pick_shim["exact_threshold_hit_rate"] = float(_v_hit)
+                        _prop_pick_shim["history_sample_size"] = 10
+                        break
+            except Exception:
+                pass
         # ── 2026-10-22 · P0 NHL METADATA TIMING FIX ─────────────────
         # Same contract as the NBA enrichment above: give the player's
         # canonical identity + simulator provenance + factor_sources
