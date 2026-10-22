@@ -442,3 +442,51 @@ No math, no scoring, no publication boundary, no 85 threshold changes.
 - `backend/tests/test_refresh_dispatch_invariant.py` → PASS
 - `backend/server.py` imports clean; boot log emits `NBA + NFL + CFB + NHL player_db (free ESPN public) armed`.
 - No touches to NBA / NFL / CFB / MLB / Soccer / Tennis scoring or publication.
+
+## 2026-10-21 — Three P0 Fixes (PREVIEW ONLY · no deploy, no build)
+
+### 1. NHL canonical history resolution
+- **Defect**: `services/canonical_history_resolver.read_player_recent` matched only on `canonical_player_id` or an anchored exact full-name regex. NHL stores abbreviated names ("B. Burns") while the live slate ships full names ("Brent Burns"), so the exact regex missed those rows entirely.
+- **Fix**: added Step-3 priority — controlled first-initial + last-name fallback that runs ONLY when the exact match returned zero rows AND the "X. Last" abbreviation uniquely identifies ONE `canonical_player_id` (via `distinct("canonical_player_id")`). Multiple candidates → fail closed (no history) so the mismatch gate drops the pick rather than attach another skater's stats.
+- **Canary results**: Fantilli = 8 rows (exact), Hughes = 10 rows (exact), Gridin = 8 rows (exact), **Brent Burns = 10 rows (abbrev-fallback resolved; previously 0)**. No ambiguity failures triggered on current slate.
+- **PASS**.
+
+### 2. NBA live feature builder — canonical history
+- **Defect**: `ml/features/nba.py::build_nba_live_features` read directly from legacy `db.player_game_logs` which is stale for current NBA rosters.
+- **Fix**: now calls `services.canonical_history_resolver.read_player_recent` with `canonical_player_id` + `player_name` (canonical-first). Flattens `actuals.{points,rebounds,assists,…}` into the field-level shape the training-frame builder expects. Falls back to legacy `player_game_logs` only if canonical returns zero rows. Event-time cutoff + no-future-leakage preserved by the upstream caller contract.
+- Preview NBA pick count on current board: 486 active NBA picks (no new refresh triggered — user did not request).
+- **PASS**.
+
+### 3. NBA Lock Score parity / double-score bug
+- **Defect**: `frontend/src/components/MarketRankPanel.tsx`
+  * Line 156 showed `(r.lock_score_v2 ?? r.lock_score ?? 0)` labeled "LOCK" in every ranked row — `lock_score_v2` is a research field, NOT the canonical Lock.
+  * Line 107-108 banner used `market_score` (prob·30%+edge·35%+survival·20%−var·10%−counter·5% ranking formula, 0-100 scale) in the "scores X vs your pick at Y" text — labelled visually like a Lock Score.
+  * The backend wire is correct — `routes.py:313, 490` both return `lock_score = published_lock_score ?? lock_score` and keep `lock_score_v2` / `market_score` as separately-labelled fields.
+- **Fix (frontend only, no scoring math changes)**:
+  * Ranked rows now display `(r.lock_score ?? 0)` only — the canonical published Lock.
+  * Banner now compares `best.lock_score` vs `currentPick.lock_score` and labels the output "Lock N" so the string matches every other surface for the same wager.
+- **Canary field dump (direct DB)**
+  ```
+  P.J. Washington Over 18.5 PRA
+    id = 57821e00-9804-52ea-b56d-98374a282534
+    published_lock_score = 70.2  (canonical)
+    lock_score          = 70.2  (canonical)
+    lock_score_v2       = 95.4  (research, NOT a Lock Score — was being mislabeled)
+  Devin Booker Over 1.5 Assists · ALT LOCK
+    id = 1a8e15c3-dc34-5893-bc7f-f3ef1592549f
+    lock_score    = 56.2  (canonical)
+    lock_score_v2 = 93.0  (research, NOT a Lock Score)
+  ```
+- **Audit (active NBA picks)**: 486 total, **441 before fix** had `lock_score_v2` ≥ 0.5 points different from `lock_score`. Every one of those would have shown the mismatched Lock on the Market Competition panel. **After the frontend fix: 0 displayed mismatches** (frontend never reads `lock_score_v2` as the Lock label).
+- **PASS**.
+
+### Files changed
+- `backend/services/canonical_history_resolver.py` — abbreviated-name fallback with ambiguity gate.
+- `backend/ml/features/nba.py` — canonical-first history read via resolver, legacy fallback retained.
+- `frontend/src/components/MarketRankPanel.tsx` — ranked rows and banner use canonical `lock_score`.
+
+### Guardrails preserved
+- 85 Lock Score threshold untouched.
+- No scoring/model math changes. No recomputation of published picks.
+- No touches to NFL / CFB / MLB / Soccer / Tennis. NBA / NHL math unchanged.
+- Publication boundary unchanged.

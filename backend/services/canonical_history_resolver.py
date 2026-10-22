@@ -235,7 +235,22 @@ async def read_player_recent(
             {"player_id": canonical_player_id},
         ]
     elif player_name:
-        # Case-insensitive exact; callers may regex upstream if needed.
+        # Priority order:
+        #   1. canonical_player_id (handled above).
+        #   2. Case-insensitive exact full-name match.
+        #   3. Controlled first-initial + last-name fallback — ONLY when
+        #      the exact match returns zero rows AND the abbreviated
+        #      form uniquely identifies ONE person in that sport (no
+        #      collision between players sharing initial + last name).
+        #
+        # 2026-10-21 (Preview) — NHL history stores abbreviated names
+        # like "B. Burns" while live outcomes send "Brent Burns".  The
+        # anchored-exact regex at step 2 misses those rows.  Step 3's
+        # ambiguity gate below makes the fallback safe: if multiple
+        # distinct canonical_player_ids share the same "X. Last"
+        # abbreviation, we fail closed (no history returned) so the
+        # mismatch gate stops the pick instead of silently attaching
+        # another skater's stats.
         filt["$or"] = [
             {"player_name": {"$regex": f"^{player_name}$", "$options": "i"}},
             {"name":        {"$regex": f"^{player_name}$", "$options": "i"}},
@@ -253,6 +268,58 @@ async def read_player_recent(
         logger.debug("canonical player read failed: %s", e)
     if rows:
         return rows
+
+    # ── 2026-10-21 · NHL abbreviated-name fallback (ambiguity-gated) ─
+    # Step 3 of the priority ladder.  Only triggers when:
+    #   • no canonical_player_id was supplied,
+    #   • the exact full-name match returned zero rows, and
+    #   • the "X. Last" abbreviation uniquely identifies ONE
+    #     canonical_player_id across the sport.
+    # If two or more distinct canonical_player_ids share the same
+    # abbreviated form, this returns no rows (fail-closed) — the
+    # pick's event-team-mismatch gate upstream will drop the pick
+    # rather than attach the wrong skater's history.
+    if (not canonical_player_id) and player_name:
+        parts = (player_name or "").strip().split()
+        if len(parts) >= 2 and len(parts[0]) >= 1:
+            abbrev = f"{parts[0][0].upper()}. {' '.join(parts[1:])}"
+            if abbrev.lower() != (player_name or "").lower():
+                # Enforce uniqueness of canonical_player_id for this abbreviation.
+                try:
+                    distinct_ids = await db.player_game_actuals.distinct(
+                        "canonical_player_id",
+                        {"sport": sport_key,
+                         "$or": [
+                             {"player_name": {"$regex":
+                                 f"^{abbrev}$", "$options": "i"}},
+                             {"name":        {"$regex":
+                                 f"^{abbrev}$", "$options": "i"}},
+                         ]},
+                    )
+                    distinct_ids = [i for i in distinct_ids if i]
+                    if len(distinct_ids) == 1:
+                        safe_cursor = db.player_game_actuals.find(
+                            {"sport": sport_key,
+                             "canonical_player_id": distinct_ids[0]}
+                        ).sort(sort_spec).limit(limit)
+                        async for r in safe_cursor:
+                            r["_source_collection"] = "player_game_actuals"
+                            r["_resolution"] = "abbrev_fallback"
+                            rows.append(resolve_player_row(r, sport=sport_key))
+                    elif len(distinct_ids) > 1:
+                        logger.info(
+                            "canonical_history_resolver: abbreviated-name "
+                            "ambiguity for sport=%s name=%r (%d candidates) "
+                            "— failing closed",
+                            sport_key, player_name, len(distinct_ids),
+                        )
+                except Exception as e:
+                    logger.debug(
+                        "abbrev fallback distinct() failed for %s: %s",
+                        player_name, e,
+                    )
+        if rows:
+            return rows
 
     # Legacy fallback.
     try:

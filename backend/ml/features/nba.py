@@ -223,9 +223,53 @@ async def build_nba_live_features(
             notes.append(f"id lookup error: {e}")
             return _empty_vec(), _feature_names(), meta
 
-    cursor = db.player_game_logs.find(q, {"_id": 0}) \
-                                  .sort("date", -1).limit(50)
-    rows = [r async for r in cursor]
+    # ── 2026-10-21 · CANONICAL-HISTORY REPOINT (NBA live feature) ───
+    # Legacy ``player_game_logs`` is stale/frozen for current NBA
+    # rosters.  Prefer canonical ``player_game_actuals`` (same source
+    # the sports_engine NBA branch, the canonical_history_resolver,
+    # and the lock-score authority already use — 29,486 NBA rows in
+    # Preview as of 2026-10-20) via ``canonical_history_resolver``.
+    # Falls back to legacy only if canonical returns nothing — zero
+    # behavior change where canonical rows are present; preserves
+    # event-time cutoff + no future leakage (upstream caller is still
+    # responsible for honoring ``target_event_time``).
+    canonical_rows: list[dict] = []
+    try:
+        from services.canonical_history_resolver import read_player_recent as _read_canonical
+        _cpid = str(q.get("player_id"))
+        canonical_rows = await _read_canonical(
+            db, sport="nba",
+            canonical_player_id=_cpid if _cpid and _cpid != "None" else None,
+            player_name=player_name,
+            limit=50,
+        )
+    except Exception as _ce:
+        notes.append(f"canonical read error: {_ce}")
+        canonical_rows = []
+    if canonical_rows:
+        # Flatten the canonical shape ({actuals: {...}, event_time})
+        # into the field-level shape the training-frame builder expects
+        # (date, points, rebounds, assists, …) without renaming columns.
+        rows = []
+        for r in canonical_rows:
+            act = r.get("actuals") or {}
+            flat = {k: v for k, v in r.items() if k != "actuals"}
+            flat.update({k: v for k, v in act.items() if k not in flat})
+            # Normalize the sort key — canonical rows carry event_time,
+            # legacy rows carry date.
+            if "date" not in flat and "event_time" in flat:
+                flat["date"] = flat["event_time"]
+            rows.append(flat)
+        rows.sort(key=lambda x: x.get("date") or "", reverse=True)
+        notes.append(
+            f"canonical rows used: {len(rows)} (player_game_actuals)")
+    else:
+        cursor = db.player_game_logs.find(q, {"_id": 0}) \
+                                      .sort("date", -1).limit(50)
+        rows = [r async for r in cursor]
+        if rows:
+            notes.append(
+                f"legacy fallback rows used: {len(rows)} (player_game_logs)")
     if not rows:
         notes.append("no historical rows")
         return _empty_vec(), _feature_names(), meta

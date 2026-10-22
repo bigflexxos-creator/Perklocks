@@ -70,12 +70,30 @@ export function MarketRankPanel({ pick }: { pick: Pick }) {
   // missing metric renders as N/A, NEVER as 0.
   const currentPick = (data as any).current_pick ?? null;
   const currentIsBest = !!currentPick && best?.id === currentPick.id;
-  const currentScore =
-    typeof currentPick?.market_score === "number"
-      ? currentPick.market_score
+  // ── 2026-10-21 · LOCK SCORE PARITY FIX ──────────────────────────
+  // The verdict banner was mixing TWO different numbers:
+  //   • ``market_score`` — internal ranking (prob·30% + edge·35% +
+  //     survival·20% − var·10% − counter·5%), 0-100 scale.
+  //   • ``lock_score``   — canonical published Lock Score (same
+  //     number shown on the pick header and on /picks/today).
+  // Users saw the ranking number labeled "Lock" in the banner because
+  // the strings were "scores 95 vs your pick at 65" where 95/65 came
+  // from market_score — not lock_score.  Fix: compare the canonical
+  // Lock Score across both sides, so the banner matches every other
+  // surface for the exact same wager.  Reference published value
+  // first (``r.lock_score`` is already published-first on the wire);
+  // ``lock_score_v2`` is a research field and is intentionally NOT
+  // used as the authoritative Lock number anywhere.
+  const bestLockRaw =
+    typeof best?.lock_score === "number" ? best.lock_score : null;
+  const bestLockStr =
+    bestLockRaw != null ? bestLockRaw.toFixed(0) : "N/A";
+  const currentLockRaw =
+    typeof currentPick?.lock_score === "number"
+      ? currentPick.lock_score
       : null;
-  const currentScoreStr =
-    currentScore != null ? currentScore.toFixed(0) : "N/A";
+  const currentLockStr =
+    currentLockRaw != null ? currentLockRaw.toFixed(0) : "N/A";
 
   return (
     <View style={styles.wrap}>
@@ -104,8 +122,8 @@ export function MarketRankPanel({ pick }: { pick: Pick }) {
         </Text>
         <Text style={styles.verdictDetail}>
           {currentIsBest
-            ? `Your pick scores ${best.market_score.toFixed(0)} \u2014 leads ${ranked.length} other market${ranked.length > 1 ? "s" : ""}.`
-            : `${best.short_market} scores ${best.market_score.toFixed(0)} vs your pick at ${currentScoreStr}.`}
+            ? `Your pick scores Lock ${bestLockStr} \u2014 leads ${ranked.length} other market${ranked.length > 1 ? "s" : ""}.`
+            : `${best.short_market} scores Lock ${bestLockStr} vs your pick at Lock ${currentLockStr}.`}
         </Text>
       </View>
 
@@ -153,7 +171,7 @@ export function MarketRankPanel({ pick }: { pick: Pick }) {
               </View>
               <View style={styles.rowRight}>
                 <Text style={[styles.rowLock, { color: tint }]}>
-                  {(r.lock_score_v2 ?? r.lock_score ?? 0).toFixed(0)}
+                  {(r.lock_score ?? 0).toFixed(0)}
                 </Text>
                 <Text style={styles.rowLockUnit}>LOCK</Text>
               </View>
