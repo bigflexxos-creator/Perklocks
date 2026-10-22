@@ -1668,37 +1668,88 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
                     or pick.get("player_id")
                     or pick.get("provider_player_id")
                 )
-                _evidence_ok_nba = (
+                # ── 2026-06 · ELITE EVIDENCE GATE (certification v2) ─
+                # Authority may lift a pick to the 90-99 band only when
+                # ALL independent evidence pillars are present on the
+                # pre-score shim.  WP alone — even a legitimate 85 % —
+                # must NOT drive a 92.  Required pillars:
+                _prov_nba = (
+                    pick.get("probability_provenance")
+                    or pick.get("simulator_provenance")
+                    or pick.get("provenance")
+                )
+                _prov_ok_nba = _prov_nba in (
+                    "EMPIRICAL_INDEPENDENT", "CAUSAL_INDEPENDENT",
+                )
+                _hist_hit_nba = pick.get("historical_hit_rate")
+                _hist_sample_nba = pick.get("history_sample_size") or 0
+                _hist_ok_nba = (
+                    isinstance(_hist_hit_nba, (int, float))
+                    and float(_hist_sample_nba) >= 10
+                )
+                _ev_count_nba = pick.get("evidence_count") or 0
+                try:
+                    _ev_count_nba = int(_ev_count_nba)
+                except (TypeError, ValueError):
+                    _ev_count_nba = 0
+                _identity_source_nba = pick.get("player_identity_source")
+                _identity_stable_nba = pick.get("player_identity_stable")
+                _identity_ok_nba = (
                     _has_identity_nba
-                    and _n_real_factors_nba >= 3
-                    and data_quality >= 55.0
-                    and _wp_frac_nba >= 0.60
+                    and _identity_source_nba == "canonical_player_id"
+                    and _identity_stable_nba is True
+                )
+                _ci_lo_nba = pick.get("sim_ci_lower")
+                _ci_hi_nba = pick.get("sim_ci_upper")
+                _sim_support_nba = (
+                    isinstance(_ci_lo_nba, (int, float))
+                    and isinstance(_ci_hi_nba, (int, float))
+                    and 0.0 <= float(_ci_lo_nba) <= float(_ci_hi_nba) <= 1.0
+                )
+                _evidence_ok_nba = (
+                    _identity_ok_nba
+                    and _prov_ok_nba
+                    and _hist_ok_nba
+                    and _sim_support_nba
+                    and _n_real_factors_nba >= 4
+                    and _ev_count_nba >= 5
+                    and data_quality >= 70.0
+                    and _wp_frac_nba >= 0.65
                 )
                 if _evidence_ok_nba:
-                    # Evidence multiplier — narrow band mirrors NFL.
-                    if data_quality >= 75.0 and _n_real_factors_nba >= 4:
+                    # Evidence multiplier — now tiered on CUMULATIVE
+                    # evidence strength (all 8 pillars already passed
+                    # above).  Only a pick with 4+ factors, DQ≥80, and
+                    # evidence_count≥6 earns the full ceiling.
+                    if (data_quality >= 80.0 and _n_real_factors_nba >= 5
+                            and _ev_count_nba >= 6):
                         _evidence_mult_nba = 1.00
-                    elif data_quality >= 65.0 and _n_real_factors_nba >= 3:
-                        _evidence_mult_nba = 0.98
+                    elif (data_quality >= 75.0 and _n_real_factors_nba >= 4
+                            and _ev_count_nba >= 5):
+                        _evidence_mult_nba = 0.97
                     else:
-                        _evidence_mult_nba = 0.95
+                        _evidence_mult_nba = 0.94
                     _authority_score_nba = (
                         _authority_ceiling_nba * _evidence_mult_nba)
-                    # Never demote — only raise toward the authority
-                    # score (identical to NFL semantics).
+                    # LIFT, never demote.
                     score = max(score, _authority_score_nba)
-                    # Hard ceiling cap stays — strong 95 % WP can
-                    # reach ~98 but never 99 without further authority.
+                    # Hard-cap at ceiling (binding).
                     score = min(_authority_ceiling_nba, score)
                     pick["nba_prop_authority_applied"] = True
                     pick["nba_prop_authority_wp"] = round(_wp_frac_nba, 4)
                     pick["nba_prop_authority_ceiling"] = round(_authority_ceiling_nba, 2)
                     pick["nba_prop_authority_evidence_mult"] = _evidence_mult_nba
+                    # BINDING ceiling — enforced AFTER Phase-B bonus etc.
+                    pick["_nba_authority_hard_ceiling"] = round(_authority_ceiling_nba, 2)
                 else:
                     pick["nba_prop_authority_applied"] = False
                     pick["nba_prop_authority_skip_reason"] = (
-                        f"evidence_gate:id={_has_identity_nba},"
-                        f"n={_n_real_factors_nba},"
+                        f"elite_gate:id_ok={_identity_ok_nba},"
+                        f"prov_ok={_prov_ok_nba}({_prov_nba}),"
+                        f"hist_ok={_hist_ok_nba}(n={_hist_sample_nba}),"
+                        f"sim_support={_sim_support_nba},"
+                        f"n_factors={_n_real_factors_nba},"
+                        f"ev_count={_ev_count_nba},"
                         f"dq={data_quality:.0f},"
                         f"wp={_wp_frac_nba:.2f}"
                     )
@@ -2003,6 +2054,26 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
                 final_score = round(min(99.0, final_score + _bonus), 1)
                 pick["independent_evidence_bonus"] = round(_bonus, 2)
                 pick["independent_evidence_count"] = _ev_count
+    except Exception:
+        pass
+
+    # ── 2026-06 · NBA AUTHORITY HARD-CEILING ENFORCEMENT ────────────
+    # The NBA Prop Lock Authority block earlier set a per-pick ceiling
+    # (``_nba_authority_hard_ceiling``) that must survive EVERY
+    # subsequent bonus / lift / cap in this function.  Without this
+    # enforcement, the Phase-B independent-evidence bonus above (which
+    # can add up to +2.5 when final_score < 90) could push the score
+    # past the authority ceiling — contradicting the certification
+    # contract that the ceiling is binding.
+    try:
+        _nba_hard_cap = pick.get("_nba_authority_hard_ceiling") if pick else None
+        if _nba_hard_cap is not None:
+            try:
+                final_score = round(min(float(_nba_hard_cap), final_score), 1)
+            except (TypeError, ValueError):
+                pass
+            # Clean up the one-shot marker so it doesn't leak downstream.
+            pick.pop("_nba_authority_hard_ceiling", None)
     except Exception:
         pass
 
