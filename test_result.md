@@ -4119,3 +4119,48 @@ driver's batch-layout reconstruction was wrong.
 `Perklocks R3 Batch-Layout Canary (ZERO-WRITE)` GitHub Actions workflow to produce the
 `collection | batch_id | expected_hash | computed_hash | MATCH` proof table against Prod.
 Phase-5 full resume MUST NOT be dispatched until the canary passes.
+
+
+## 2026-06 Lock-Score Governor Fixes (NBA ALT LOCK + NHL alt-goals + Soccer gate)
+
+**Reported issues (user)**:
+1. NBA ALT LOCK picks under-scored despite strong model signal.  Screenshot:
+   Isaiah Hartenstein Over 4.5 Points · ALT LOCK showed lock=59 while EW=90.28 %,
+   edge=+9.18 %, implied=81.10 %.  Diagnostic found 73 NBA ALT LOCK picks with
+   wp ≥ 80 % and lock < 75 — strong model signal discarded by the ranker.
+2. NHL Over 1.5 Goals (skater) reaching Lock status (≥ 85) despite base-rate
+   of a skater scoring 2+ goals in a game being ~3-5 %.
+3. Only ~4 of 18 331 Soccer player-props reached the public board — validator
+   quarantining ~99 % of them on `roster_unverified` / `roster_conflict`
+   reasons that are "unresolved evidence" not "confirmed-wrong".
+
+**Fixes landed** (`services/pick_refresh_orchestrator.py` post-process layer):
+- NHL alt-goal improbability cap — `Over N.5 Goals` with N ≥ 1 capped at 84.9
+  (apex downgraded).  Over 0.5 Goals (anytime scorer) kept uncapped.
+- NHL anytime-scorer wp-floor — Over 0.5 Goals with wp ≥ 0.60 gets
+  `60 + wp × 40` floor (only ever raises, cap 96).
+- NBA ALT LOCK reliability floor — ALT LOCK picks with wp ≥ 0.70 AND edge ≥ 0
+  get the same `60 + wp × 40` floor (cap 96).  Mirrors NFL reliability-floor
+  philosophy but as a FLOOR not a cap.
+- Soccer player↔team gate softened in three caller sites
+  (`pick_refresh_orchestrator.py`, `prediction_publication_service.py`,
+  `publication_helpers.py`): HARD-reject only on confirmed-wrong reasons
+  (`player_team_mismatch`, `fixture_teams_unknown`, `player_name_missing`).
+  Soft-pass with `player_team_evidence_soft` + reason tag on
+  `roster_unverified` / `roster_conflict`.
+- One-time back-fill script `scripts/backfill_nhl_nba_lock_scores.py`
+  applied the same thresholds to already-published rows so the fix
+  shows immediately.  Lifted 104 NBA ALT LOCK picks.
+
+**Verification**:
+- Hartenstein Over 4.5 Points · ALT LOCK — before lock=55.9, after lock=96.0.
+- Hartenstein Over 1.5 Assists · ALT LOCK — before lock=67.2, after lock=94.7.
+- All 165 NHL Over 1.5 Goals in `canonical_picks` now capped at ≤ 84.9
+  with `nhl_alt_goal_cap_applied=True`.
+- Soccer player-prop locks on-board: 267 (vs ~4 before).
+
+**Pending**:
+- `testing_agent` pass covering (a) /api/picks/today returns the expected
+  NBA / NHL / Soccer counts, (b) regressions on existing NFL/CFB/MLB
+  reliability caps (unchanged), (c) UI loads board without Hartenstein-type
+  mis-scored ALT LOCK rows.

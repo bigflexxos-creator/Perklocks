@@ -2655,6 +2655,185 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
     except Exception as _leak_err:
         logger.warning("NFL mp-leakage fail-closed cap skipped: %s", _leak_err)
 
+    # ── NHL ALT-GOAL IMPROBABILITY CAP (2026-06 · P0) ────────────────
+    # User-reported defect: Over 1.5+ Goals (NHL skater) was reaching
+    # Lock status (lock_score ≥ 85) despite the realistic probability
+    # of a skater scoring 2+ goals in a game being ~3-5 % league-wide.
+    # Diagnostic sample from `canonical_picks`:
+    #   • Pavel Zacha Over 1.5 Goals → lock=88.3 but implied_prob=1.1 %
+    #   • Arseny Gritsyuk Over 1.5 Goals → lock=88.3, implied=0.7 %
+    #   • Sam Reinhart Over 1.5 Goals → lock=87.3, implied=2.0 %
+    # The `win_probability` scoring field was inheriting ~56-65 % for
+    # these alt-lines (bogus — same as the Over 0.5 base rate), while
+    # `implied_probability` from book odds correctly says 0.7-4.8 %.
+    # Fail-closed: cap lock at 84.9 so these drop below the 85 board
+    # threshold.  Non-NHL untouched.  Over 0.5 Goals (N=0) is kept
+    # UNCAPPED — those are legitimate anytime-scorer picks.
+    try:
+        import re as _nhl_re
+        _nhl_alt_goal_pat = _nhl_re.compile(
+            r"\bover\s+(\d+)\.5\s+goals\b", _nhl_re.IGNORECASE)
+        _nhl_alt_capped = 0
+        for _p in safe_picks:
+            if (_p.get("sport") or "").strip() != "NHL":
+                continue
+            _mkt = (_p.get("market") or "")
+            _match = _nhl_alt_goal_pat.search(_mkt)
+            if not _match:
+                continue
+            try:
+                _n = int(_match.group(1))
+            except (TypeError, ValueError):
+                continue
+            if _n < 1:
+                continue  # Over 0.5 Goals — anytime-scorer, let it fly
+            try:
+                _lock = float(_p.get("lock_score") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if _lock < 85.0:
+                continue  # already off-board
+            _p["lock_score"]      = 84.9
+            _p["lock_score_v2"]   = min(float(_p.get("lock_score_v2") or 84.9), 84.9)
+            _p["lock_score_peak"] = min(float(_p.get("lock_score_peak") or 84.9), 84.9)
+            _p["apex_lock"]       = False
+            _p["apex_score"]      = 84.9
+            _p["apex_status"]     = "NOT_APEX"
+            _p["apex_reason"]     = "nhl_alt_goal_overline_improbable"
+            _p["nhl_alt_goal_cap_applied"] = True
+            _p["nhl_alt_goal_cap_reason"]  = (
+                f"ALT-GOAL IMPROBABLE: Over {_n}.5 Goals requires skater "
+                f"to score {_n+1}+ goals in one game — league base-rate "
+                f"~3-5 %.  Book implied probability is the authority on "
+                f"these alts; the model `win_probability` leaked from the "
+                f"Over 0.5 base rate and cannot earn Lock authority."
+            )
+            try:
+                from sports_engine import _grade as _grade_fn
+                _p["grade"] = _grade_fn(84.9)
+            except Exception:
+                pass
+            _nhl_alt_capped += 1
+        if _nhl_alt_capped:
+            logger.info(
+                "NHL alt-goal improbability cap: %d picks pushed below 85 "
+                "(Over 1.5+ Goals skater alts)",
+                _nhl_alt_capped,
+            )
+    except Exception as _nhl_alt_err:
+        logger.warning("NHL alt-goal cap skipped: %s", _nhl_alt_err)
+
+    # ── NHL ANYTIME-SCORER DIFFERENTIATION FLOOR (2026-06 · P0) ──────
+    # Companion to the alt-goal cap above.  User-reported defect: NHL
+    # Over 0.5 Goals picks were ALL stuck at lock_score == 85.0 flat,
+    # with no differentiation between elite goal scorers (Pastrnak,
+    # Forsberg, Raymond — all wp ≈ 61 %) and weaker candidates.
+    # Observed `win_probability` is 60-62 % with book implied 23-42 %,
+    # so model edge is legitimate and model probability is the ranking
+    # authority.  Lift the artificial 85.0 ceiling by applying a
+    # wp-based reliability floor identical to the NFL pattern
+    # (`60 + wp × 40`) BUT as a FLOOR not a cap — only raise, never
+    # lower.  This lets strong anytime-scorer evidence rank higher
+    # than weak ones (62 % → 84.8, 70 % → 88, 80 % → 92).
+    try:
+        import re as _nhl_as_re
+        _nhl_anytime_pat = _nhl_as_re.compile(
+            r"\bover\s+0\.5\s+goals\b", _nhl_as_re.IGNORECASE)
+        _nhl_anytime_lifted = 0
+        for _p in safe_picks:
+            if (_p.get("sport") or "").strip() != "NHL":
+                continue
+            if not _nhl_anytime_pat.search(_p.get("market") or ""):
+                continue
+            try:
+                _wp = float(_p.get("win_probability") or 0.0)
+                if _wp > 1.0:
+                    _wp = _wp / 100.0
+                _lock = float(_p.get("lock_score") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if _wp < 0.60:
+                continue  # weak signal — don't inflate
+            _floor = min(96.0, 60.0 + max(0.0, min(1.0, _wp)) * 40.0)
+            if _floor <= _lock:
+                continue
+            _p["lock_score"]      = round(_floor, 1)
+            _p["lock_score_v2"]   = max(float(_p.get("lock_score_v2") or 0.0), round(_floor, 1))
+            _p["lock_score_peak"] = max(float(_p.get("lock_score_peak") or 0.0), round(_floor, 1))
+            _p["nhl_anytime_floor_applied"] = True
+            _p["nhl_anytime_floor_prior"]   = _lock
+            _p["nhl_anytime_floor_wp"]      = round(_wp, 4)
+            try:
+                from sports_engine import _grade as _grade_fn
+                _p["grade"] = _grade_fn(_floor)
+            except Exception:
+                pass
+            _nhl_anytime_lifted += 1
+        if _nhl_anytime_lifted:
+            logger.info(
+                "NHL anytime-scorer wp-floor: %d Over 0.5 Goals picks "
+                "lifted above the 85 ceiling",
+                _nhl_anytime_lifted,
+            )
+    except Exception as _nhl_as_err:
+        logger.warning("NHL anytime floor skipped: %s", _nhl_as_err)
+
+    # ── NBA ALT-LOCK HIGH-WP RELIABILITY FLOOR (2026-06 · P0) ────────
+    # User-reported defect (screenshot): Isaiah Hartenstein Over 4.5
+    # Points · ALT LOCK showed lock_score=59 despite win_probability=
+    # 90.28 %, implied=81.10 %, edge=+9.18 %.  Diagnostic found 73
+    # NBA ALT LOCK picks with wp ≥ 80 % but lock < 75 — strong model
+    # signal was being discarded by the ranking formula.
+    # Fix: Apply the NFL `60 + wp × 40` reliability formula as a
+    # FLOOR (never a cap) for NBA ALT LOCK picks when wp ≥ 70 % AND
+    # edge ≥ 0 (we never prop up negative-value picks).  Cap the
+    # floor at 96 so Apex escalation still has headroom above it.
+    try:
+        _nba_alt_lifted = 0
+        for _p in safe_picks:
+            if (_p.get("sport") or "").strip() != "NBA":
+                continue
+            _mkt = (_p.get("market") or "")
+            if "ALT LOCK" not in _mkt.upper():
+                continue
+            try:
+                _wp = float(_p.get("win_probability") or 0.0)
+                if _wp > 1.0:
+                    _wp = _wp / 100.0
+                _lock = float(_p.get("lock_score") or 0.0)
+                _edge = _p.get("edge_percent")
+                _edge = float(_edge) if _edge is not None else 0.0
+            except (TypeError, ValueError):
+                continue
+            if _wp < 0.70:
+                continue  # not strong enough signal to floor
+            if _edge < 0.0:
+                continue  # negative edge — do not inflate
+            _floor = min(96.0, 60.0 + max(0.0, min(1.0, _wp)) * 40.0)
+            if _floor <= _lock:
+                continue
+            _p["lock_score"]      = round(_floor, 1)
+            _p["lock_score_v2"]   = max(float(_p.get("lock_score_v2") or 0.0), round(_floor, 1))
+            _p["lock_score_peak"] = max(float(_p.get("lock_score_peak") or 0.0), round(_floor, 1))
+            _p["nba_alt_lock_floor_applied"] = True
+            _p["nba_alt_lock_floor_prior"]   = _lock
+            _p["nba_alt_lock_floor_wp"]      = round(_wp, 4)
+            _p["nba_alt_lock_floor_edge"]    = round(_edge, 2)
+            try:
+                from sports_engine import _grade as _grade_fn
+                _p["grade"] = _grade_fn(_floor)
+            except Exception:
+                pass
+            _nba_alt_lifted += 1
+        if _nba_alt_lifted:
+            logger.info(
+                "NBA ALT LOCK reliability floor: %d picks lifted "
+                "(wp-aligned ranking authority restored)",
+                _nba_alt_lifted,
+            )
+    except Exception as _nba_alt_err:
+        logger.warning("NBA ALT LOCK floor skipped: %s", _nba_alt_err)
+
     # ── §A10 · NFL LADDER MONOTONICITY GUARD (2026-06-09) ─────────────
     # Per user directive: probabilities across an Over ladder must
     # come from ONE coherent distribution — P(easier Over) >=
@@ -2962,6 +3141,19 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
                     fresh_names.add(key)
             _publish_batch = []
             _quarantined = 0
+            _soft_passed = 0
+            # Hard-reject only on CONFIRMED-wrong reasons.  "Unresolved"
+            # reasons (missing roster evidence, source conflict) are soft
+            # — tag the pick but let it onto the board.  This stops the
+            # validator from quarantining ~99 % of Soccer player-props
+            # (observed: 4,153 player_team_invalid + 3,635 roster_unverified
+            # with only 4 reaching the board) when the real intent is to
+            # block picks whose roster EVIDENCE contradicts the fixture.
+            _HARD_REJECT_REASONS = {
+                "player_team_mismatch",
+                "fixture_teams_unknown",
+                "player_name_missing",
+            }
             for p in safe_picks:
                 if p.get("sport") != "Soccer":
                     _publish_batch.append(p)
@@ -2973,19 +3165,31 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
                 if verdict.get("verified"):
                     _publish_batch.append(p)
                     continue
-                tag_pick_with_verdict(p, verdict)
-                p["off_board"] = True
-                _existing = list(p.get("off_board_reasons") or [])
-                for tag in ("player_team_invalid",
-                             verdict.get("reason") or "unknown"):
-                    if tag not in _existing:
-                        _existing.append(tag)
-                p["off_board_reasons"] = _existing
-                _quarantined += 1
-            if _quarantined:
+                _reason = verdict.get("reason") or "unknown"
+                if _reason in _HARD_REJECT_REASONS:
+                    # Confirmed-wrong — quarantine.
+                    tag_pick_with_verdict(p, verdict)
+                    p["off_board"] = True
+                    _existing = list(p.get("off_board_reasons") or [])
+                    for tag in ("player_team_invalid", _reason):
+                        if tag not in _existing:
+                            _existing.append(tag)
+                    p["off_board_reasons"] = _existing
+                    _quarantined += 1
+                else:
+                    # Soft reason (roster_unverified, roster_conflict) —
+                    # tag with evidence-level marker but publish.  Lets
+                    # legitimate Soccer props reach the board; downstream
+                    # scoring can still soften their rank if needed.
+                    p["player_team_evidence_soft"] = True
+                    p["player_team_evidence_reason"] = _reason
+                    _publish_batch.append(p)
+                    _soft_passed += 1
+            if _quarantined or _soft_passed:
                 logger.info(
-                    "Player↔team gate: %d Soccer player-props quarantined",
-                    _quarantined,
+                    "Player↔team gate: %d Soccer picks hard-quarantined, "
+                    "%d soft-passed (unresolved evidence)",
+                    _quarantined, _soft_passed,
                 )
         except Exception as _pt_err:
             logger.warning(

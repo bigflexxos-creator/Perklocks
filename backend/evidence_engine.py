@@ -130,6 +130,21 @@ _SAMPLE_TIERS_BY_SPORT: dict[str, dict[str, tuple[int, int]]] = {
         "matchup": (3,  8),   # H2H even scarcer in a 17-game season
         "usage":   (3, 10),   # snaps / targets / carries
     },
+    # 2026-10-22 · NHL calibration — the regular season is 82 games
+    # but per-stat sampling for props is dominated by SHORT-WINDOW
+    # form (L5 / L10 / L15 / Season), not full career aggregates.
+    # Without this override the generic (10, 30) HIGH gate was
+    # structurally unreachable for L5 features and borderline for
+    # L10 features, dragging NHL evidence_score to the 40-50 band
+    # and governing a raw-95 Kyle Connor pick down to 80.8 — below
+    # the 85 main-board floor. Calibrated to match hockey's lower
+    # per-game variance.
+    "NHL": {
+        "form":    (5, 15),   # L5 → MED, L15/season → HIGH
+        "matchup": (3,  8),   # H2H matchup data for lineups is thin
+        "usage":   (3, 10),   # ice-time / PP% / shift counts
+        "context": (3, 10),
+    },
 }
 
 # Reliability anchors per tier. Used as the BASE; freshness penalties
@@ -981,6 +996,29 @@ def _universal_build_features_from_pick(pick: dict) -> list[EvidenceFeature]:
         elif kl.startswith("l3 ") or " l3 " in kl or kl.startswith("l5 ") or " l5 " in kl:
             cat = "form"
             n_obs = 5
+        # 2026-10-22 · NHL (and any sport that emits L10/L15/L20/Season
+        # named rolling averages) was previously falling through to
+        # `intangible` with n_obs=1 — 12 LOW rows → evidence_score=43
+        # → multiplier=0.85 → lock_raw 95 governed to 80.8. Route
+        # these first-class short-window form features so each
+        # window's sample count maps to the correct NHL/MLB form tier.
+        elif kl.startswith("l10 ") or " l10 " in kl:
+            cat = "form"
+            n_obs = 10
+        elif kl.startswith("l15 ") or " l15 " in kl:
+            cat = "form"
+            n_obs = 15
+        elif kl.startswith("l20 ") or " l20 " in kl:
+            cat = "form"
+            n_obs = 20
+        elif kl.startswith("season ") or " season " in kl or kl.endswith(" season"):
+            cat = "form"
+            n_obs = 50   # season-to-date aggregate — strong NHL/MLB sample
+        elif any(w in kl for w in (
+            "hit rate", "clearance", "over rate", "over%", "cover rate",
+        )):
+            cat = "form"
+            n_obs = 10
         elif any(w in kl for w in ("matchup", "h2h", "vs", "opponent", "defense")):
             cat = "matchup"
             n_obs = 8
@@ -1015,6 +1053,16 @@ def _universal_build_features_from_pick(pick: dict) -> list[EvidenceFeature]:
                 n_obs = min(n_obs, 3)
             elif kl.startswith("l5 ") or " l5 " in kl:
                 n_obs = min(n_obs, 5)
+            # 2026-10-22 · Mirror the strict cap for longer windows so
+            # L10 / L15 / L20 features (NHL player props, MLB extended
+            # rolling averages) are bounded by their window label, not
+            # inflated by heuristic defaults.
+            elif kl.startswith("l10 ") or " l10 " in kl:
+                n_obs = min(n_obs, 10)
+            elif kl.startswith("l15 ") or " l15 " in kl:
+                n_obs = min(n_obs, 15)
+            elif kl.startswith("l20 ") or " l20 " in kl:
+                n_obs = min(n_obs, 20)
 
         features.append(EvidenceFeature(
             name=k, category=cat, value=score_v,

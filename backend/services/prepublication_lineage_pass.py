@@ -35,6 +35,17 @@ logger = logging.getLogger("lockscore.prepublication_lineage")
 _LINEAGE_FIELDS = (
     "book_odds", "bookmaker", "odds_source", "observed_at",
     "no_real_book_line",
+    # 2026-10-22 · implied_probability must track book_odds. Prior to
+    # this, alt-line picks (e.g. NHL shots_on_goal_alternate) kept the
+    # emitter's `implied_probability` derived from the MAIN-LINE
+    # `odds_at_pick` (e.g. -560 → 84.8%) while `book_odds` was swapped
+    # to the actual observed alt price (+146 → ~40.6%). The
+    # `canonical_publication_boundary` detector then flagged every such
+    # row as `IMPOSSIBLE_IMPLIED_PROBABILITY` and `off_board=true`,
+    # which is why zero NHL alt-line picks have ever cleared the main
+    # board. Re-deriving the two implied-prob fields from the HARDENED
+    # `book_odds` keeps them in lockstep with the authoritative price.
+    "implied_probability", "raw_implied_probability",
 )
 
 
@@ -72,13 +83,35 @@ def _upgrade_pick_lineage(pick: dict) -> dict:
                 "bookmaker_before": before_book,
                 "bookmaker_after": None}
 
-    pick["book_odds"] = int(hardened["book_odds"])
+    new_book_odds = int(hardened["book_odds"])
+    pick["book_odds"] = new_book_odds
     pick["bookmaker"] = hardened["bookmaker"]
     pick["odds_source"] = hardened["odds_source"]
     pick["observed_at"] = hardened.get("observed_at")
     pick["no_real_book_line"] = False
     # consensus_price is analytics-only; store under a dedicated field.
     pick["consensus_price"] = hardened.get("consensus_price")
+
+    # 2026-10-22 — recompute implied_probability from the hardened
+    # alt-line price so it never drifts out of sync with book_odds.
+    # Without this, alt-line publication is universally rejected by
+    # `canonical_publication_boundary::IMPOSSIBLE_IMPLIED_PROBABILITY`.
+    try:
+        from services.probability_units import implied_probability_from_odds
+        _ip_frac = implied_probability_from_odds(new_book_odds)
+        if _ip_frac is not None:
+            _ip_pct = round(_ip_frac * 100.0, 1)
+            pick["implied_probability"] = _ip_pct
+            pick["raw_implied_probability"] = _ip_pct
+    except Exception as _ip_err:
+        # Never block the lineage upgrade on a probability-helper
+        # failure — the publication boundary check will still catch
+        # a genuinely bad row, and we log for post-mortem visibility.
+        logger.warning(
+            "implied_probability recompute skipped for pick %s: %s",
+            pick.get("id"), _ip_err,
+        )
+
     return {"migrated": True, "reason": None,
             "bookmaker_before": before_book,
             "bookmaker_after": hardened["bookmaker"]}

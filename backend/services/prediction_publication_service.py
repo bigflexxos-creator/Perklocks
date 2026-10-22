@@ -503,6 +503,14 @@ class PredictionPublicationService:
                     roster_lookup[k] = pct
                     fresh_names.add(k)
             gated: list[dict] = []
+            # Hard-reject only on confirmed-wrong reasons.  Unresolved
+            # reasons (roster_unverified, roster_conflict) are soft —
+            # tag the pick but publish.  Mirrors the orchestrator gate.
+            _HARD_REJECT_REASONS = {
+                "player_team_mismatch",
+                "fixture_teams_unknown",
+                "player_name_missing",
+            }
             for p in candidates_list:
                 if p.get("sport") != "Soccer":
                     gated.append(p)
@@ -514,15 +522,22 @@ class PredictionPublicationService:
                 if verdict.get("verified"):
                     gated.append(p)
                     continue
-                tag_pick_with_verdict(p, verdict)
-                p["off_board"] = True
-                rejected_integrity.append({
-                    "prediction_id": p.get("id") or p.get("prediction_id"),
-                    "reason": verdict.get("reason"),
-                    "player": verdict.get("player"),
-                    "player_team": verdict.get("player_team"),
-                    "fixture_teams": verdict.get("fixture_teams"),
-                })
+                _reason = verdict.get("reason") or "unknown"
+                if _reason in _HARD_REJECT_REASONS:
+                    tag_pick_with_verdict(p, verdict)
+                    p["off_board"] = True
+                    rejected_integrity.append({
+                        "prediction_id": p.get("id") or p.get("prediction_id"),
+                        "reason": _reason,
+                        "player": verdict.get("player"),
+                        "player_team": verdict.get("player_team"),
+                        "fixture_teams": verdict.get("fixture_teams"),
+                    })
+                else:
+                    # Soft-pass: unresolved evidence, publish with tag.
+                    p["player_team_evidence_soft"] = True
+                    p["player_team_evidence_reason"] = _reason
+                    gated.append(p)
             candidates_list = gated
         except Exception as _pt_err:
             logger.warning(

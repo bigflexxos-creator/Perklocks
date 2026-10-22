@@ -447,9 +447,50 @@ def _contradictions(pick: Mapping[str, Any],
 # ─────────────────────────────────────────────────────────────────────
 # 9. MARKET-FAMILY CLASSIFIER
 # ─────────────────────────────────────────────────────────────────────
-def _classify_market_family(sport: str, market: str) -> str:
+def _classify_market_family(sport: str, market: str,
+                             pick: Optional[Mapping[str, Any]] = None) -> str:
     s = (sport or "").upper()
     m = (market or "").lower()
+    # ── 2026-10-22 · Robust pick-aware classification ───────────────
+    # Market strings in production are user-facing labels like
+    # ``"Jonathan Lekkerimäki Over 1.5 Goals"`` which carry none of
+    # the tokens the heuristic below checks for (no "player_", no
+    # "goal_scorer").  BUT the pick already carries the authoritative
+    # provider market key (``player_goals_alternate``) and the
+    # canonical market family (``nhl_goals``) stamped at ingest time.
+    # Prefer those when available so NHL "Over 1.5 Goals" / "Over 0.5
+    # Goals" picks are correctly classified as NHL_PLAYER (not
+    # NHL_GAME).  Falls back to the legacy string heuristic when the
+    # pick isn't passed or the hints are absent.
+    if pick is not None:
+        _prov = str(pick.get("provider_market_key") or "").lower()
+        _cmf = str(pick.get("canonical_market_family") or "").lower()
+        _hint = f"{_prov} {_cmf}"
+        if s == "NHL" and (
+            _prov.startswith("player_")
+            or "nhl_goals" in _cmf or "nhl_assists" in _cmf
+            or "nhl_points" in _cmf or "nhl_shots" in _cmf
+            or "shots_on_goal" in _hint or "goal_scorer" in _hint
+            or "player_goals" in _hint or "player_assists" in _hint
+            or "player_points" in _hint or "player_shots" in _hint
+        ):
+            return "NHL_PLAYER"
+        if s == "SOCCER" and (
+            _prov.startswith("player_")
+            or "goal_scorer" in _hint or "goalscorer" in _hint
+            or "player_shots" in _hint or "player_assists" in _hint
+            or "to_score" in _hint or "score_or_assist" in _hint
+        ):
+            return "SOCCER_PLAYER"
+        if s == "NFL" and (
+            _prov.startswith("player_")
+            or "nfl_player" in _cmf
+        ):
+            return "NFL_PLAYER"
+        if s == "MLB" and _prov.startswith("player_"):
+            if any(t in _hint for t in ("strikeout", "pitcher", "out", "walk")):
+                return "MLB_PITCHER"
+            return "MLB_HITTER"
     if s == "NFL":
         if any(t in m for t in ("yards", "yds", "receptions",
                                   "completions", "attempts",
@@ -503,7 +544,7 @@ def build_contract_for_pick(
     sport = str(pick.get("sport") or "").upper()
     if not uea_enabled(sport):
         return None
-    market_family = _classify_market_family(sport, pick.get("market") or "")
+    market_family = _classify_market_family(sport, pick.get("market") or "", pick)
 
     contract = EvidenceAuthorityContract(
         model_probability=          _model_probability_axis(pick),

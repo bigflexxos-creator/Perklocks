@@ -403,6 +403,15 @@ async def publish_upserted_picks(
 
         valid_picks: list[dict] = []
         rejected = 0
+        soft_passed = 0
+        # Hard-reject only on confirmed-wrong reasons.  Unresolved
+        # reasons (roster_unverified, roster_conflict) are soft —
+        # tag the pick but publish.  Mirrors the orchestrator gate.
+        _HARD_REJECT_REASONS = {
+            "player_team_mismatch",
+            "fixture_teams_unknown",
+            "player_name_missing",
+        }
         for p in picks_list:
             if p.get("sport") != "Soccer":
                 valid_picks.append(p)
@@ -414,32 +423,40 @@ async def publish_upserted_picks(
             if verdict.get("verified"):
                 valid_picks.append(p)
                 continue
-            # Player-market mismatch OR roster unverified — quarantine.
-            tag_pick_with_verdict(p, verdict)
-            rejected += 1
-            try:
-                await db.picks.update_one(
-                    {"id": p.get("id")},
-                    {"$set": {
-                        "off_board": True,
-                        "off_board_reasons": [
-                            "player_team_invalid",
-                            verdict.get("reason") or "unknown",
-                        ],
-                        "player_team_invalid": True,
-                        "player_team_invalid_reason": verdict.get("reason"),
-                    }}
-                )
-            except Exception as _upd_err:
-                logger.debug(
-                    "player_team invalidate mark failed for %s: %s",
-                    p.get("id"), _upd_err,
-                )
-        if rejected:
+            _reason = verdict.get("reason") or "unknown"
+            if _reason in _HARD_REJECT_REASONS:
+                # Confirmed-wrong — quarantine.
+                tag_pick_with_verdict(p, verdict)
+                rejected += 1
+                try:
+                    await db.picks.update_one(
+                        {"id": p.get("id")},
+                        {"$set": {
+                            "off_board": True,
+                            "off_board_reasons": [
+                                "player_team_invalid",
+                                _reason,
+                            ],
+                            "player_team_invalid": True,
+                            "player_team_invalid_reason": _reason,
+                        }}
+                    )
+                except Exception as _upd_err:
+                    logger.debug(
+                        "player_team invalidate mark failed for %s: %s",
+                        p.get("id"), _upd_err,
+                    )
+            else:
+                # Soft-pass: unresolved evidence, publish with tag.
+                p["player_team_evidence_soft"] = True
+                p["player_team_evidence_reason"] = _reason
+                valid_picks.append(p)
+                soft_passed += 1
+        if rejected or soft_passed:
             logger.info(
-                "%s player↔team gate: %d Soccer player-props quarantined "
-                "(will NOT be published)",
-                caller_label, rejected,
+                "%s player↔team gate: %d Soccer picks hard-quarantined, "
+                "%d soft-passed (unresolved evidence, will publish)",
+                caller_label, rejected, soft_passed,
             )
         picks_list = valid_picks
         if not picks_list:

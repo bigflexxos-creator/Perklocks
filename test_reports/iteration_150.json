@@ -1,0 +1,30 @@
+{
+  "summary": "Lock-Score Governor fixes validated end-to-end (backend only). 11/11 pytest cases pass. GET /api/picks/today returns NBA/NHL/Soccer picks (counts: Soccer=56, NHL=25, NFL=43, MLB=17, CFB=5, NBA=3). NHL alt-goal cap invariant holds: 0 NHL `Over N.5 Goals` (N>=1) picks with lock_score>=85 remain in canonical_picks; 20+ sampled rows show lock=84.9 with nhl_alt_goal_cap_applied=True (Timo Meier, Jesper Bratt, Arseny Gritsyuk Over 1.5 Goals all correctly capped). NBA ALT LOCK floor invariant holds: scanned 540 canonical NBA picks, 104 qualifying (ALT LOCK with wp>=70 & edge>=0), 0 offenders below the min(96, 60+wp*40) floor. Hartenstein Over 4.5 Points · ALT LOCK canonical regression confirmed at lock=96.0 (wp=90.28, edge=9.18, floor_applied=True). Soccer soft-pass logic correct: scanned 500 off_board Soccer player-props, 0 flagged via roster_unverified/roster_conflict alone (all off_board rows carry a hard-reject reason). Soccer published locks >=85 count = 6969 (well above the 260 baseline). NFL leakage cap + NFL reliability floor code blocks still present in services/pick_refresh_orchestrator.py (no regression).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter150_lock_score_governor.py",
+    "/app/test_reports/pytest/iter150.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "pick_refresh_orchestrator.py post-processing blocks for NHL alt-goal cap, NHL anytime-scorer floor, and NBA ALT LOCK floor use the same wp-based reliability formula (60 + wp*40, capped at 96). Logic is consistent and symmetric with the existing NFL reliability floor pattern.",
+    "Both the orchestrator-level and publication-level Soccer gates share the same _HARD_REJECT_REASONS set across services/publication_helpers.py (line 410-414) and services/prediction_publication_service.py (line 509-513) — good DRY alignment; consider extracting to a shared constant later.",
+    "Note on backend/.env line 78 — CANONICAL_IMPORT_ENABLED has stray leading whitespace (`\"    true\"`). Likely benign (parsed as truthy string) but tidy up to `true` to avoid future surprise."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "N/A (skipped per request)"},
+  "seed_data_creation": "None — all validation performed against live canonical_picks collection and live API.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend-only validation. Test file: /app/backend/tests/test_iter150_lock_score_governor.py. Hartenstein Over 4.5 Points · ALT LOCK is the canonical regression row (currently at lock=96.0, floor_applied=True). NHL alt-goal cap flag field: nhl_alt_goal_cap_applied; NBA floor flag field: nba_alt_lock_floor_applied. Soccer hard-reject reasons set: {player_team_mismatch, fixture_teams_unknown, player_name_missing}.",
+  "rca_of_issue": "Not applicable — this iteration validated fixes rather than reproducing a bug. All four reported defects are confirmed resolved in the DB and (for the orchestrator blocks) in code."
+}
