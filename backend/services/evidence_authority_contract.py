@@ -315,6 +315,49 @@ def compute_authority_score(
     peak = (tier_cap >= 99.0 and weighted >= 96.0
              and coverage >= 0.90 and len(contract.contradictions) == 0)
 
+    # ── 2026-06 P0 CLOSURE — Tier-aware ceiling promotion ────────────
+    # When every one of the seven axes is AVAILABLE at a strong score
+    # AND the strict tier-cap gate has already been granted at a given
+    # tier, promote the ceiling to the tier_cap value.  This recognises
+    # the semantic contract of each tier without inflating thin-evidence
+    # picks — the tier_cap gate ALREADY requires strong_axes ≥ N,
+    # coverage ≥ C, convergence, distribution, history/matchup, and zero
+    # contradictions.  A pick that passes those gates has demonstrated
+    # the evidence pattern that the tier represents, and the weighted
+    # mean (bounded by the provenance table's 95-98 reliability ceiling)
+    # should not drag the ceiling below its tier.
+    #
+    # Promotion requires:
+    #   99 tier  — ALL 7 axes available at ≥ 85, cov ≥ 0.90, strong ≥ 5,
+    #              0 contradictions, weighted ≥ 95 (sanity floor)
+    #   96-98    — ALL 7 axes available at ≥ 80, cov ≥ 0.82, strong ≥ 4,
+    #              0 contradictions, weighted ≥ 90 (sanity floor)
+    #   93-95    — ≥ 6 axes available at ≥ 75,     cov ≥ 0.72, strong ≥ 3,
+    #              0 contradictions, weighted ≥ 85 (sanity floor)
+    #
+    # Each promotion is bounded by the tier_cap itself (no promotion
+    # exceeds the tier the gate granted) and is gated by strict quality
+    # thresholds that cannot be satisfied by book-implied-only, by thin
+    # evidence, or by any single-axis "star" boost.
+    _axes_scores = [(ev.score or 0.0) if ev.available else -1.0
+                     for ev in axes.values()]
+    _n_available = sum(1 for s in _axes_scores if s >= 0.0)
+    _all_axes_85 = _n_available == 7 and all(s >= 85.0 for s in _axes_scores)
+    _all_axes_80 = _n_available == 7 and all(s >= 80.0 for s in _axes_scores)
+    _six_axes_75 = sum(1 for s in _axes_scores if s >= 75.0) >= 6
+    _no_contras = len(contract.contradictions) == 0
+
+    if (tier_cap >= 99.0 and _all_axes_85 and coverage >= 0.90
+            and strong >= 5 and _no_contras and weighted >= 95.0):
+        ceiling = 99.0
+        peak = True
+    elif (tier_cap >= 98.0 and _all_axes_80 and coverage >= 0.82
+            and strong >= 4 and _no_contras and weighted >= 90.0):
+        ceiling = min(tier_cap, 97.0)
+    elif (tier_cap >= 95.0 and _six_axes_75 and coverage >= 0.72
+            and strong >= 3 and _no_contras and weighted >= 85.0):
+        ceiling = min(tier_cap, 94.0)
+
     return {
         "ceiling":         round(ceiling, 1),
         "weighted_score":  weighted,

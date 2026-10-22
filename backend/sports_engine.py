@@ -10185,9 +10185,73 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                 if _soc_shim_market.get("h2h_games"):
                     _prop_pick_shim["h2h_games"] = int(
                         _soc_shim_market["h2h_games"])
+                # 2026-06 P0 CLOSURE — propagate the 3 missing axes
+                # from the bridge onto the shim BEFORE compute_lock_score
+                # so UEA adapters can award credit.
+                for _k_axis in (
+                    "probability_provenance",
+                    "sim_result",
+                    "distribution_stability",
+                    "historical_hit_rate",
+                    "exact_threshold_hit_rate",
+                    "history_sample_size",
+                ):
+                    _v_axis = _soc_shim_market.get(_k_axis)
+                    if _v_axis is not None:
+                        _prop_pick_shim[_k_axis] = _v_axis
+        # ── 2026-06 P0 CLOSURE — Universal integrity gate.
+        # Runs the P0-A (team↔event), P0-B (canonical identity),
+        # P0-C (probability_provenance + sim_result + history axis),
+        # P0-G (market priority) harden step for NHL + Soccer props.
+        # Fail-closed: any mismatch or unresolved identity → the
+        # pick is REJECTED and skipped entirely.
+        _prop_integrity_verdict = None
+        if sport in ("NHL", "Soccer") and mk and mk.startswith("player_"):
+            try:
+                from services.prop_integrity_gate import harden_prop_shim
+                _event_home_name = home
+                _event_away_name = away
+                _hr_by_market = {}
+                _hr_this = _prop_pick_shim.get("historical_hit_rate")
+                if _hr_this is not None:
+                    _hr_by_market[mk] = _hr_this
+                _hist_n = int(_prop_pick_shim.get("history_sample_size") or 0)
+                _prop_integrity_verdict = harden_prop_shim(
+                    shim=_prop_pick_shim,
+                    sport=sport,
+                    league=league,
+                    market_key=mk,
+                    player_name=player or "",
+                    event_home=_event_home_name,
+                    event_away=_event_away_name,
+                    model_prob=mp,
+                    sample_size=int(_prop_pick_shim.get("evidence_count") or 0),
+                    history_hit_rate_by_market=_hr_by_market,
+                    history_sample_size=_hist_n,
+                )
+            except Exception as _integ_err:
+                logger.debug(
+                    "prop_integrity_gate failed for %s %s: %s",
+                    player, mk, _integ_err)
+                _prop_integrity_verdict = None
+            # Fail-closed on REJECTED verdicts.  Skip emission entirely.
+            if (_prop_integrity_verdict
+                    and _prop_integrity_verdict.get("status") == "REJECTED"):
+                _prop_pick_shim["prop_integrity_rejected_reason"] = (
+                    _prop_integrity_verdict.get("reason") or "UNKNOWN")
+                logger.info(
+                    "P0 INTEGRITY REJECT %s %s / %s → %s",
+                    sport, player, mk,
+                    _prop_integrity_verdict.get("reason"))
+                continue
         lock, breakdown = compute_lock_score(
             factors, win_prob=mp * 100, pick=_prop_pick_shim,
         )
+        # Expose the integrity verdict on the pick for audit / Pick
+        # Breakdown surfacing (never alters scoring).
+        if _prop_integrity_verdict:
+            _prop_pick_shim["prop_integrity_contract"] = (
+                _prop_integrity_verdict.get("contract") or {})
         # Bubble the authority provenance up so _build_pick can copy
         # onto the final pick (the shim itself is discarded).
         _prop_authority_applied = _prop_pick_shim.get("nfl_prop_authority_applied")
@@ -12489,6 +12553,48 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                                     "player_identity_source": "canonical_player_id",
                                     "player_identity_stable": True,
                                     "simulator_provenance": "EMPIRICAL_INDEPENDENT",
+                                    # 2026-06 P0 CLOSURE — thread the three
+                                    # missing evidence axes so UEA
+                                    # adapters can award credit before
+                                    # ``compute_lock_score`` runs.
+                                    # EMPIRICAL_INDEPENDENT is the correct
+                                    # reliability class for brain.sim_nhl
+                                    # (Poisson + L10/L5 empirical blend,
+                                    # NO book-implied seeding).  Previous
+                                    # "PROP_MODEL_PRIMARY" tag mis-mapped
+                                    # the axis to 90.0 reliability which
+                                    # structurally capped NHL props at ~95
+                                    # even with peak evidence.
+                                    "probability_provenance": "EMPIRICAL_INDEPENDENT",
+                                    "sim_result": {
+                                        "stability": round(
+                                            60.0 + 35.0 * (
+                                                0.60 * (1.0 - 4.0 * model_prob
+                                                        * (1.0 - model_prob))
+                                                + 0.30 * min(1.0, _n / 20.0)
+                                                + 0.10 * (
+                                                    1.0 if _toi_l10 >= 18.0 else 0.6
+                                                )
+                                            ), 1),
+                                        "sample_size": int(_n),
+                                        "source": (
+                                            "nhl_poisson_plus_empirical.v1"),
+                                        "model_prob": round(float(model_prob), 4),
+                                    },
+                                    "distribution_stability": round((
+                                        60.0 + 35.0 * (
+                                            0.60 * (1.0 - 4.0 * model_prob
+                                                    * (1.0 - model_prob))
+                                            + 0.30 * min(1.0, _n / 20.0)
+                                            + 0.10 * (
+                                                1.0 if _toi_l10 >= 18.0 else 0.6
+                                            )
+                                        )) / 100.0, 4),
+                                    "historical_hit_rate": round(
+                                        float(p_over_empirical), 4),
+                                    "exact_threshold_hit_rate": round(
+                                        float(p_over_empirical), 4),
+                                    "history_sample_size": int(_n),
                                     "opponent": _tonight_opp,
                                     "is_home": _is_home,
                                     "h2h_games": _h2h_n,

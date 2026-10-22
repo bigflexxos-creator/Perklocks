@@ -101,6 +101,13 @@ _PROV_QUALITY = {
     "APEX":                  97.0,
     "CAUSAL_INDEPENDENT":    95.0,
     "MODEL_CONDITIONED":     92.0,
+    # 2026-06 P0 — Empirical-independent prop models (NHL
+    # poisson+L10/L5 empirical blend; soccer goal_scorer_engine_v2
+    # xG + Finishing + Minutes posterior).  They produce calibrated
+    # independent probabilities WITHOUT any book-implied input and
+    # therefore sit in the same reliability band as MODEL_CONDITIONED.
+    "EMPIRICAL_INDEPENDENT": 95.0,
+    "EMPIRICAL_BAYESIAN":    95.0,
     "MODEL_FIRST":           90.0,
     "MODEL_BLENDED":         86.0,
     "PROP_MODEL_PRIMARY":    90.0,
@@ -198,6 +205,15 @@ _MATCHUP_KEYS = (
     "H2H Record", "H2H", "Injuries / Suspensions",
     "Defensive Rating", "Recent Volume / Usage",
     "Matchup vs Defense",
+    # 2026-06 P0 CLOSURE — Soccer scorer bridge emits these verbatim
+    # (see services/soccer_scorer_bridge.py build-factors block).
+    # Without recognising them the matchup axis fell back to
+    # "role_only"=72, structurally capping Soccer props at ~91.
+    "Opponent Defensive Weakness", "H2H vs Opponent",
+    "Home Advantage", "Team Attack Environment",
+    # NHL precompute block emits these:
+    "Opp Shot Suppression", "Opp Points Allowed",
+    "Opp xGA/60", "TOI (L10)",
 )
 
 
