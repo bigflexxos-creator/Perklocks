@@ -255,10 +255,16 @@ async def build_nba_live_features(
             act = r.get("actuals") or {}
             flat = {k: v for k, v in r.items() if k != "actuals"}
             flat.update({k: v for k, v in act.items() if k not in flat})
-            # Normalize the sort key — canonical rows carry event_time,
-            # legacy rows carry date.
-            if "date" not in flat and "event_time" in flat:
-                flat["date"] = flat["event_time"]
+            # 2026-06 PROD RECOVERY — canonical_history_resolver emits
+            # `game_date` (not `event_time`); earlier code only handled
+            # `event_time` and left `flat["date"]` missing, causing
+            # the downstream `df.sort_values("date")` to raise
+            # KeyError: 'date'.  Pick the first non-empty of
+            # game_date / event_time; skip rows missing both.
+            row_date = flat.get("game_date") or flat.get("event_time")
+            if not row_date:
+                continue
+            flat["date"] = row_date
             rows.append(flat)
         rows.sort(key=lambda x: x.get("date") or "", reverse=True)
         notes.append(
