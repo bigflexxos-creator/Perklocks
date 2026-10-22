@@ -270,16 +270,15 @@ async def read_player_recent(
         return rows
 
     # ── 2026-10-21 · NHL abbreviated-name fallback (ambiguity-gated) ─
-    # Step 3 of the priority ladder.  Only triggers when:
-    #   • no canonical_player_id was supplied,
-    #   • the exact full-name match returned zero rows, and
+    # Step 3 of the priority ladder.  Triggers when:
+    #   • exact match returned zero rows, AND
+    #   • (no canonical_player_id was supplied) OR (the supplied id
+    #     didn't match any canonical rows — e.g. ESPN athlete-id
+    #     passed in while actuals are keyed on NHL player-id), AND
     #   • the "X. Last" abbreviation uniquely identifies ONE
     #     canonical_player_id across the sport.
-    # If two or more distinct canonical_player_ids share the same
-    # abbreviated form, this returns no rows (fail-closed) — the
-    # pick's event-team-mismatch gate upstream will drop the pick
-    # rather than attach the wrong skater's history.
-    if (not canonical_player_id) and player_name:
+    # Multiple candidates → fail closed (no history returned).
+    if (not rows) and player_name:
         parts = (player_name or "").strip().split()
         if len(parts) >= 2 and len(parts[0]) >= 1:
             abbrev = f"{parts[0][0].upper()}. {' '.join(parts[1:])}"

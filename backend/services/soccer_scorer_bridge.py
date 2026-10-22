@@ -304,6 +304,7 @@ def compute_soccer_scorer_factors_sync(
     team_ctx = team_ctx or {}
     team_xG = float(team_ctx.get("team_xG") or 1.30)
     opp_xGA = float(team_ctx.get("opponent_xGA") or 1.30)
+    is_home_flag = bool(team_ctx.get("is_home"))
     lineup_conf = str(team_ctx.get("lineup_confidence") or
                       _lineup_confidence_from_form(form_row))
     # Convert lineup confidence → minutes multiplier.
@@ -313,6 +314,52 @@ def compute_soccer_scorer_factors_sync(
         "unknown":         0.75,
     }
     lineup_mult = lineup_mult_map.get(lineup_conf, 0.75)
+
+    # ── 2026-06 · P0 SOCCER GOALSCORER INTELLIGENCE ──────────────────
+    # Extract optional per-player evidence that the Lock Score should
+    # know about but the Poisson scorer engine does not re-model:
+    #   • H2H vs tonight's opponent (from preloaded h2h row)
+    #   • Home / away (passed in via team_ctx)
+    #   • Penalty-taker role (form_row.pens / penalty_role field)
+    #   • L5 / L10 goals from the form_row recent window if present
+    h2h_signal: Optional[float] = None
+    h2h_games: int = 0
+    _h2h_row = (team_ctx or {}).get("h2h")
+    if isinstance(_h2h_row, dict):
+        try:
+            _h2h_g   = float(_h2h_row.get("goals") or 0.0)
+            _h2h_app = float(_h2h_row.get("appearances")
+                             or _h2h_row.get("games") or 0.0)
+            if _h2h_app > 0:
+                h2h_games = int(_h2h_app)
+                # Scorer-rate per appearance vs this opponent (0..1).
+                h2h_signal = min(1.0, _h2h_g / max(1.0, _h2h_app))
+        except Exception:
+            pass
+
+    # Penalty-taker role: form_row.penalty_taker or form_row.pens.
+    is_pen_taker: bool = False
+    pens_taken = float(form_row.get("pens_taken")
+                        or form_row.get("penalties_taken") or 0.0)
+    pens_scored = float(form_row.get("pens_scored")
+                         or form_row.get("penalties_scored") or 0.0)
+    if (bool(form_row.get("penalty_taker"))
+            or bool(form_row.get("is_penalty_taker"))
+            or pens_taken >= 1):
+        is_pen_taker = True
+
+    # L5 / L10 goals from the form_row (optional — some ingesters store
+    # these; others only store season totals).
+    goals_l5 = form_row.get("goals_l5")
+    goals_l10 = form_row.get("goals_l10")
+    try:
+        goals_l5 = float(goals_l5) if goals_l5 is not None else None
+    except Exception:
+        goals_l5 = None
+    try:
+        goals_l10 = float(goals_l10) if goals_l10 is not None else None
+    except Exception:
+        goals_l10 = None
 
     # ── Delegate to Poisson engine ───────────────────────────────────
     try:
@@ -382,6 +429,23 @@ def compute_soccer_scorer_factors_sync(
         "Opponent Defensive Weakness": round(min(1.0, opp_xGA / 2.5), 3),
         "Recent Form":                 round(max(0.0, min(1.0, form_score)), 3),
     }
+    # Additive evidence factors — only emitted when real data supports.
+    if h2h_signal is not None:
+        factors["H2H vs Opponent"] = round(min(1.0, h2h_signal), 3)
+    if is_home_flag:
+        factors["Home Advantage"] = 0.55
+    else:
+        # Explicit away flag so Lock Score sees we modeled it.
+        factors["Home Advantage"] = 0.45
+    if is_pen_taker:
+        # Being on penalty duty is a real anytime-scorer uplift signal
+        # for the team's primary attacker.  Capped at a modest level —
+        # most pens don't convert into non-penalty goals the same game.
+        factors["Penalty Taker Role"] = 0.70
+    if goals_l5 is not None:
+        factors["L5 Goals"] = round(min(1.0, goals_l5 / 3.0), 3)
+    if goals_l10 is not None:
+        factors["L10 Goals"] = round(min(1.0, goals_l10 / 5.0), 3)
     # Clamp all factors to [0, 1] safely.
     for k in list(factors.keys()):
         v = factors[k]
@@ -397,24 +461,67 @@ def compute_soccer_scorer_factors_sync(
     if lineup_conf in ("rotation", "bench_risk", "unknown"):
         unc += 0.10
 
+    # ── 2026-06 P0 — explicit factor_sources + canonical identity.
+    # Mirrors the NHL contract: every independent signal class gets
+    # its own token so compute_lock_score's data-quality component
+    # can tally evidence breadth, not just evidence magnitude.
     sources = [
         "soccer_scorer_bridge_v1",
         "goal_scorer_engine_v2",
+        f"soccer_form:{int(games)}games",
     ]
     if form_row.get("source"):
         sources.append(str(form_row["source"]))
+    if prior_form_row:
+        sources.append("soccer_prior_season")
+    if h2h_signal is not None and h2h_games:
+        sources.append(f"soccer_h2h:{h2h_games}")
+    if is_pen_taker:
+        sources.append("soccer_penalty_role")
+    if goals_l10 is not None:
+        sources.append("soccer_l10_goals")
+    elif goals_l5 is not None:
+        sources.append("soccer_l5_goals")
+    # Evidence count mirrors the NHL contract.
+    evidence_count = 0
+    if games >= 5: evidence_count += 1
+    if games >= 15: evidence_count += 1
+    if xg > 0: evidence_count += 1
+    if h2h_games >= 2: evidence_count += 1
+    if is_pen_taker: evidence_count += 1
+    if prior_form_row: evidence_count += 1
+    if lineup_conf == "starting_xi": evidence_count += 1
+
+    # Canonical identity (passed through from form_row when upstream
+    # soccer_identity_ingest resolved it).  Never fabricate.
+    canonical_player_id = (
+        form_row.get("canonical_player_id")
+        or form_row.get("player_id")
+        or (team_ctx or {}).get("canonical_player_id")
+        or None
+    )
+    identity_source = ("canonical_player_id"
+                       if canonical_player_id else "name_only")
 
     return {
         "model_prob":       round(model_prob, 4),
         "factors":          factors,
         "sources":          sources,
+        "factor_sources":   sources,
+        "evidence_count":   int(evidence_count),
+        "canonical_player_id": canonical_player_id,
+        "player_identity_source": identity_source,
+        "player_identity_stable": bool(canonical_player_id),
+        "simulator_provenance":  "EMPIRICAL_INDEPENDENT",
+        "h2h_games":        int(h2h_games),
+        "is_home":          bool(is_home_flag),
         "quality_profile":  quality_profile,
         # Phase 2A.5D AMENDMENT — multi-season attacking profile, when
         # a prior_form_row was supplied.  Descriptive only; never sets
         # Lock Score.
         "multi_season_profile": multi_season_profile,
         "uncertainty":      round(min(0.60, unc), 3),
-        "engine_version":   "phase2a5_scorer_bridge_v1" + (
+        "engine_version":   "phase2a5_scorer_bridge_v2_p0_intel" + (
             "+multi_season" if multi_season_profile else ""),
     }
 

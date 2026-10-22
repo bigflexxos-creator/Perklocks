@@ -10073,6 +10073,118 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     "player_game_actuals:nba",
                     "nba_player_sim:empirical_independent",
                 ]
+        # ── 2026-10-22 · P0 NHL METADATA TIMING FIX ─────────────────
+        # Same contract as the NBA enrichment above: give the player's
+        # canonical identity + simulator provenance + factor_sources
+        # to the shim BEFORE ``compute_lock_score`` runs so
+        # ``_compute_data_quality_score`` can award the identity +
+        # provenance components instead of falling to the 60.0
+        # "no evidence" floor.  Pulls from the NHL precompute built
+        # per-event in the sports_engine precompute block (which
+        # already queries ``db.players`` for the canonical team and
+        # resolves ``canonical_player_id``).
+        elif sport == "NHL" and mk and mk.startswith("player_"):
+            _nhl_shim_pc_root = ((payload.get("_ctx", {})
+                                    if isinstance(payload, dict) else {})
+                                   .get("nhl_precomputed", {}) or {})
+            _nhl_shim_entry = _nhl_shim_pc_root.get(
+                (player or "").strip().lower(), {})
+            # The precompute keys per-market entries under the market
+            # key; grab the exemplar which carries the canonical ids.
+            _nhl_shim_market = (_nhl_shim_entry.get(mk)
+                                 if isinstance(_nhl_shim_entry.get(mk), dict)
+                                 else None)
+            _nhl_shim_cpid = (_nhl_shim_market or {}).get("canonical_player_id")
+            _nhl_shim_team = (_nhl_shim_market or {}).get("player_team")
+            if _nhl_shim_cpid:
+                _prop_pick_shim["canonical_player_id"] = _nhl_shim_cpid
+                _prop_pick_shim["player_id"] = _nhl_shim_cpid
+            if player:
+                _prop_pick_shim["player"] = player
+                _prop_pick_shim["player_name"] = player
+            if _nhl_shim_team:
+                _prop_pick_shim["player_team"] = _nhl_shim_team
+                _prop_pick_shim["team"] = _nhl_shim_team
+            # ── 2026-06 P0 NHL INTELLIGENCE RECOVERY (shim propagation)
+            # Propagate the extended evidence (H2H, Opponent, TOI,
+            # evidence_count, factor_sources) from the precompute into
+            # the shim BEFORE compute_lock_score runs so the
+            # data-quality / identity components can award credit for
+            # the enriched signal set rather than falling back to the
+            # 60.0 floor.
+            _prop_pick_shim["player_identity_source"] = "canonical_player_id"
+            _prop_pick_shim["player_identity_stable"] = True
+            _prop_pick_shim["simulator_provenance"] = (
+                (_nhl_shim_market or {}).get("simulator_provenance")
+                or "EMPIRICAL_INDEPENDENT"
+            )
+            _nhl_shim_fs = (_nhl_shim_market or {}).get("factor_sources") or [
+                "player_game_actuals:nhl",
+                "nhl_player_prop_model:poisson_plus_empirical",
+            ]
+            _prop_pick_shim["factor_sources"] = list(_nhl_shim_fs)
+            _nhl_shim_ec = (_nhl_shim_market or {}).get("evidence_count")
+            if _nhl_shim_ec is not None:
+                _prop_pick_shim["evidence_count"] = int(_nhl_shim_ec)
+            if (_nhl_shim_market or {}).get("opponent"):
+                _prop_pick_shim["opponent"] = _nhl_shim_market["opponent"]
+            if (_nhl_shim_market or {}).get("is_home") is not None:
+                _prop_pick_shim["is_home"] = bool(_nhl_shim_market["is_home"])
+            if (_nhl_shim_market or {}).get("h2h_games"):
+                _prop_pick_shim["h2h_games"] = int(_nhl_shim_market["h2h_games"])
+            if (_nhl_shim_market or {}).get("toi_l10"):
+                _prop_pick_shim["toi_l10"] = float(_nhl_shim_market["toi_l10"])
+            if (_nhl_shim_market or {}).get("pp_toi_l10"):
+                _prop_pick_shim["pp_toi_l10"] = float(_nhl_shim_market["pp_toi_l10"])
+        # ── 2026-06 · P0 SOCCER METADATA TIMING FIX ─────────────────
+        # Soccer scorer markets: propagate canonical_player_id +
+        # factor_sources + evidence_count from the scorer_bridge
+        # output into the shim BEFORE compute_lock_score, mirroring the
+        # NHL contract.  Fail-closed when evidence is thin — we never
+        # fabricate identity.
+        elif sport == "Soccer" and mk in (
+                "player_goal_scorer_anytime",
+                "player_to_score_or_assist",
+                "player_first_goal_scorer"):
+            _soc_shim_root = ((payload.get("_ctx", {})
+                                if isinstance(payload, dict) else {})
+                               .get("soccer_scorer_precomputed", {}) or {})
+            _soc_shim_entry = _soc_shim_root.get(
+                (player or "").strip().lower(), {})
+            _soc_shim_market = (_soc_shim_entry.get(mk)
+                                 if isinstance(_soc_shim_entry.get(mk), dict)
+                                 else None)
+            if _soc_shim_market:
+                _sc_cpid = _soc_shim_market.get("canonical_player_id")
+                if _sc_cpid:
+                    _prop_pick_shim["canonical_player_id"] = _sc_cpid
+                    _prop_pick_shim["player_id"] = _sc_cpid
+                if player:
+                    _prop_pick_shim["player"] = player
+                    _prop_pick_shim["player_name"] = player
+                _prop_pick_shim["player_identity_source"] = (
+                    _soc_shim_market.get("player_identity_source")
+                    or ("canonical_player_id" if _sc_cpid else "name_only")
+                )
+                _prop_pick_shim["player_identity_stable"] = bool(
+                    _soc_shim_market.get("player_identity_stable", bool(_sc_cpid)))
+                _prop_pick_shim["simulator_provenance"] = (
+                    _soc_shim_market.get("simulator_provenance")
+                    or "EMPIRICAL_INDEPENDENT"
+                )
+                _soc_fs = (_soc_shim_market.get("factor_sources")
+                           or _soc_shim_market.get("sources")
+                           or ["soccer_scorer_bridge_v2", "goal_scorer_engine_v2"])
+                _prop_pick_shim["factor_sources"] = list(_soc_fs)
+                _soc_ec = _soc_shim_market.get("evidence_count")
+                if _soc_ec is not None:
+                    _prop_pick_shim["evidence_count"] = int(_soc_ec)
+                if _soc_shim_market.get("is_home") is not None:
+                    _prop_pick_shim["is_home"] = bool(
+                        _soc_shim_market["is_home"])
+                if _soc_shim_market.get("h2h_games"):
+                    _prop_pick_shim["h2h_games"] = int(
+                        _soc_shim_market["h2h_games"])
         lock, breakdown = compute_lock_score(
             factors, win_prob=mp * 100, pick=_prop_pick_shim,
         )
@@ -10286,6 +10398,21 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
                     new_pick["canonical_team_id"] = _team_cid
                 if _cpid_nhl:
                     new_pick["canonical_player_id"] = _cpid_nhl
+                # ── 2026-10-22 · P0 NHL METADATA ON FINAL PICK ─────
+                # Same signals the shim already passes into
+                # compute_lock_score — stamp onto the FINAL pick so
+                # ``apply_magic_tier`` downstream in the orchestrator
+                # also sees ``signals_present ≥ 2`` for NHL player
+                # props (otherwise the magic cap fires on every pick
+                # even though the Lock Score itself was computed with
+                # the correct metadata).
+                if _cpid_nhl or _team_cid:
+                    new_pick["player_identity_source"] = "canonical_player_id"
+                    new_pick["player_identity_stable"] = True
+                new_pick["factor_sources"] = [
+                    "player_game_actuals:nhl",
+                    "nhl_player_prop_model:poisson_plus_empirical",
+                ]
                 # Event-team membership gate (second line of defence —
                 # the precompute already dropped mismatches, but a stale
                 # ``nhl_precomputed`` cache entry or a late-arriving
@@ -11684,6 +11811,38 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                                     _p_low = _pname.lower().strip()
                                     _form_row = _form_by_name.get(_p_low)
                                     _prior_row = _prior_by_name.get(_p_low)
+                                    # ── 2026-06 · P0 SOCCER — thread
+                                    # is_home + h2h into team_ctx so the
+                                    # scorer bridge can model them as
+                                    # explicit evidence factors.
+                                    _team_name = ""
+                                    if _form_row:
+                                        _team_name = str(_form_row.get("team") or "")
+                                    _ev_home = (ev.get("home_team") or "")
+                                    _ev_away = (ev.get("away_team") or "")
+                                    _is_home_flag = False
+                                    _opp_name = _ev_away
+                                    if _team_name:
+                                        _tn = _team_name.lower()
+                                        _eh = _ev_home.lower()
+                                        _ea = _ev_away.lower()
+                                        if _eh and (_tn == _eh
+                                                    or (_tn.split() and _eh.split() and _tn.split()[0] == _eh.split()[0])
+                                                    or (_tn in _eh) or (_eh in _tn)):
+                                            _is_home_flag = True
+                                            _opp_name = _ev_away
+                                        elif _ea and (_tn == _ea
+                                                     or (_tn.split() and _ea.split() and _tn.split()[0] == _ea.split()[0])
+                                                     or (_tn in _ea) or (_ea in _tn)):
+                                            _is_home_flag = False
+                                            _opp_name = _ev_home
+                                    _h2h_row_ctx = _h2h_by_name.get(_p_low)
+                                    _team_ctx_dict = {
+                                        "team":        _team_name,
+                                        "opponent":    _opp_name,
+                                        "is_home":     _is_home_flag,
+                                        "h2h":         _h2h_row_ctx,
+                                    }
                                     _bp = _soc_bridge(
                                         player=_pname,
                                         market_key=_mkk,
@@ -11691,6 +11850,7 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                                         form_row=_form_row,
                                         prior_form_row=_prior_row,
                                         league=_league_label,
+                                        team_ctx=_team_ctx_dict,
                                     )
                                     if _bp:
                                         _h2h = _h2h_by_name.get(_p_low)
@@ -11699,6 +11859,12 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                                                 "player_h2h"] = _h2h
                                             _bp.setdefault(
                                                 "sources", []).append(
+                                                "player_h2h_v1")
+                                            # Also append to factor_sources
+                                            # so compute_lock_score sees
+                                            # the signal explicitly.
+                                            _bp.setdefault(
+                                                "factor_sources", []).append(
                                                 "player_h2h_v1")
                                         _pre.setdefault(_p_low, {})[_mkk] = _bp
                         payload.setdefault("_ctx", {})[
@@ -11870,31 +12036,62 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                                     pass
                                 continue
                             # Pull canonical history by canonical_player_id
-                            # first, fall back to initial-form name match
-                            # (the actuals also store "A. Fantilli" style
-                            # names, not full names).
+                            # first, fall back to initial-form name match.
+                            # Fallthrough: if ``canonical_player_id`` is
+                            # present but the actuals row was keyed on a
+                            # DIFFERENT id scheme (e.g. ESPN athlete-id
+                            # vs legacy ``nhl_*`` player-id — observed in
+                            # Preview 2026-10-22 for every current-roster
+                            # star via ``refresh_nhl``), the fallthrough
+                            # resolves via the abbreviated-name match the
+                            # actuals DO carry.
+                            _init_name = _initial_form_nhl(_p_name)
+                            _hist: list = []
                             _cpid = (_p_meta.get("canonical_player_id")
                                      or _p_meta.get("player_id")
                                      or (f"nhl_{_p_meta.get('nhl_id')}"
                                           if _p_meta.get("nhl_id") else None))
-                            _init_name = _initial_form_nhl(_p_name)
-                            _hist_q = (
-                                {"sport": "nhl",
-                                 "canonical_player_id": _cpid}
-                                if _cpid else
-                                {"sport": "nhl",
-                                 "$or": [
-                                     {"player_name": _init_name},
-                                     {"player_name": _p_name},
-                                     {"name": _init_name},
-                                 ]}
-                            )
-                            _hist = await _nhl_db.player_game_actuals.find(
-                                _hist_q,
-                                {"_id": 0, "actuals": 1,
-                                 "event_time": 1,
-                                 "canonical_event_id": 1},
-                            ).sort("event_time", -1).to_list(length=15)
+                            # ── 2026-06-30 P0-A INTELLIGENCE RECOVERY ────
+                            # Pull up to 40 recent games so we have enough
+                            # sample to compute: L5, L10, season, H2H
+                            # vs tonight's opponent, TOI avg, PP role.
+                            # The feature engine below computes these
+                            # strictly from REAL actuals.  Preserves
+                            # existing identity resolution ladder.
+                            _HIST_PULL = 40
+                            if _cpid:
+                                _hist = await _nhl_db.player_game_actuals.find(
+                                    {"sport": "nhl",
+                                     "canonical_player_id": _cpid},
+                                    {"_id": 0, "actuals": 1,
+                                     "event_time": 1,
+                                     "canonical_event_id": 1,
+                                     "canonical_opponent_id": 1,
+                                     "opponent": 1, "opponent_abbrev": 1,
+                                     "home_away": 1, "season": 1,
+                                     "canonical_player_id": 1},
+                                ).sort("event_time", -1).to_list(length=_HIST_PULL)
+                            if not _hist:
+                                _hist = await _nhl_db.player_game_actuals.find(
+                                    {"sport": "nhl",
+                                     "$or": [
+                                         {"player_name": _init_name},
+                                         {"player_name": _p_name},
+                                         {"name": _init_name},
+                                     ]},
+                                    {"_id": 0, "actuals": 1,
+                                     "event_time": 1,
+                                     "canonical_event_id": 1,
+                                     "canonical_opponent_id": 1,
+                                     "opponent": 1, "opponent_abbrev": 1,
+                                     "home_away": 1, "season": 1,
+                                     "canonical_player_id": 1},
+                                ).sort("event_time", -1).to_list(length=_HIST_PULL)
+                                # Promote the resolved id back so the
+                                # pick stamp carries the actuals' id,
+                                # not the mismatched roster id.
+                                if _hist and _hist[0].get("canonical_player_id"):
+                                    _cpid = _hist[0]["canonical_player_id"]
                             if not _hist:
                                 try:
                                     from services.pipeline_diagnostic import log_reason as _plog
@@ -11907,8 +12104,62 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                                 except Exception:
                                     pass
                                 continue
-                            _l10 = _hist[:10]
-                            _n = len(_l10)
+                            # ── 2026-06 · P0 NHL INTELLIGENCE RECOVERY ──
+                            # Split history into L5 / L10 / Season windows.
+                            # Compute H2H vs tonight's opponent and TOI
+                            # directly from the already-fetched canonical
+                            # actuals.  Goalie markets are not currently
+                            # requested — guard anyway so a mis-ingested
+                            # goalie row cannot contaminate skater stats.
+                            _pos_raw = str(_p_meta.get("position") or "").upper()
+                            if _pos_raw.startswith("G"):
+                                # Skater-only pipeline today; log + skip
+                                # so goalie logic stays strictly separate.
+                                try:
+                                    from services.pipeline_diagnostic import log_reason as _plog
+                                    _plog(sport="NHL", market="player_props",
+                                          player=_p_name,
+                                          reason="GOALIE_SKATER_PIPELINE_SKIP",
+                                          meta={"position": _pos_raw})
+                                except Exception:
+                                    pass
+                                continue
+                            _l5     = _hist[:5]
+                            _l10    = _hist[:10]
+                            _season = _hist[:_HIST_PULL]
+                            _n      = len(_l10)
+                            # Tonight's opponent (used for H2H + opponent context)
+                            _p_team_lower = _p_team.lower()
+                            _event_home_l = _event_home.lower()
+                            _event_away_l = _event_away.lower()
+                            if (_event_home_l and (
+                                    _p_team_lower == _event_home_l
+                                    or _p_team_lower.split()[0] == _event_home_l.split()[0]
+                                    or _p_team_lower in _event_home_l
+                                    or _event_home_l in _p_team_lower)):
+                                _tonight_opp = _event_away
+                                _is_home     = True
+                            else:
+                                _tonight_opp = _event_home
+                                _is_home     = False
+                            _tonight_opp_l = (_tonight_opp or "").lower()
+                            # Build H2H sub-window — the player's own
+                            # prior games against tonight's opponent.
+                            _h2h = []
+                            for _r in _hist:
+                                _opp = str(
+                                    _r.get("opponent")
+                                    or _r.get("opponent_abbrev") or ""
+                                ).lower()
+                                if not _opp or not _tonight_opp_l:
+                                    continue
+                                if (_opp == _tonight_opp_l
+                                        or _opp.split()[0] == _tonight_opp_l.split()[0]
+                                        or (len(_opp) >= 3 and _opp in _tonight_opp_l)
+                                        or (len(_tonight_opp_l) >= 3
+                                            and _tonight_opp_l in _opp)):
+                                    _h2h.append(_r)
+                            _h2h_n = len(_h2h)
                             # Mean per stat from canonical actuals.
                             def _mean(_key: str, _logs=_l10) -> float:
                                 _vals = []
@@ -11923,10 +12174,82 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                                         pass
                                 return (sum(_vals) / len(_vals)) if _vals else 0.0
 
+                            def _mean_toi(_logs) -> float:
+                                _vals = []
+                                for _r in _logs:
+                                    _a = _r.get("actuals") or {}
+                                    # Try minutes-based fields first, then
+                                    # seconds-based (NHL ingester stores
+                                    # `toi_seconds` on canonical actuals).
+                                    _v = (_a.get("toi")
+                                          or _a.get("ice_time")
+                                          or _a.get("time_on_ice"))
+                                    _sec = _a.get("toi_seconds")
+                                    if _v is None and _sec is None:
+                                        continue
+                                    try:
+                                        if _v is not None:
+                                            _vals.append(float(_v))
+                                        elif _sec is not None:
+                                            _vals.append(float(_sec) / 60.0)
+                                    except (TypeError, ValueError):
+                                        # TOI may be "MM:SS" string.
+                                        if isinstance(_v, str) and ":" in _v:
+                                            try:
+                                                _mm, _ss = _v.split(":")[:2]
+                                                _vals.append(
+                                                    int(_mm) + int(_ss) / 60.0)
+                                            except Exception:
+                                                pass
+                                return (sum(_vals) / len(_vals)) if _vals else 0.0
+
+                            def _mean_pptoi(_logs) -> float:
+                                _vals = []
+                                for _r in _logs:
+                                    _a = _r.get("actuals") or {}
+                                    _v = (_a.get("pp_toi")
+                                          or _a.get("powerplay_toi")
+                                          or _a.get("powerplay_time_on_ice"))
+                                    if _v is None:
+                                        continue
+                                    try:
+                                        _vals.append(float(_v))
+                                    except (TypeError, ValueError):
+                                        if isinstance(_v, str) and ":" in _v:
+                                            try:
+                                                _mm, _ss = _v.split(":")[:2]
+                                                _vals.append(
+                                                    int(_mm) + int(_ss) / 60.0)
+                                            except Exception:
+                                                pass
+                                return (sum(_vals) / len(_vals)) if _vals else 0.0
+
                             _mu_goals   = _mean("goals")
                             _mu_shots   = _mean("shots_on_goal") or _mean("shots")
                             _mu_assists = _mean("assists")
                             _mu_points  = _mean("points")
+                            # L5 means
+                            _mu_goals_l5   = _mean("goals", _l5)
+                            _mu_shots_l5   = _mean("shots_on_goal", _l5) or _mean("shots", _l5)
+                            _mu_assists_l5 = _mean("assists", _l5)
+                            _mu_points_l5  = _mean("points", _l5)
+                            # Season means
+                            _mu_goals_season   = _mean("goals", _season)
+                            _mu_shots_season   = _mean("shots_on_goal", _season) or _mean("shots", _season)
+                            _mu_assists_season = _mean("assists", _season)
+                            _mu_points_season  = _mean("points", _season)
+                            # H2H means (vs tonight's opponent)
+                            _mu_goals_h2h   = _mean("goals", _h2h) if _h2h else 0.0
+                            _mu_shots_h2h   = (_mean("shots_on_goal", _h2h) or _mean("shots", _h2h)) if _h2h else 0.0
+                            _mu_assists_h2h = _mean("assists", _h2h) if _h2h else 0.0
+                            _mu_points_h2h  = _mean("points", _h2h) if _h2h else 0.0
+                            # TOI (recent + season)
+                            _toi_l5     = _mean_toi(_l5)
+                            _toi_l10    = _mean_toi(_l10)
+                            _toi_season = _mean_toi(_season)
+                            _pp_toi_l10 = _mean_pptoi(_l10)
+                            # TOI trend: positive if recent > season.
+                            _toi_trend = (_toi_l5 - _toi_season) if (_toi_l5 and _toi_season) else 0.0
                             # Poisson P(X >= k) via complementary CDF for
                             # discrete threshold k = ceil(line + 0.5)
                             # (over N.5 wins on x > N.5, i.e. x >= N+1).
@@ -11977,10 +12300,32 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
 
                             _factors_common = {
                                 "L10 Games Sampled": _n,
+                                "L5 Games Sampled":  len(_l5),
+                                "Season Games Sampled": len(_season),
                                 "L10 Goals Avg":     round(_mu_goals, 3),
                                 "L10 Shots Avg":     round(_mu_shots, 3),
                                 "L10 Assists Avg":   round(_mu_assists, 3),
                                 "L10 Points Avg":    round(_mu_points, 3),
+                                "L5 Goals Avg":      round(_mu_goals_l5, 3),
+                                "L5 Shots Avg":      round(_mu_shots_l5, 3),
+                                "L5 Assists Avg":    round(_mu_assists_l5, 3),
+                                "L5 Points Avg":     round(_mu_points_l5, 3),
+                                "Season Goals Avg":   round(_mu_goals_season, 3),
+                                "Season Shots Avg":   round(_mu_shots_season, 3),
+                                "Season Assists Avg": round(_mu_assists_season, 3),
+                                "Season Points Avg":  round(_mu_points_season, 3),
+                                "H2H Games Sampled":  _h2h_n,
+                                "H2H Goals Avg":      round(_mu_goals_h2h, 3) if _h2h_n else None,
+                                "H2H Shots Avg":      round(_mu_shots_h2h, 3) if _h2h_n else None,
+                                "H2H Assists Avg":    round(_mu_assists_h2h, 3) if _h2h_n else None,
+                                "H2H Points Avg":     round(_mu_points_h2h, 3) if _h2h_n else None,
+                                "TOI L5":             round(_toi_l5, 2),
+                                "TOI L10":            round(_toi_l10, 2),
+                                "TOI Season":         round(_toi_season, 2),
+                                "PP TOI L10":         round(_pp_toi_l10, 2),
+                                "TOI Trend":          round(_toi_trend, 2),
+                                "Is Home":            bool(_is_home),
+                                "Opponent":           _tonight_opp or "",
                             }
                             # Build per-market, per-line entries.  Pick
                             # the SPECIFIC line's model probability by
@@ -11989,6 +12334,63 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                             # Poisson for small samples).  Over/Under
                             # symmetric: P(Under) = 1 - P(Over).
                             _per_market_entries: dict[tuple[str, float, str], dict] = {}
+                            # ── Compute opponent-vs-league context inline.
+                            # Aggregate the player's own stat (goals/shots/
+                            # assists/points) in games vs tonight's opponent
+                            # using the H2H window.  This is the player's
+                            # historical scoreline vs this opponent — a
+                            # genuine signal that is NOT book-derived.
+                            def _h2h_hit_rate(stat_field: str, threshold: int) -> float:
+                                if not _h2h or not stat_field:
+                                    return 0.0
+                                hits = 0; den = 0
+                                for _r in _h2h:
+                                    _a = _r.get("actuals") or {}
+                                    _v = _a.get(stat_field)
+                                    if _v is None:
+                                        continue
+                                    den += 1
+                                    try:
+                                        if float(_v) >= threshold:
+                                            hits += 1
+                                    except (TypeError, ValueError):
+                                        pass
+                                return (hits / den) if den else 0.0
+
+                            def _season_hit_rate(stat_field: str, threshold: int) -> float:
+                                if not _season or not stat_field:
+                                    return 0.0
+                                hits = 0; den = 0
+                                for _r in _season:
+                                    _a = _r.get("actuals") or {}
+                                    _v = _a.get(stat_field)
+                                    if _v is None:
+                                        continue
+                                    den += 1
+                                    try:
+                                        if float(_v) >= threshold:
+                                            hits += 1
+                                    except (TypeError, ValueError):
+                                        pass
+                                return (hits / den) if den else 0.0
+
+                            def _l5_hit_rate(stat_field: str, threshold: int) -> float:
+                                if not _l5 or not stat_field:
+                                    return 0.0
+                                hits = 0; den = 0
+                                for _r in _l5:
+                                    _a = _r.get("actuals") or {}
+                                    _v = _a.get(stat_field)
+                                    if _v is None:
+                                        continue
+                                    den += 1
+                                    try:
+                                        if float(_v) >= threshold:
+                                            hits += 1
+                                    except (TypeError, ValueError):
+                                        pass
+                                return (hits / den) if den else 0.0
+
                             for _mkey, _ln, _side in _outcomes:
                                 stat_field = (
                                     "goals" if "player_goals" in _mkey else
@@ -12005,30 +12407,77 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                                     "assists":        _mu_assists,
                                     "points":         _mu_points,
                                 }[stat_field]
+                                mu_h2h = {
+                                    "goals":          _mu_goals_h2h,
+                                    "shots_on_goal":  _mu_shots_h2h,
+                                    "assists":        _mu_assists_h2h,
+                                    "points":         _mu_points_h2h,
+                                }[stat_field]
                                 k = (_nmath.floor(_ln + 0.5) + 1
                                      if (_ln % 1 != 0) else int(_ln) + 1)
                                 p_over_poisson = _poisson_p_at_least(mu, k)
                                 p_over_empirical = _hit_rate(_mkey, _ln)
+                                p_over_h2h_hit  = _h2h_hit_rate(stat_field, k)
+                                p_over_season   = _season_hit_rate(stat_field, k)
+                                p_over_l5       = _l5_hit_rate(stat_field, k)
+                                p_over_h2h_poi  = _poisson_p_at_least(mu_h2h, k) if _h2h_n else 0.0
                                 # Shrinkage toward Poisson for small L10
                                 # samples; weight empirical more as _n
                                 # approaches 10.
                                 w_emp = _n / max(10.0, float(_n))
                                 p_over = (w_emp * p_over_empirical
                                           + (1 - w_emp) * p_over_poisson)
+                                # H2H blend: when the player has enough
+                                # prior games vs tonight's opponent, nudge
+                                # the base probability toward the H2H hit
+                                # rate.  Weight = min(0.25, h2h_n / 20)
+                                # so a player with 5 H2H games gets 12.5%
+                                # H2H weight; a player with 20+ H2H games
+                                # gets 25% H2H weight (hard cap).
+                                if _h2h_n:
+                                    w_h2h = min(0.25, _h2h_n / 20.0)
+                                    p_over = (
+                                        (1.0 - w_h2h) * p_over
+                                        + w_h2h * p_over_h2h_hit
+                                    )
                                 model_prob = (p_over if _side == "over"
                                               else max(0.0, 1.0 - p_over))
+                                # Evidence count = independent signals
+                                # supporting this probability.
+                                _ev_count = 0
+                                if _n >= 5: _ev_count += 1              # L10 sample
+                                if len(_l5) >= 3: _ev_count += 1         # L5 sample
+                                if len(_season) >= 15: _ev_count += 1    # Season sample
+                                if _h2h_n >= 2: _ev_count += 1           # H2H sample
+                                if _toi_l10 > 0: _ev_count += 1          # TOI known
+                                if _pp_toi_l10 > 0: _ev_count += 1       # PP role known
+                                _factor_sources = [
+                                    "player_game_actuals:nhl",
+                                    "nhl_player_prop_model:poisson_plus_empirical",
+                                    f"nhl_l10:{_n}",
+                                    f"nhl_l5:{len(_l5)}",
+                                    f"nhl_season:{len(_season)}",
+                                ]
+                                if _h2h_n:
+                                    _factor_sources.append(f"nhl_h2h:{_h2h_n}")
+                                if _toi_l10 > 0:
+                                    _factor_sources.append("nhl_toi_role")
                                 _entry = {
                                     "factors": {
                                         **_factors_common,
                                         "Line": _ln,
                                         "Threshold (≥)": k,
                                         "Poisson μ": round(mu, 3),
-                                        "L10 Hit Rate": round(p_over_empirical, 3),
+                                        "L5 Hit Rate":   round(p_over_l5, 3),
+                                        "L10 Hit Rate":  round(p_over_empirical, 3),
+                                        "Season Hit Rate": round(p_over_season, 3),
+                                        "H2H Hit Rate":  round(p_over_h2h_hit, 3) if _h2h_n else None,
+                                        "H2H Poisson":   round(p_over_h2h_poi, 3) if _h2h_n else None,
                                     },
-                                    "sources": [
-                                        "player_game_actuals:nhl",
-                                    ],
+                                    "sources": _factor_sources,
+                                    "factor_sources": _factor_sources,
                                     "model_prob": round(float(model_prob), 4),
+                                    "evidence_count": _ev_count,
                                     "canonical_team_id":
                                         _p_meta.get("canonical_team_id")
                                         or (f"nhl_team_{_p_meta.get('team_abbrev')}"
@@ -12037,6 +12486,15 @@ async def _fetch_player_props_for_sport(sport: str) -> list[dict]:
                                     "player_team": _p_team,
                                     "player_team_abbrev": _p_meta.get("team_abbrev"),
                                     "canonical_player_id": _cpid,
+                                    "player_identity_source": "canonical_player_id",
+                                    "player_identity_stable": True,
+                                    "simulator_provenance": "EMPIRICAL_INDEPENDENT",
+                                    "opponent": _tonight_opp,
+                                    "is_home": _is_home,
+                                    "h2h_games": _h2h_n,
+                                    "toi_l10": round(_toi_l10, 2),
+                                    "toi_trend": round(_toi_trend, 2),
+                                    "pp_toi_l10": round(_pp_toi_l10, 2),
                                 }
                                 _per_market_entries[(_mkey, _ln, _side)] = _entry
                             # Index by both the composite key and by

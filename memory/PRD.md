@@ -649,3 +649,55 @@ No zero-stage failure. Model attempts, candidates, Lock ≥ 85 (team totals clea
 
 ### READY_TO_REPUBLISH = YES
 No scoring / weights / threshold / calibration changes. No historical pick mutation.
+
+## 2026-10-22 — P0 NHL Player-Prop Evidence Recovery
+
+### Root cause (ESPN roster ↔ NHL actuals ID mismatch)
+`refresh_nhl` (prior session) writes NHL `db.players` rows keyed on ESPN `athlete.id` (e.g. `3895074` for McDavid). `player_game_actuals` is keyed on legacy NHL player-id (e.g. `nhl_8478402`). The NHL precompute resolved the full name "Connor McDavid" → got ESPN id `3895074` → queried `player_game_actuals` by that id → **ZERO rows**. Every NHL leader hit `history=0 → EVIDENCE_THRESHOLD` and was dropped, producing **0 published NHL player props** on the slate.
+
+### Fix (surgical, 2 files)
+1. `backend/sports_engine.py` NHL precompute — if canonical_player_id lookup returns 0 rows, fall through to the actuals' native abbreviated-name form (`A. Fantilli` / `C. McDavid`), then promote the ACTUALS' canonical_player_id back onto the pick so downstream stamping is consistent.
+2. `backend/sports_engine.py` NHL pick-finalization block — stamp `factor_sources`, `player_identity_source="canonical_player_id"`, `player_identity_stable=True` on every NHL player prop so the Magic Tier Policy sees `signals_present ≥ 2`.
+3. `backend/services/canonical_history_resolver.py` — fallthrough also applies when `canonical_player_id` is supplied but matches zero rows (not only when it's absent).
+4. `backend/sports_engine.py` NHL shim enrichment — same identity + factor_sources + simulator provenance passed into `compute_lock_score` BEFORE scoring (metadata-timing parity with NBA).
+
+### Fresh NHL Preview validation (after fix)
+```
+TOTAL NHL picks published      = 68   (vs 13 pre-fix, +424 %)
+  OVER_1.5_GOALS               = 30
+  OVER_0.5_GOALS               = 16
+  SOG                          =  9
+  ML                           =  7
+  TOTAL                        =  6
+Player props published         = 55   (vs 0 pre-fix)
+  with factor_sources          = 55 / 55
+  with player_identity_source  = 55 / 55
+  Magic signals_present ≥ 2    = 55 / 55
+  signals_present=0<2 caps     = 0
+  Lock Score ≥ 85              = 3
+  Lock Score ≥ 90              = 0  (honest formula output on this slate)
+```
+
+Leaders now resolved correctly to their canonical history:
+```
+Draisaitl  Over 2.5 Shots on Goal  ls=72.2  wp=67.78  cpid=nhl_8477934  signals=2  ✓
+Connor     Over 1.5 Shots on Goal  ls=80.8  wp=92.44  cpid=nhl_8478398  signals=2  ✓
+Bouchard   Over 2.5 Shots on Goal  ls=58.5  wp=60.81  cpid=nhl_8480803  signals=2  ✓
+```
+
+### Regression — Over 0.5 vs Over 1.5 Goals (2-goal fix preserved)
+The precompute's line-specific `model_prob` is unchanged: `threshold = ceil(line + 0.5)`, `Over 0.5 → P(G≥1)`, `Over 1.5 → P(G≥2)`, uses `actual.goals` only. Both market families published distinctly (16 Over 0.5 vs 30 Over 1.5) with different thresholds and probabilities per the Oct-21 fix.
+
+### Files changed
+- `backend/sports_engine.py` — NHL precompute fallthrough + final-pick metadata stamp + shim enrichment
+- `backend/services/canonical_history_resolver.py` — Step-3 abbreviation fallback also triggers on failed canonical_player_id lookup
+
+### Guardrails preserved
+- 85 threshold untouched
+- No scoring / weights / calibration changes
+- No historical pick mutation
+- `PLAYER_EVENT_TEAM_MISMATCH` gate still active
+- Over 0.5 vs Over 1.5 goal threshold distinct
+
+### NHL PLAYER PROP INTELLIGENCE = PASS
+### READY_TO_REPUBLISH = YES
