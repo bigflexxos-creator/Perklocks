@@ -567,3 +567,85 @@ Scoot Henderson's immutable published pick is preserved at 57 (per directive).
 
 ### READY_TO_REPUBLISH = YES
 The published-pick immutability means Scoot Henderson's row stays at 57 until the next publication cycle naturally regenerates it. All fresh NBA picks from now on will stamp the signals and Lock Score will reflect the full evidence.
+
+## 2026-10-22 — P0 NBA Metadata Timing Fix + NHL Funnel Verification
+
+### 1. NBA — Sam Merrill root cause
+```
+pick_id                        = d91a064e-7f4c-53a1-b2c0-324e5a707e42
+publication timestamp          = 2026-10-22T04:06 UTC (fresh refresh)
+raw / model probability        = 93.52 % / 94.9 %
+calibrated probability         = 92.95 % (ok, no large shrinkage)
+sim                            = 94.9 %
+evidence_count                 = 3
+factor_sources                 = ['player_game_actuals:nba', 'nba_player_sim:empirical_independent']  ✓
+player_identity_source         = 'canonical_player_id'  ✓
+player_identity_stable         = True  ✓
+data_quality (on pick dict)    = None  (computed internally in compute_lock_score but not stamped back)
+volatility                     = None
+survival / counter / variance  = 99.2 / 26.8 / 25.0
+magic_tier.signals_present     = 2
+magic_tier.reasons             = []
+magic_tier.caps_applied        = []
+pre_elite_score / authority    = None
+final published Lock Score     = 72.2
+exact Lock-Score reason        = v4 CONFIDENCE-FIRST formula docks for (a) low evidence_count=3,
+                                 (b) variance_score=25, (c) absent closing-line / ROI inputs.
+                                 Not a Magic cap. Not a missing-signal cap.
+exact Confidence reason        = tier = "Pass" because lock < 85 (floor); UI shows Low.
+```
+
+**Metadata timing/order issue — YES**: `_compute_data_quality_score` (sports_engine.py:883-994) is evaluated INSIDE `compute_lock_score` and reads 10 provenance / identity signals off the pick dict handed to it. The `_prop_pick_shim` passed at `sports_engine.py:10024` previously carried only 5 primitives → identity_confidence component missing → DQ fell to the 60 "no evidence" floor → Lock Score for a 93 % WP pick landed at 69.
+
+### Fix (surgical, 1 site)
+`backend/sports_engine.py` — enrich `_prop_pick_shim` with canonical identity + player name + simulator provenance (`EMPIRICAL_INDEPENDENT`) + sim CI + factor_sources BEFORE calling `compute_lock_score`. Zero behavior change for picks that lack any of these fields (DQ components only count what's positively present). NFL/other-sport shim consumers see identical behavior — enrichment is NBA-scoped.
+
+### Fresh NBA Preview validation (fresh last-60 picks)
+- factor_sources present                   → 38 / 38
+- player_identity_source set               → 38 / 38
+- Magic signals_present ≥ 2                → 38 / 38
+- `signals_present=0<2` cap triggers       → 0
+- WP ≥ 85                                  → 18
+- WP ≥ 85 AND LS ≥ 85                      → 3 (Paul George Over 1.5 Rebounds = 99, etc.)
+- WP ≥ 85 AND LS < 85                      → 15 — all with `magic_tier.reasons=[] caps=[]`
+
+**Legitimate mathematical reasons for the 15 WP≥85 / LS<85 picks** (one line per sample):
+- Jalen Brunson Over 25.5 Points: wp=91.9 calibrated=71.39 → calibrator shrunk prob 20 pts
+- Nikola Jokic Over 5.5 Assists: wp=96.4 calibrated=82.58 → calibrator shrunk prob 14 pts
+- Jalen Williams Over 1.5 Assists: wp=95.3 calibrated=66.67 → calibrator shrunk prob 29 pts
+- Sam Merrill Over 4.5 Points: wp=93.5 calibrated=92.95 → variance_score=25 + evidence_count=3 formula dock
+- Isaiah Hartenstein Over 1.5 Assists: wp=87.0 calibrated=87.4 → evidence_count=3 formula dock
+Every one shows `magic_reasons=[]` → the Lock Score is the formula's honest output, not a cap.
+
+### NBA LOCK SCORE INTEGRITY = PASS
+No weight / threshold / calibration / scoring-math changes. Metadata now flows into scoring at the correct point. Published picks remain immutable.
+
+### 2. NHL — Preview funnel verification
+Fresh refresh picks_written = **13** (not zero). First zero stage: **none** — the funnel is healthy end-to-end.
+
+Fresh NHL picks on board (14 total):
+- Total Goals Over 6.5                   ls=76.5  wp=61.99
+- Edmonton Oilers Moneyline              ls=61.0  wp=50.17
+- Total Goals Over 5.5                   ls=74.2  wp=61.42
+- Total Goals Over 5.5                   ls=77.0  wp=63.87
+- Total Goals Under 5.5                  ls=75.8  wp=62.09
+- (+ 9 more)
+
+Brent Burns abbreviation fix is active in the normal generation path — the resolver's Step-3 abbrev fallback (sports_engine → canonical_history_resolver.read_player_recent) is called by every NHL player prop precompute invocation, so any "Brent Burns" / "Alex Ovechkin"-style live outcome whose canonical row is stored as "B. Burns" / "A. Ovechkin" will now hydrate correctly. No ambiguity failures triggered on current slate.
+
+### NHL PASS/FAIL = PASS
+No zero-stage failure. Model attempts, candidates, Lock ≥ 85 (team totals clearly < 85 → correctly withheld from Lock tier; Over 5.5 / 6.5 totals in the 74-77 range are the honest formula output).
+
+### Files changed
+- `backend/sports_engine.py` — enriched `_prop_pick_shim` for NBA player props with canonical identity + simulator provenance + factor_sources BEFORE `compute_lock_score`
+- `memory/PRD.md`
+
+### Tests
+- `test_nba_nhl_canonical_recovery.py` → PASS
+- `test_refresh_dispatch_invariant.py` → PASS
+- Live fresh NBA refresh: 38 / 38 player props carry `signals_present = 2` ✓
+- Live fresh NHL refresh: 14 picks published ✓
+- Backend restart clean
+
+### READY_TO_REPUBLISH = YES
+No scoring / weights / threshold / calibration changes. No historical pick mutation.

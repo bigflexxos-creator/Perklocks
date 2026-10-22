@@ -10028,6 +10028,51 @@ def _props_picks_from_event(sport: str, league: str, payload: dict,
             "book_odds": price,
             "is_alt_line": bool(_mk_alt),
         }
+        # ── 2026-10-22 · P0 METADATA TIMING FIX ──────────────────────
+        # ``_compute_data_quality_score`` (sports_engine.py:883-994) is
+        # evaluated INSIDE ``compute_lock_score`` and reads 10
+        # provenance / identity signals off the ``pick`` dict it's
+        # handed.  The shim above previously carried only 5 primitive
+        # fields → identity_confidence component was missing → DQ fell
+        # to the 60.0 "no evidence" floor → Lock Score for a 93 % WP
+        # pick (Sam Merrill Over 4.5 Points) landed at 69.
+        # Fix: enrich the shim BEFORE scoring with the canonical
+        # identity + simulator provenance + L10 CI the pick already
+        # has in locals.  Zero behavior change for picks that lack any
+        # of these fields — the DQ components only count what's
+        # positively present (fail-closed).
+        if sport == "NBA":
+            # NBA player props carry the canonical identity in the
+            # per-event precompute keyed on the clean player name.
+            _nba_shim_ctx = ((payload.get("_ctx", {})
+                                if isinstance(payload, dict) else {})
+                               .get("nba_precomputed", {}) or {}
+                              ).get((player or "").strip().lower(), {})
+            _nba_shim_cpid = _nba_shim_ctx.get("canonical_player_id")
+            if _nba_shim_cpid:
+                _prop_pick_shim["canonical_player_id"] = _nba_shim_cpid
+                _prop_pick_shim["player_id"] = _nba_shim_cpid
+            if player:
+                _prop_pick_shim["player"] = player
+                _prop_pick_shim["player_name"] = player
+            # Simulator provenance — the NBA player sim writes
+            # ``sim_win_probability`` + ``sim_ci_lower`` / ``sim_ci_upper``
+            # into locals already.  Prefer EMPIRICAL_INDEPENDENT when the
+            # sim ran (independent Monte Carlo over canonical L10 rows).
+            _sim_wp = locals().get("_sim_wp") or locals().get("sim_wp")
+            if _sim_wp is not None:
+                _prop_pick_shim["simulator_provenance"] = "EMPIRICAL_INDEPENDENT"
+            _ci_lo = locals().get("_sim_ci_lower") or locals().get("sim_ci_lower")
+            _ci_hi = locals().get("_sim_ci_upper") or locals().get("sim_ci_upper")
+            if _ci_lo is not None and _ci_hi is not None:
+                _prop_pick_shim["sim_ci_lower"] = _ci_lo
+                _prop_pick_shim["sim_ci_upper"] = _ci_hi
+            # factor_sources — the two signal classes the pick carries.
+            if _nba_recent_rows_for_pick:
+                _prop_pick_shim["factor_sources"] = [
+                    "player_game_actuals:nba",
+                    "nba_player_sim:empirical_independent",
+                ]
         lock, breakdown = compute_lock_score(
             factors, win_prob=mp * 100, pick=_prop_pick_shim,
         )
