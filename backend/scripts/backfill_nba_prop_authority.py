@@ -29,6 +29,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from datetime import datetime, timezone  # noqa: E402
 from motor.motor_asyncio import AsyncIOMotorClient  # noqa: E402
 
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
@@ -60,7 +61,13 @@ def _is_nba_player_prop(market: str) -> bool:
 
 
 async def _process_coll(coll) -> dict:
-    stats = {"scanned": 0, "lifted": 0, "skipped_gate": 0, "already_above": 0}
+    stats = {"scanned": 0, "lifted": 0, "skipped_gate": 0,
+             "skipped_past_event": 0, "already_above": 0}
+
+    # Immutable-history guard — never touch picks whose event_time or
+    # commence_time is in the past (the Lock Score at publication is
+    # the certified authority; back-fill must not rewrite that).
+    now_iso = datetime.now(timezone.utc).isoformat()
 
     cur = coll.find(
         {"sport": "NBA",
@@ -68,11 +75,23 @@ async def _process_coll(coll) -> dict:
         {"id": 1, "market": 1, "lock_score": 1, "lock_score_v2": 1,
          "lock_score_peak": 1, "win_probability": 1,
          "canonical_player_id": 1, "player_id": 1,
-         "provider_player_id": 1},
+         "provider_player_id": 1,
+         "event_time": 1, "commence_time": 1,
+         "settled": 1, "result": 1, "graded": 1},
     )
     async for d in cur:
         stats["scanned"] += 1
         if not _is_nba_player_prop(d.get("market") or ""):
+            continue
+        # Immutable-history guard
+        _event_iso = d.get("event_time") or d.get("commence_time")
+        if _event_iso and str(_event_iso) < now_iso:
+            stats["skipped_past_event"] += 1
+            continue
+        if (d.get("settled") is True
+                or d.get("graded") is True
+                or d.get("result") in ("WIN", "LOSS", "PUSH")):
+            stats["skipped_past_event"] += 1
             continue
         try:
             wp = float(d.get("win_probability") or 0.0)
