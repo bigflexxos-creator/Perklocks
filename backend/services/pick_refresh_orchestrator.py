@@ -2726,15 +2726,20 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
     # ── NHL ANYTIME-SCORER DIFFERENTIATION FLOOR (2026-06 · P0) ──────
     # Companion to the alt-goal cap above.  User-reported defect: NHL
     # Over 0.5 Goals picks were ALL stuck at lock_score == 85.0 flat,
-    # with no differentiation between elite goal scorers (Pastrnak,
-    # Forsberg, Raymond — all wp ≈ 61 %) and weaker candidates.
-    # Observed `win_probability` is 60-62 % with book implied 23-42 %,
-    # so model edge is legitimate and model probability is the ranking
-    # authority.  Lift the artificial 85.0 ceiling by applying a
-    # wp-based reliability floor identical to the NFL pattern
-    # (`60 + wp × 40`) BUT as a FLOOR not a cap — only raise, never
-    # lower.  This lets strong anytime-scorer evidence rank higher
-    # than weak ones (62 % → 84.8, 70 % → 88, 80 % → 92).
+    # with elite scorers (Pastrnak, Draisaitl, Celebrini) tied with
+    # scrub-tier scorers (Michael Misa).  Root cause: `win_probability`
+    # for anytime-scorer markets is model-clipped at ~62 %, so a
+    # wp-based formula cannot differentiate.  The signal that DOES
+    # differentiate is **book implied probability** — the market's own
+    # price-discovery already separates Pastrnak (-135 / ip=42.6 %)
+    # from Misa (+330 / ip=23.3 %).
+    #
+    # New formula:  lock = max(current_lock, 85 + (ip - 25) * 0.5)
+    # capped at 95.  Only RAISES, never lowers.  Only applies when the
+    # pick is already a Lock (≥ 85) — we're ranking inside the Lock
+    # band, not inflating weak picks.  Baseline ip=25 keeps borderline
+    # scorers at 85; ip=45 → lock=95 (elite tier like Pastrnak at
+    # home vs weak PK).
     try:
         import re as _nhl_as_re
         _nhl_anytime_pat = _nhl_as_re.compile(
@@ -2746,15 +2751,18 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
             if not _nhl_anytime_pat.search(_p.get("market") or ""):
                 continue
             try:
-                _wp = float(_p.get("win_probability") or 0.0)
-                if _wp > 1.0:
-                    _wp = _wp / 100.0
                 _lock = float(_p.get("lock_score") or 0.0)
+                _ip   = _p.get("implied_probability")
+                if _ip is None:
+                    continue
+                _ip = float(_ip)
+                if _ip <= 1.0:
+                    _ip = _ip * 100.0  # normalise 0.42 → 42
             except (TypeError, ValueError):
                 continue
-            if _wp < 0.60:
-                continue  # weak signal — don't inflate
-            _floor = min(96.0, 60.0 + max(0.0, min(1.0, _wp)) * 40.0)
+            if _lock < 85.0:
+                continue  # don't inflate off-board picks
+            _floor = min(95.0, 85.0 + (_ip - 25.0) * 0.5)
             if _floor <= _lock:
                 continue
             _p["lock_score"]      = round(_floor, 1)
@@ -2762,7 +2770,7 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
             _p["lock_score_peak"] = max(float(_p.get("lock_score_peak") or 0.0), round(_floor, 1))
             _p["nhl_anytime_floor_applied"] = True
             _p["nhl_anytime_floor_prior"]   = _lock
-            _p["nhl_anytime_floor_wp"]      = round(_wp, 4)
+            _p["nhl_anytime_floor_ip"]      = round(_ip, 2)
             try:
                 from sports_engine import _grade as _grade_fn
                 _p["grade"] = _grade_fn(_floor)
@@ -2771,8 +2779,8 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
             _nhl_anytime_lifted += 1
         if _nhl_anytime_lifted:
             logger.info(
-                "NHL anytime-scorer wp-floor: %d Over 0.5 Goals picks "
-                "lifted above the 85 ceiling",
+                "NHL anytime-scorer ip-floor: %d Over 0.5 Goals picks "
+                "differentiated above the 85 ceiling (elite tier → 90+)",
                 _nhl_anytime_lifted,
             )
     except Exception as _nhl_as_err:

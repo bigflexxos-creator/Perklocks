@@ -92,27 +92,32 @@ async def _process_coll(coll) -> dict:
         )
         stats["nhl_alt_capped"] += 1
 
-    # NHL anytime-scorer floor (Over 0.5 Goals, wp >= 0.60 → floor = 60 + wp*40)
+    # NHL anytime-scorer floor (Over 0.5 Goals, lock >= 85 → ip-based floor)
     cur = coll.find(
         {"sport": "NHL",
          "market": {"$regex": r"Over 0\.5 Goals", "$options": "i"},
-         "win_probability": {"$gte": 60.0}},
+         "lock_score": {"$gte": 85.0},
+         "implied_probability": {"$ne": None}},
         {"id": 1, "market": 1, "lock_score": 1, "lock_score_v2": 1,
-         "lock_score_peak": 1, "win_probability": 1},
+         "lock_score_peak": 1, "implied_probability": 1},
     )
     async for d in cur:
         stats["scanned"] += 1
         if not NHL_ANYTIME_PAT.search(d.get("market") or ""):
             continue
         try:
-            wp = float(d.get("win_probability") or 0.0)
-            if wp > 1.0: wp = wp / 100.0
             lock = float(d.get("lock_score") or 0.0)
+            ip = d.get("implied_probability")
+            if ip is None:
+                continue
+            ip = float(ip)
+            if ip <= 1.0:
+                ip = ip * 100.0
         except (TypeError, ValueError):
             continue
-        if wp < 0.60:
+        if lock < 85.0:
             continue
-        floor = min(96.0, 60.0 + max(0.0, min(1.0, wp)) * 40.0)
+        floor = min(95.0, 85.0 + (ip - 25.0) * 0.5)
         if floor <= lock:
             continue
         new_lock = round(floor, 1)
@@ -129,7 +134,7 @@ async def _process_coll(coll) -> dict:
                 "lock_score_peak": lpk,
                 "nhl_anytime_floor_applied": True,
                 "nhl_anytime_floor_prior": lock,
-                "nhl_anytime_floor_wp": round(wp, 4),
+                "nhl_anytime_floor_ip": round(ip, 2),
                 "grade": _grade(new_lock),
             }}
         )
