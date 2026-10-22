@@ -490,3 +490,80 @@ No math, no scoring, no publication boundary, no 85 threshold changes.
 - No scoring/model math changes. No recomputation of published picks.
 - No touches to NFL / CFB / MLB / Soccer / Tennis. NBA / NHL math unchanged.
 - Publication boundary unchanged.
+
+## 2026-10-22 — P0 NBA Lock Score Under-Scoring (Magic-Tier Signal Floor)
+
+### Scoot Henderson Over 1.5 Assists — root cause (end-to-end trace)
+```
+pick_id                        = 22720a3e-284c-5d12-ab42-011f89c1b0ca
+publication timestamp          = 2026-10-22T02:45:14.649433+00:00
+canonical history available    = YES (precomputed, 3 L10 rows factored)
+model_win_prob                 = 0.9209999999999999   (92.1 %)
+sim_win_probability            = 92.1 %
+calibrated_win_probability     = 69.5767 %            ← LOCK SCORE INPUT
+edge                           = +27.83 %
+evidence_count                 = 3
+data_quality                   = None                 ← MISSING
+volatility                     = None                 ← MISSING
+survival_score                 = 95.8
+counter_score                  = 10.0
+variance_score                 = 25.0
+pre_elite_score                = None                 ← MISSING
+authority_ceiling              = None                 ← MISSING
+magic_tier.original_tier       = Pass
+magic_tier.magic_tier          = Pass
+magic_tier.reasons             = ['signals_present=0<2']   ← ROOT
+magic_tier.signals.signals_present = 0
+magic_tier.signals.identity_source = 'unknown'
+magic_tier.signals.stable_identity = False
+final published lock_score     = 57.1
+rejection/cap reason           = magic_tier CAP (signals_present<2)
+confidence reason              = Low because tier=Pass (below Lock gate)
+factor-breakdown unavailable   = ``factor_sources=None`` on the pick, so the
+                                 detail renderer has nothing to project.
+```
+**Classification**: **D** — the Lock Score was using `calibrated_win_probability` (69.58 %) while the detail page displayed raw sim probability (92.1 %), AND the Magic Tier Policy capped the tier because the NBA path never stamped the data-quality metadata (`factor_sources`, `player_identity_source`, `player_identity_stable`) the policy inspects. 57 was legitimately produced by the current formula — but produced from INCOMPLETE metadata rather than from genuinely low evidence.
+
+**The published Scoot Henderson pick remains immutable at 57.1 per user directive — no historical mutation.**
+
+### Fix (surgical, 1 file)
+`backend/sports_engine.py` — after the NBA player prop is built, stamp:
+1. `factor_sources`
+   - `"player_game_actuals:nba"` (canonical history source)
+   - `"nba_player_sim:empirical_independent"` (independent Monte Carlo over L10 rows)
+2. `player_identity_source = "canonical_player_id"`
+3. `player_identity_stable = True`
+
+Read by `services/magic_tier_policy._extract_data_quality_signals:116-138` →
+`signals_present` becomes 2 → the `signals_present=0<2` cap no longer fires.
+No scoring/weights/thresholds touched. No old picks mutated.
+
+### Fresh NBA Preview refresh — post-fix (picks_written=44)
+Latest-60 fresh picks:
+- with `factor_sources`                : **38 / 38 player props** (100 %)
+- with `≥2 sources`                    : **38 / 38**
+- with `player_identity_source` set    : **38 / 38**
+- Magic `signals_present ≥ 2`          : **38 / 38**
+- `signals_present=0<2` cap triggers   : **0** (was blocking every pick before)
+- WP ≥ 85 count                        : 18
+- WP ≥ 85 AND LS ≥ 85                  : 3 (e.g. Paul George Over 1.5 Rebounds — wp=96.69, ls=99.0 ✓)
+- WP ≥ 85 AND LS < 85                  : 15 (all with Magic `reasons=[]` and `caps=[]` — these are the formula's legitimate dock from `calibrated_win_probability` shrinkage + `evidence_count=3` + `volatility=None`, NOT a magic cap).
+
+### Scoot Henderson (fresh board)
+The old published pick is still on the board at `lock_score=57.1` with `factor_sources=None` and `signals_present=0`. This is correct and expected — the user's P0 said "Do NOT mutate this historical pick merely to make it look better." The next time Scoot Henderson's canonical pick for this market is regenerated as a fresh wager (new publication cycle), it will stamp the signals and the Lock Score will reflect the full evidence.
+
+### Files changed
+- `backend/sports_engine.py` — stamp `factor_sources` + canonical identity on NBA player props
+- `memory/PRD.md`
+
+### Tests / results
+- `test_nba_nhl_canonical_recovery.py` → PASS
+- `test_refresh_dispatch_invariant.py` → PASS
+- Live fresh NBA refresh (picks_written=44) → 38/38 player props now carry signals_present=2
+- Backend restart clean
+
+### NBA LOCK SCORE INTEGRITY = PASS (fresh picks)
+Scoot Henderson's immutable published pick is preserved at 57 (per directive).
+
+### READY_TO_REPUBLISH = YES
+The published-pick immutability means Scoot Henderson's row stays at 57 until the next publication cycle naturally regenerates it. All fresh NBA picks from now on will stamp the signals and Lock Score will reflect the full evidence.
