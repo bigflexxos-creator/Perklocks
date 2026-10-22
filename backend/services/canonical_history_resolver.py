@@ -44,12 +44,45 @@ _PLAYER_FIELD_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
         "season_type":  ("season_type", "season_phase"),
     },
     "nhl": {
-        "goals":        ("goals", "actuals.g", "stats.g"),
-        "assists":      ("assists", "actuals.a", "stats.a"),
-        "points":       ("points", "actuals.pts", "stats.pts"),
-        "shots":        ("shots", "shots_on_goal", "sog",
-                          "actuals.sog", "stats.sog"),
-        "toi":          ("toi", "ice_time", "actuals.toi"),
+        # P0-3 FIX (2026-06-10) — canonical NHL actuals store FULL stat
+        # names inside the ``actuals`` nested dict (``actuals.goals``,
+        # ``actuals.assists``, ``actuals.points``, ``actuals.shots_on_goal``,
+        # ``actuals.toi_seconds``, …).  Previous aliases only matched the
+        # abbreviated keys (``actuals.g``, ``actuals.a``, ``actuals.pts``,
+        # ``actuals.sog``, ``actuals.toi``) so every NHL feature-engine
+        # call saw rows carrying only identity/opponent/season and ZERO
+        # stat columns → factors couldn't be built → player props were
+        # under-graded or skipped.  Smallest NHL-scoped correction: add
+        # the full-name variants to each alias tuple.  Mirrors the NBA
+        # P0-2 fix from 2026-10-20.  Also adds pp_goals / pp_points /
+        # toi_seconds variants so the NHL authority gate can consume
+        # role-adjacent evidence.
+        "goals":            ("goals", "actuals.goals",
+                              "actuals.g", "stats.g"),
+        "assists":          ("assists", "actuals.assists",
+                              "actuals.a", "stats.a"),
+        "points":           ("points", "actuals.points",
+                              "actuals.pts", "stats.pts"),
+        "shots_on_goal":    ("shots_on_goal", "sog",
+                              "actuals.shots_on_goal",
+                              "actuals.sog", "stats.sog"),
+        "shots":            ("shots", "actuals.shots",
+                              "shots_on_goal", "sog",
+                              "actuals.sog", "stats.sog"),
+        "toi_seconds":      ("toi_seconds",
+                              "actuals.toi_seconds",
+                              "actuals.toi_s"),
+        "toi":              ("toi", "ice_time", "actuals.toi",
+                              "actuals.toi_mmss"),
+        "power_play_goals": ("power_play_goals",
+                              "actuals.power_play_goals",
+                              "actuals.ppg"),
+        "power_play_points":("power_play_points",
+                              "actuals.power_play_points",
+                              "actuals.ppp"),
+        "plus_minus":       ("plus_minus",
+                              "actuals.plus_minus",
+                              "actuals.pm"),
     },
     "nba": {
         # P0-2 FIX (2026-10-20) — canonical NBA actuals store FULL stat
