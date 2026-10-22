@@ -1758,6 +1758,166 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
     except Exception as _nba_authority_err:  # pragma: no cover
         logger.debug("nba_prop_lock_authority skipped: %s", _nba_authority_err)
 
+    # ═════════════════════════════════════════════════════════════════
+    # NHL PLAYER-PROP LOCK AUTHORITY (2026-06 · P0 parity closure)
+    # ─────────────────────────────────────────────────────────────────
+    # Parity with the NFL and NBA authority blocks above.  Prior NHL
+    # scoring relied only on the sport-agnostic composite + the earlier
+    # NHL alt-goal cap / anytime-scorer ip-floor; it had NO reachability
+    # ceiling parallel to NFL/NBA.  That meant strong-evidence NHL props
+    # (SOG, Goals ≥0.5, Assists, Points) could not structurally reach
+    # the 90-99 band even with elite WP + full evidence pillars.
+    #
+    # Formula (identical shape to NFL/NBA):
+    #   authority_ceiling = 60 + wp_frac * 40           # 60..100
+    #   evidence_mult     = 1.00  if DQ≥80 & n≥5 & evidence_count≥6
+    #                       0.97  if DQ≥75 & n≥4 & evidence_count≥5
+    #                       0.94  otherwise
+    #   authority_score   = ceiling × mult
+    #   score             = max(composite_score, authority_score)
+    #   score             = min(authority_ceiling, score)       # hard-cap
+    #
+    # Elite evidence gate (identical philosophy, NHL-adapted):
+    #   * sport ∈ {NHL, ICEHOCKEY_NHL}
+    #   * market is a player prop (goals/assists/points/shots on goal)
+    #     NOT a game market (moneyline/puck line/total)
+    #   * canonical_player_id present AND identity_source=canonical AND
+    #     identity_stable=True
+    #   * probability_provenance ∈ {EMPIRICAL_INDEPENDENT,
+    #                                 CAUSAL_INDEPENDENT}
+    #   * historical_hit_rate present AND history_sample_size ≥ 10
+    #   * sim_support (nhl_sim_context carries recent_mean / sim band)
+    #   * n_real_factors ≥ 4
+    #   * evidence_count ≥ 5
+    #   * data_quality ≥ 70
+    #   * wp_frac ≥ 0.65
+    # If ANY pillar fails → authority SKIPS → composite stands.
+    # Env flag ``NHL_PROP_LOCK_AUTHORITY=off`` disables for instant revert.
+    # Binding ceiling: `_nhl_authority_hard_ceiling` enforced after Phase-B.
+    # ═════════════════════════════════════════════════════════════════
+    try:
+        import os as _os_nhl
+        _nhl_prop_authority_on = (_os_nhl.environ.get(
+            "NHL_PROP_LOCK_AUTHORITY", "on").lower() != "off")
+        if _nhl_prop_authority_on and pick:
+            _sport_up_nhl = (pick.get("sport") or "").strip().upper()
+            _mkt_nhl = (pick.get("market") or "").lower()
+            _is_nhl_player_prop = (
+                _sport_up_nhl in ("NHL", "ICEHOCKEY_NHL")
+                and any(k in _mkt_nhl for k in (
+                    "goals", "assists", "points",
+                    "shots on goal", "shots", "sog",
+                ))
+                and not any(_mkt_nhl.endswith(t) for t in (
+                    " moneyline", " money line", " puck line",
+                    " spread", " total",
+                ))
+                # Guard: team totals like "Total Goals Over 5.5"
+                and "total goals" not in _mkt_nhl
+                and "total shots" not in _mkt_nhl
+            )
+            if _is_nhl_player_prop:
+                _wp_source_nhl = (
+                    win_prob if win_prob is not None
+                    else (pick.get("model_win_prob")
+                          if pick.get("model_win_prob") is not None
+                          else pick.get("win_probability"))
+                )
+                try:
+                    _wp_nhl = float(_wp_source_nhl or 0)
+                except (TypeError, ValueError):
+                    _wp_nhl = 0.0
+                _wp_frac_nhl = _wp_nhl / 100.0 if _wp_nhl > 1.0 else _wp_nhl
+                _wp_frac_nhl = max(0.0, min(1.0, _wp_frac_nhl))
+                _authority_ceiling_nhl = 60.0 + _wp_frac_nhl * 40.0
+                _n_real_factors_nhl = sum(
+                    1 for k, v in (factors or {}).items()
+                    if not (isinstance(k, str) and k.startswith("__"))
+                    and isinstance(v, (int, float)) and v is not None
+                )
+                _has_identity_nhl = bool(
+                    pick.get("canonical_player_id")
+                    or pick.get("player_id")
+                    or pick.get("provider_player_id")
+                )
+                _prov_nhl = (
+                    pick.get("probability_provenance")
+                    or pick.get("simulator_provenance")
+                    or pick.get("provenance")
+                )
+                _prov_ok_nhl = _prov_nhl in (
+                    "EMPIRICAL_INDEPENDENT", "CAUSAL_INDEPENDENT",
+                )
+                _hist_hit_nhl = pick.get("historical_hit_rate")
+                _hist_sample_nhl = pick.get("history_sample_size") or 0
+                _hist_ok_nhl = (
+                    isinstance(_hist_hit_nhl, (int, float))
+                    and float(_hist_sample_nhl) >= 10
+                )
+                _ev_count_nhl = pick.get("evidence_count") or 0
+                try:
+                    _ev_count_nhl = int(_ev_count_nhl)
+                except (TypeError, ValueError):
+                    _ev_count_nhl = 0
+                _identity_source_nhl = pick.get("player_identity_source")
+                _identity_stable_nhl = pick.get("player_identity_stable")
+                _identity_ok_nhl = (
+                    _has_identity_nhl
+                    and _identity_source_nhl == "canonical_player_id"
+                    and _identity_stable_nhl is True
+                )
+                _ci_lo_nhl = pick.get("sim_ci_lower")
+                _ci_hi_nhl = pick.get("sim_ci_upper")
+                _sim_support_nhl = (
+                    isinstance(_ci_lo_nhl, (int, float))
+                    and isinstance(_ci_hi_nhl, (int, float))
+                    and 0.0 <= float(_ci_lo_nhl) <= float(_ci_hi_nhl) <= 1.0
+                )
+                _evidence_ok_nhl = (
+                    _identity_ok_nhl
+                    and _prov_ok_nhl
+                    and _hist_ok_nhl
+                    and _sim_support_nhl
+                    and _n_real_factors_nhl >= 4
+                    and _ev_count_nhl >= 5
+                    and data_quality >= 70.0
+                    and _wp_frac_nhl >= 0.65
+                )
+                if _evidence_ok_nhl:
+                    if (data_quality >= 80.0 and _n_real_factors_nhl >= 5
+                            and _ev_count_nhl >= 6):
+                        _evidence_mult_nhl = 1.00
+                    elif (data_quality >= 75.0 and _n_real_factors_nhl >= 4
+                            and _ev_count_nhl >= 5):
+                        _evidence_mult_nhl = 0.97
+                    else:
+                        _evidence_mult_nhl = 0.94
+                    _authority_score_nhl = (
+                        _authority_ceiling_nhl * _evidence_mult_nhl)
+                    score = max(score, _authority_score_nhl)
+                    score = min(_authority_ceiling_nhl, score)
+                    pick["nhl_prop_authority_applied"] = True
+                    pick["nhl_prop_authority_wp"] = round(_wp_frac_nhl, 4)
+                    pick["nhl_prop_authority_ceiling"] = round(_authority_ceiling_nhl, 2)
+                    pick["nhl_prop_authority_evidence_mult"] = _evidence_mult_nhl
+                    # Binding ceiling for Phase-B enforcement.
+                    pick["_nhl_authority_hard_ceiling"] = round(_authority_ceiling_nhl, 2)
+                else:
+                    pick["nhl_prop_authority_applied"] = False
+                    pick["nhl_prop_authority_skip_reason"] = (
+                        f"elite_gate:id_ok={_identity_ok_nhl},"
+                        f"prov_ok={_prov_ok_nhl}({_prov_nhl}),"
+                        f"hist_ok={_hist_ok_nhl}(n={_hist_sample_nhl}),"
+                        f"sim_support={_sim_support_nhl},"
+                        f"n_factors={_n_real_factors_nhl},"
+                        f"ev_count={_ev_count_nhl},"
+                        f"dq={data_quality:.0f},"
+                        f"wp={_wp_frac_nhl:.2f}"
+                    )
+        score = min(99.0, score)
+    except Exception as _nhl_authority_err:  # pragma: no cover
+        logger.debug("nhl_prop_lock_authority skipped: %s", _nhl_authority_err)
+
     # Store the 7 v4 components + evidence signals so the UI / analytics
     # can inspect them later.  ``confidence`` (v4, 2026-06-14) is the
     # new first-class calibrated-win-probability component; the shrunken
@@ -2074,6 +2234,13 @@ def compute_lock_score(factors: dict[str, float], win_prob: float | None = None,
                 pass
             # Clean up the one-shot marker so it doesn't leak downstream.
             pick.pop("_nba_authority_hard_ceiling", None)
+        _nhl_hard_cap = pick.get("_nhl_authority_hard_ceiling") if pick else None
+        if _nhl_hard_cap is not None:
+            try:
+                final_score = round(min(float(_nhl_hard_cap), final_score), 1)
+            except (TypeError, ValueError):
+                pass
+            pick.pop("_nhl_authority_hard_ceiling", None)
     except Exception:
         pass
 
