@@ -429,7 +429,7 @@ async def project_mlb_actuals(db) -> dict:
     """
     try:
         from services.live_gamelog_ingestor.runner import refresh_mlb_gamelogs
-        res = await refresh_mlb_gamelogs(db, hot_only=True)
+        res = await refresh_mlb_gamelogs(db)
         inserted = int(res.get("inserted", 0))
         updated = int(res.get("updated", 0))
     except Exception as e:
@@ -500,7 +500,7 @@ async def project_nba_actuals(db) -> dict:
     historical freshness."""
     try:
         from services.live_gamelog_ingestor.runner import refresh_nba_gamelogs
-        res = await refresh_nba_gamelogs(db, hot_only=True)
+        res = await refresh_nba_gamelogs(db)
         inserted = int(res.get("inserted", 0))
         updated = int(res.get("updated", 0))
     except Exception as e:
