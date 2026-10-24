@@ -50,3 +50,31 @@ Three defects were reported & fixed in this session:
 ## Testing status
 - `testing_agent` pass 150 — 11/11 pytest cases green.  Zero regressions on
   existing NFL leakage cap / NFL reliability floor blocks.
+
+
+## Session: 2026-10 One-Pass PerkLocks External-ML Migration + Expo SDK 58
+Scope: Decouple heavy NBA/NHL/Soccer ML from Emergent web layer; add portable
+external runner; add manual GitHub Actions workflow; surgically upgrade Expo
+SDK 57 → 58. Guardrails: no deploy, no republish, no scoring changes, no
+threshold change, FanDuel-only, no second board authority, immutable history
+preserved.
+
+### Delivered
+- External-ML HTTP contract: `/api/export/inputs`, `/api/ingest/board`,
+  `/api/ingest/commit`, `/api/ingest/heartbeat`, `/api/ingest/fail` (auth via
+  `X-Ingest-Token`). Begin→validate→commit atomicity preserved.
+- Portable runner at `/app/scripts/external_runner/run.py` — end-to-end verified
+  for NBA, NHL, Soccer (local dry run + commit + live pointer flip).
+- `.github/workflows/perklocks-external-ml.yml` manual-dispatch workflow.
+- Expo SDK 57 → 58 (`expo@~58.0.19`, `react-native@0.88.0`, `react@19.3.0`).
+  `expo-doctor` 20/20. Metro serves 200. Login screen mounts cleanly in web
+  preview.
+
+### Deferred (out of scope this pass)
+- NHL cross-line odds collisions / strict exact-line matching (P1).
+- Scheduled GitHub Actions trigger (P2).
+- NHL 2.0 Feature Engine wiring + Tab UI filters (P2).
+- 107 pre-existing TypeScript warnings (P3; none block runtime).
+
+### Final report
+`/app/memory/FINAL_ONE_PASS_REPORT_PERKLOCKS_EXTERNAL_ML_SDK58.md`

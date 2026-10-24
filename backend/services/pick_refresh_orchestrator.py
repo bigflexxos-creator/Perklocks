@@ -409,7 +409,17 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
     any snapshot, so every ``/api/picks/today?lite=true`` fell through
     to the full 3-6 s pipeline.  ``fail()`` is idempotent (removes
     ``_building[gid]`` if present) and safe to call from ``finally``.
+
+    2026-06 ONE-PASS MIGRATION — additionally guarantees that the
+    distributed ``picks_refresh:*`` lease is released on every exit
+    path (success, exception, asyncio cancellation).  The in-body
+    release at the tail of ``_refresh_picks_build`` only fires on the
+    success path; the explicit ``finally`` here closes the gap that
+    was previously covered only by the 25-min Mongo TTL.
     """
+    import os as _os
+    _instance_id = _os.environ.get("HOSTNAME", "instance-" + str(_os.getpid()))
+    _lease_key = f"picks_refresh:{date_str}:{sport_filter or 'ALL'}"
     from services import board_generation as _bg
     _gid = await _bg.begin(scope=(sport_filter or "ALL").upper())
     _committed_or_failed = False
@@ -446,6 +456,21 @@ async def _refresh_picks(date_str: str, sport_filter: Optional[str] = None) -> i
                     _bg._building.pop(_gid, None)
                 except Exception:
                     pass
+        # 2026-06 ONE-PASS MIGRATION — always release the lease,
+        # scoped to (key, owner).  Owner-check means we never delete
+        # another instance's lease on a lost race.  Idempotent — a
+        # successful in-body release at _refresh_picks_build tail
+        # makes this a no-op.
+        try:
+            await db.scheduler_leases.delete_one(
+                {"lease_key": _lease_key, "owner": _instance_id},
+            )
+        except Exception as _rel_err:
+            logger.debug(
+                "finally-release of picks_refresh lease failed "
+                "(key=%s owner=%s): %s",
+                _lease_key, _instance_id, _rel_err,
+            )
 
 
 async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None) -> int:
@@ -470,6 +495,45 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
         logger.info("Refreshing picks for %s · sport_filter=%s", date_str, sport_filter)
     else:
         logger.info("Refreshing picks for %s", date_str)
+
+    # ── EXTERNAL-ML EXECUTION-MODE SHORT-CIRCUIT (2026-06) ────────────
+    # When a sport is flagged ``ML_REFRESH_EXECUTION_MODE_<SPORT>=external``
+    # (or the global ``ML_REFRESH_EXECUTION_MODE=external``) the heavy
+    # NBA/NHL/Soccer compute is OWNED by the external runner — the
+    # in-app loop must NOT run the heavy path for that sport.  We
+    # short-circuit at the sport_filter level (per-sport loops) BEFORE
+    # the distributed lease is acquired, so an external loop never
+    # starves the lease.  Unfiltered (ALL-sports) refreshes still run
+    # internally for the OTHER sports and gate per-sport heavy blocks
+    # downstream (NHL feature-engine attach, Soccer AGS acquisition,
+    # etc.) individually.
+    try:
+        from services import external_ml as _external_ml
+        _ext_sports = _external_ml.sports_in_external_mode()
+    except Exception:
+        _external_ml = None  # type: ignore
+        _ext_sports = set()
+    if sport_filter and _ext_sports:
+        _sp_norm = (sport_filter or "").strip()
+        _sp_cmp = _sp_norm.lower()
+        _ext_lc = {s.lower() for s in _ext_sports}
+        if _sp_cmp in _ext_lc:
+            logger.info(
+                "REFRESH SHORT-CIRCUIT sport=%s mode=EXTERNAL — heavy "
+                "in-app path bypassed; external runner owns this sport",
+                _sp_norm,
+            )
+            try:
+                if _external_ml is not None:
+                    await _external_ml.record_heartbeat(
+                        db, job_id=f"inapp-skip-{_instance_id if False else 'web'}",
+                        sport=_sp_norm, stage="SKIPPED_IN_APP_EXTERNAL_MODE",
+                        generation_id=None,
+                        message=f"in-app refresh skipped for date={date_str}",
+                    )
+            except Exception:
+                pass
+            return 0
 
     # ── PERKLOCKS MAIN 41 · P0 (2026-06-09) — DISTRIBUTED LEASE ─────
     # Both Kubernetes backend replicas were entering this function
@@ -649,6 +713,28 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
     # empty list.
     if picks is None:
         picks = []
+    # ── EXTERNAL-ML UNFILTERED-REFRESH FILTER (2026-06) ──────────────
+    # In an ALL-sports refresh (sport_filter=None), ``generate_all_picks``
+    # already ran all heavy per-sport scorers in-process.  To honour the
+    # user's directive — "NBA/NHL/Soccer external mode must bypass the
+    # heavy _refresh_picks_build() execution path entirely once external
+    # mode is certified" — we drop every pick whose sport is in external
+    # mode BEFORE any post-model mutators run (elite boost, bandit,
+    # learning engine, player form, NHL FE attach, Soccer AGS trigger,
+    # simulations, publication).  The external runner is the sole
+    # authority for those sports' picks on the live board.
+    if _ext_sports and picks:
+        _ext_lc_set = {s.lower() for s in _ext_sports}
+        _before_ext_filter = len(picks)
+        picks = [p for p in picks
+                 if str((p or {}).get("sport") or "").lower() not in _ext_lc_set]
+        _dropped = _before_ext_filter - len(picks)
+        if _dropped:
+            logger.info(
+                "EXTERNAL-ML filter dropped %d in-app picks for externalised "
+                "sports %s (external runner owns these on the live board)",
+                _dropped, sorted(_ext_sports),
+            )
     # 2026-07-22 diagnostic — count MLS ESPN picks right off the pipeline.
     _mls_espn_from_engine = sum(
         1 for p in (picks or []) if isinstance(p, dict)
@@ -809,7 +895,14 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
         # ── 2026-06 SOCCER AGS FAMILY-LEVEL FRESHNESS WIRING (Block 3) ─
         # Measure soccer family freshness INDEPENDENTLY so an AGS
         # starvation never hides behind a fresh Score-or-Assist count.
+        # EXTERNAL-ML (2026-06): skip entirely when Soccer is externalised
+        # — heavy AGS acquisition is owned by the external runner.
+        _soccer_externalised = "Soccer" in (_ext_sports or set())
+        if _soccer_externalised:
+            logger.info("Soccer AGS freshness wiring skipped — Soccer is in external mode")
         try:
+            if _soccer_externalised:
+                raise RuntimeError("skipped:soccer_external_mode")
             from services.soccer_ags_freshness_isolator import (
                 soccer_player_freshness, ags_needs_refresh,
             )
@@ -1122,7 +1215,15 @@ async def _refresh_picks_build(date_str: str, sport_filter: Optional[str] = None
         # sport='nhl').  Picks without sufficient recent games receive
         # None → simulator returns DATA_INSUFFICIENT and the pick is
         # skipped at scoring — correct fail-closed behavior.
+        # EXTERNAL-ML (2026-06): skip entirely when NHL is externalised
+        # — heavy NHL feature engine + simulation is owned by the
+        # external runner.
+        _nhl_externalised = "NHL" in (_ext_sports or set())
+        if _nhl_externalised:
+            logger.info("NHL feature engine attach skipped — NHL is in external mode")
         try:
+            if _nhl_externalised:
+                raise RuntimeError("skipped:nhl_external_mode")
             from services.nhl_feature_engine import (
                 build_nhl_sim_context as _nhl_ctx_builder,
                 clear_caches as _nhl_clear_caches,
