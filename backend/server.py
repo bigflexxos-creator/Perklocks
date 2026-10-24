@@ -3881,6 +3881,38 @@ try:
     except Exception as _e_pl:
         logger.warning(
             "Publication Lifecycle failed to mount: %s", _e_pl)
+    # ── 2026-06 ONE-PASS PERKLOCKS EXTERNAL-ML MIGRATION ────────────
+    # New external-ML board externalization surface (NBA / NHL / Soccer).
+    # Routes:
+    #   GET  /api/export/inputs
+    #   POST /api/ingest/board
+    #   POST /api/ingest/commit
+    #   POST /api/ingest/heartbeat
+    #   POST /api/ingest/fail
+    # All ingest routes require X-Ingest-Token (INGEST_TOKEN env).
+    try:
+        from routes import external_ml_routes
+        app.include_router(external_ml_routes.router, prefix="/api")
+        logger.info(
+            "External-ML routes mounted at /api/export/* + /api/ingest/*")
+        # Ensure collections' indexes exist exactly once on boot.
+        try:
+            import asyncio as _aio_boot
+            from services import external_ml as _ext_ml_boot
+            async def _ensure_ext_ml_idx():
+                try:
+                    await _ext_ml_boot.ensure_indexes(db)
+                except Exception as _ei:
+                    logger.debug("external_ml index bootstrap: %s", _ei)
+            try:
+                _aio_boot.get_event_loop().create_task(_ensure_ext_ml_idx())
+            except RuntimeError:
+                pass  # no running loop at import time
+        except Exception as _ext_idx_err:
+            logger.debug("external_ml index bootstrap skipped: %s", _ext_idx_err)
+    except Exception as _e_ext_ml:
+        logger.warning(
+            "External-ML routes failed to mount: %s", _e_ext_ml)
 except Exception as _routes_mount_err:
     logger.exception("Extracted route modules failed to mount: %s", _routes_mount_err)
 

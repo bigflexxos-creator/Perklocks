@@ -158,6 +158,117 @@ def select_authoritative_book(
     return same_rank[0]
 
 
+def _canon_line_strict(x) -> Optional[float]:
+    """Canonical form used for strict wager-identity equality."""
+    if x is None:
+        return None
+    try:
+        return round(float(x), 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def _norm_name_strict(name: str) -> str:
+    """Match adapter normalization so identity checks line up."""
+    if not name:
+        return ""
+    import unicodedata
+    nk = unicodedata.normalize("NFKD", name)
+    return "".join(c for c in nk if not unicodedata.combining(c)).lower().strip()
+
+
+def select_exact_fanduel_quote(
+    quotes: Iterable[ObservedQuote | dict],
+    *,
+    pick_event_id: str,
+    pick_player: Optional[str],
+    pick_market_key: str,
+    pick_side: str,
+    pick_line: Optional[float],
+) -> tuple[Optional[dict], Optional[str]]:
+    """Return ``(quote, reason)`` where ``quote`` is the SINGLE
+    FanDuel observed quote whose full wager identity matches the pick
+    exactly: event + player + market + side + line + book=fanduel.
+
+    When no such quote exists, returns ``(None, reason_code)`` where
+    reason_code is one of:
+        - "no_fanduel_quote"
+        - "cross_event_rejected"
+        - "cross_player_rejected"
+        - "cross_market_rejected"
+        - "cross_side_rejected"
+        - "cross_line_rejected"
+        - "no_valid_fanduel_quote"
+        - "no_observed_quotes"
+
+    This is the strict-identity gate used by the NHL attach path.
+    """
+    if not quotes:
+        return None, "no_observed_quotes"
+
+    want_event = str(pick_event_id or "")
+    want_player_norm = _norm_name_strict(pick_player or "")
+    want_market = (pick_market_key or "").lower()
+    want_side = (pick_side or "").lower()
+    want_line = _canon_line_strict(pick_line)
+
+    reasons: list[str] = []
+    survivors: list[dict] = []
+
+    for q in quotes:
+        d = asdict(q) if isinstance(q, ObservedQuote) else dict(q)
+        # Validate lineage (trusted source, non-banned book, ...)
+        ok, _vreason = validate_observed_quote(d)
+        if not ok:
+            continue
+        # BOOK must be FanDuel — zero fallback.
+        if str(d.get("bookmaker") or "").lower() != "fanduel":
+            reasons.append("no_fanduel_quote")
+            continue
+        # EVENT must match exactly.
+        q_event = str(d.get("event_id")
+                       or d.get("provider_event_id") or "")
+        if want_event and q_event != want_event:
+            reasons.append("cross_event_rejected")
+            continue
+        # PLAYER must match (normalized) — only when the pick carries
+        # a player.  Team/game markets have an empty player name on
+        # both sides and still match.
+        q_player = _norm_name_strict(d.get("player_name") or "")
+        if want_player_norm and q_player != want_player_norm:
+            reasons.append("cross_player_rejected")
+            continue
+        # MARKET must match exactly.
+        q_market = str(d.get("provider_market_key")
+                        or d.get("market_family") or "").lower()
+        if q_market != want_market:
+            reasons.append("cross_market_rejected")
+            continue
+        # SIDE must match exactly.
+        if str(d.get("side") or "").lower() != want_side:
+            reasons.append("cross_side_rejected")
+            continue
+        # LINE must match exactly (None==None for binary markets).
+        if _canon_line_strict(d.get("line")) != want_line:
+            reasons.append("cross_line_rejected")
+            continue
+        survivors.append(d)
+
+    if not survivors:
+        # Pick the strongest reason seen (first non-generic).
+        for r in ("cross_event_rejected", "cross_player_rejected",
+                   "cross_market_rejected", "cross_side_rejected",
+                   "cross_line_rejected", "no_fanduel_quote"):
+            if r in reasons:
+                return None, r
+        return None, "no_valid_fanduel_quote"
+
+    # Ties on identity → most-recent observation wins.
+    survivors.sort(key=lambda d: str(d.get("observed_at") or ""),
+                    reverse=True)
+    return survivors[0], None
+
+
 def consensus_median_price(quotes: Iterable[ObservedQuote | dict]) -> Optional[int]:
     """Return a median American price for ANALYTICS / DEVIG only.
 
@@ -189,5 +300,6 @@ __all__ = [
     "ObservedQuote",
     "PREFERRED_BOOK_ORDER", "TRUSTED_ODDS_SOURCES", "BANNED_ODDS_SOURCES",
     "validate_observed_quote", "select_authoritative_book",
+    "select_exact_fanduel_quote",
     "consensus_median_price",
 ]

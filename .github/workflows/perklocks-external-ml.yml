@@ -1,0 +1,145 @@
+name: PerkLocks External ML — Manual Dispatch (Preview)
+
+# Preview-only, manual-dispatch workflow.
+# NO schedule block on purpose — the one-pass migration brief explicitly
+# forbids enabling a cron schedule in this pass. The team can run this
+# workflow by clicking "Run workflow" in the GitHub Actions UI once the
+# required secrets are added (see below). It will stage a fresh
+# generation for the chosen sport and ask the Preview API to atomically
+# commit the last-good-board swap. The server owns the publication
+# authority; this workflow is only the compute worker.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   PERKLOCKS_BASE_URL   e.g. https://preview.your-domain.emergent.host
+#                        (NO trailing slash; every path is prefixed
+#                        with /api by the runner).
+#   INGEST_TOKEN         must match backend/.env INGEST_TOKEN on the
+#                        deployed Preview backend.
+#   THE_ODDS_API_KEY     needed by the backend scoring modules the
+#                        runner imports (sports_engine →
+#                        _fetch_event_props_payload etc.).
+#
+# This workflow does NOT deploy, does NOT republish, does NOT change
+# scoring math, and does NOT lower the 85 lock-score floor. The runner
+# imports lower-level scoring components directly and bypasses the
+# in-app _refresh_picks_build orchestrator (lease, legacy mutators,
+# state machine). All publication semantics remain server-authoritative.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sport:
+        description: "Sport to run (NBA / NHL / Soccer)"
+        required: true
+        type: choice
+        default: NBA
+        options:
+          - NBA
+          - NHL
+          - Soccer
+      date:
+        description: "Pick date (YYYY-MM-DD, UTC). Blank → UTC today."
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "Dry run (score only, skip stage/commit)"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # Only one external-ML run per sport in flight at a time — matches
+  # the server's distributed lease / staging TTL semantics.
+  group: perklocks-external-ml-${{ github.event.inputs.sport }}
+  cancel-in-progress: false
+
+jobs:
+  run-external-ml:
+    name: External ML — ${{ github.event.inputs.sport }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      PERKLOCKS_BASE_URL: ${{ secrets.PERKLOCKS_BASE_URL }}
+      INGEST_TOKEN:       ${{ secrets.INGEST_TOKEN }}
+      THE_ODDS_API_KEY:   ${{ secrets.THE_ODDS_API_KEY }}
+      # The scoring modules load MONGO_URL from backend/.env for
+      # feature-cache reads. We do NOT configure a Mongo in CI; the
+      # runner is designed to fall back to the Preview backend's
+      # export endpoint for inputs, and lower-level reads degrade
+      # gracefully when no Mongo is reachable.
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          if [ -z "${PERKLOCKS_BASE_URL:-}" ]; then
+            echo "::error::PERKLOCKS_BASE_URL secret is missing"
+            exit 1
+          fi
+          if [ -z "${INGEST_TOKEN:-}" ]; then
+            echo "::error::INGEST_TOKEN secret is missing"
+            exit 1
+          fi
+          echo "Base URL: ${PERKLOCKS_BASE_URL}"
+          echo "Token length: ${#INGEST_TOKEN}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install backend + runner dependencies
+        working-directory: ${{ github.workspace }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install httpx
+
+      - name: Export inputs sanity check
+        run: |
+          set -euo pipefail
+          STATUS=$(curl -s -o /tmp/export.json -w "%{http_code}" \
+            -H "X-Ingest-Token: ${INGEST_TOKEN}" \
+            "${PERKLOCKS_BASE_URL}/api/export/inputs?sport=${{ github.event.inputs.sport }}&limit=1")
+          echo "export status: ${STATUS}"
+          head -c 400 /tmp/export.json || true
+          echo
+          if [ "${STATUS}" != "200" ]; then
+            echo "::error::export sanity check failed (status=${STATUS})"
+            exit 1
+          fi
+
+      - name: Run external-ML runner (${{ github.event.inputs.sport }})
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          DATE_ARG=""
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            DATE_ARG="--date ${{ github.event.inputs.date }}"
+          fi
+          DRY=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            DRY="--dry-run"
+          fi
+          python -m scripts.external_runner.run \
+            --sport "${{ github.event.inputs.sport }}" \
+            --base-url "${PERKLOCKS_BASE_URL}" \
+            ${DATE_ARG} ${DRY}
+
+      - name: Summarise run
+        if: always()
+        run: |
+          echo "sport=${{ github.event.inputs.sport }}"
+          echo "date=${{ github.event.inputs.date }}"
+          echo "dry_run=${{ github.event.inputs.dry_run }}"
+          echo "status=${{ job.status }}"
