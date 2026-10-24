@@ -1052,16 +1052,35 @@ async def canonical_consistency_check(
 async def refresh_health(user: Annotated[UserPublic, Depends(current_user)]):
     """Anti-starvation audit: per-sport outcome of the last refresh cycle
     (OK / TIMEOUT / ERROR, published_count, duration) plus live upcoming
-    pick counts so a starved sport is visible immediately."""
+    pick counts so a starved sport is visible immediately.
+
+    2026-06 ONE-PASS MIGRATION — additionally includes the external-ML
+    per-sport externalization summary (NBA / NHL / Soccer): execution
+    mode, last committed generation, current staging job + stage, last
+    heartbeat, last error.  Read-only.
+    """
     from datetime import datetime, timezone, timedelta
     now = datetime.now(timezone.utc)
     rows = [r async for r in db.refresh_health.find({}, {"_id": 0}).sort("finished_at", -1).limit(30)]
     cut = (now + timedelta(hours=72)).isoformat()
     live: dict[str, dict] = {}
-    for sp in ("NFL", "MLB", "CFB", "Soccer", "Tennis"):
+    for sp in ("NFL", "MLB", "NBA", "NHL", "CFB", "Soccer", "Tennis"):
         q = {"sport": sp, "event_time": {"$gte": now.isoformat(), "$lte": cut}, "off_board": {"$ne": True}}
         live[sp] = {
             "upcoming_72h": await db.picks.count_documents(q),
             "board_eligible_85": await db.picks.count_documents({**q, "published_lock_score": {"$gte": 85}}),
         }
-    return {"generated_at": now.isoformat(), "last_cycle": rows, "live": live}
+    # External-ML per-sport summary (NBA/NHL/Soccer only).  Fail-closed —
+    # if the module is unavailable we still emit the legacy response.
+    external_ml_summary: dict = {}
+    try:
+        from services import external_ml as _ext_ml
+        external_ml_summary = await _ext_ml.ops_summary(db)
+    except Exception as _ext_err:
+        external_ml_summary = {"error": f"external_ml_summary_unavailable: {_ext_err}"}
+    return {
+        "generated_at": now.isoformat(),
+        "last_cycle":   rows,
+        "live":         live,
+        "external_ml":  external_ml_summary,
+    }
