@@ -85,6 +85,19 @@ def _match_pick_side(pick: dict) -> str:
     return side or ""
 
 
+def _pick_line_value(pick: dict):
+    """Extract the pick's exact line value for strict matching.
+
+    Looks across the common field names producers use.  Returns the
+    raw value (caller canonicalizes).
+    """
+    for k in ("line", "point", "pick_line", "wager_line",
+              "threshold", "prop_line"):
+        if k in pick and pick[k] is not None:
+            return pick[k]
+    return None
+
+
 async def _fetch_payload_safe(sport_label: str, sport_key: Optional[str],
                                 event_id: str) -> Optional[dict]:
     try:
@@ -196,6 +209,74 @@ async def attach_observed_quotes(picks: Iterable[dict],
                 continue
             player_name = (p.get("player_name") or p.get("player") or "")
             side = _match_pick_side(p)
+
+            # ────────────────────────────────────────────────────────────
+            # NHL STRICT FANDUEL EXACT-WAGER-IDENTITY GATE
+            # (2026-10 one-pass fix — Option A)
+            #
+            # For NHL, a pick's observed_quotes list MUST contain ONLY
+            # quotes whose full identity matches the pick exactly:
+            #   event + player + market + side + exact line + fanduel
+            #
+            # No side-less fallback.  No non-FanDuel fallback.  No
+            # cross-line substitution.  When the exact FanDuel wager
+            # is unavailable, we leave the pick WITHOUT observed_quotes
+            # so the universal lineage pass fail-closes with
+            # no_real_book_line=True.
+            # ────────────────────────────────────────────────────────────
+            if sport.upper() == "NHL":
+                pick_line_raw = _pick_line_value(p)
+                exact_quotes = quotes_for(
+                    extracted,
+                    market_key=market_key,
+                    player=player_name,
+                    side=side,
+                    line=pick_line_raw,
+                    bookmaker="fanduel",
+                    require_line_match=True,
+                )
+                # Defense-in-depth: re-verify each surviving quote
+                # carries the exact wager identity on the quote object
+                # itself (never trust just the bucket key).
+                try:
+                    from services.observed_quote import (
+                        select_exact_fanduel_quote,
+                    )
+                    best, reject_reason = select_exact_fanduel_quote(
+                        exact_quotes,
+                        pick_event_id=event_id,
+                        pick_player=player_name,
+                        pick_market_key=market_key,
+                        pick_side=side,
+                        pick_line=pick_line_raw,
+                    )
+                except Exception as _sel_err:
+                    best, reject_reason = None, f"selector_error:{_sel_err}"
+
+                if best is None:
+                    # Fail-closed: strip any producer-attached quotes
+                    # so the lineage pass sets no_real_book_line=True.
+                    p.pop("observed_quotes", None)
+                    p["nhl_identity_reason"] = (
+                        reject_reason or "no_fanduel_quote"
+                    )
+                    attach_pass_failed += 1
+                    continue
+
+                # Attach ONLY the single verified FanDuel quote.  The
+                # universal lineage pass runs select_authoritative_book
+                # over this list; since there is exactly one survivor,
+                # that one survives — carrying its own line/side/book.
+                p["observed_quotes"] = [best]
+                p["nhl_identity_reason"] = None
+                attached_count += 1
+                if not (p.get("provider_event_id")
+                        and p.get("bookmaker")
+                        and p.get("book_odds") is not None):
+                    attach_pass_repaired += 1
+                continue
+
+            # Non-NHL path — unchanged.
             quotes = quotes_for(extracted,
                                  market_key=market_key,
                                  player=player_name,

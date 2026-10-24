@@ -36,18 +36,41 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _canon_line(x) -> Optional[float]:
+    """Canonicalize a sportsbook line for strict equality bucketing.
+
+    * ``None`` passes through unchanged (binary markets: ML, BTTS).
+    * All numeric values are rounded to 1-decimal precision — the
+      half-point grid every US book publishes against (0.5, 1.5, 2.5,
+      -3.5, ...).  Guards against float-noise mismatches like
+      ``2.4999999`` vs ``2.5``.
+    """
+    if x is None:
+        return None
+    try:
+        return round(float(x), 1)
+    except (TypeError, ValueError):
+        return None
+
+
 def extract_observed_quotes(
     payload: dict,
     *,
     sport: str,
     event_id: str,
     allowed_markets: Optional[Iterable[str]] = None,
-) -> dict[tuple[str, str, str], list[dict]]:
-    """Return {(market_key, normalized_name, side): [observed_quotes]}.
+) -> dict[tuple[str, str, str, Optional[float]], list[dict]]:
+    """Return {(market_key, normalized_name, side, line): [observed_quotes]}.
 
     Each observed quote is already in the ObservedQuote shape and
     passes `services.observed_quote.validate_observed_quote` provided
     the raw payload came from a trusted provider (`the_odds_api`).
+
+    LINE IS PART OF THE BUCKET KEY (2026-10 NHL exact-identity fix).
+    This prevents Over 1.5 / Over 2.5 (same market+player+side) from
+    collapsing into one bucket.  Non-NHL callers that query without
+    specifying ``line`` keep today's behavior via ``quotes_for``'s
+    partial-lookup path, which iterates and aggregates across lines.
 
     Parameters
     ----------
@@ -60,7 +83,7 @@ def extract_observed_quotes(
         If provided, only quotes for these markets are returned.
         Otherwise ALL markets in the payload are extracted.
     """
-    out: dict[tuple[str, str, str], list[dict]] = {}
+    out: dict[tuple[str, str, str, Optional[float]], list[dict]] = {}
     if not isinstance(payload, dict):
         return out
     allowed_lower = (
@@ -104,14 +127,15 @@ def extract_observed_quotes(
                 except (TypeError, ValueError):
                     line = None
                 player_norm = _norm_name(raw_player or "")
-                key = (mk, player_norm, side_label)
+                line_canon = _canon_line(line)
+                key = (mk, player_norm, side_label, line_canon)
                 out.setdefault(key, []).append({
                     "sport":             sport,
                     "event_id":          str(event_id),
                     "provider_event_id": str(event_id),
                     "provider_market_key": mk,
                     "market_family":     mk,
-                    "line":              line,
+                    "line":              line_canon,
                     "side":              side_label or "yes",
                     "bookmaker":         book_key,
                     "price":             price,
@@ -123,27 +147,47 @@ def extract_observed_quotes(
 
 
 def quotes_for(
-    extracted: dict[tuple[str, str, str], list[dict]],
+    extracted: dict[tuple[str, str, str, Optional[float]], list[dict]],
     *, market_key: str, player: Optional[str] = None,
     side: Optional[str] = None,
+    line: Optional[float] = None,
+    bookmaker: Optional[str] = None,
+    require_line_match: bool = False,
 ) -> list[dict]:
-    """Return the quote list for one (market, player, side) tuple."""
+    """Return the quote list for one (market, player, side[, line]) tuple.
+
+    When ``line`` is provided AND ``require_line_match`` is True, ONLY
+    quotes whose canonical line equals the requested line are returned
+    (strict equality — tolerance 0).  Mandatory for NHL exact-identity
+    attachment.  Default (``require_line_match=False``) preserves
+    today's partial-lookup aggregation for non-NHL callers.
+
+    When ``bookmaker`` is provided, only quotes from that exact book
+    slug survive the filter.  Mandatory for NHL FanDuel-only attach.
+    """
     mk = (market_key or "").lower()
     p  = _norm_name(player or "")
     sd = (side or "").lower()
-    if p and sd:
-        return list(extracted.get((mk, p, sd), []))
-    # Partial lookups.
+    bk = (bookmaker or "").lower()
+    line_canon = _canon_line(line) if line is not None else None
+
     out: list[dict] = []
-    for (ek_mk, ek_p, ek_sd), rows in extracted.items():
+    for (ek_mk, ek_p, ek_sd, ek_line), rows in extracted.items():
         if ek_mk != mk:
             continue
         if p and ek_p != p:
             continue
         if sd and ek_sd != sd:
             continue
+        if require_line_match and ek_line != line_canon:
+            continue
+        if bk:
+            # Filter the rows list itself by bookmaker — the key does
+            # NOT carry book, so this is a per-row filter.
+            rows = [r for r in rows
+                    if str(r.get("bookmaker") or "").lower() == bk]
         out.extend(rows)
     return out
 
 
-__all__ = ["extract_observed_quotes", "quotes_for", "_norm_name"]
+__all__ = ["extract_observed_quotes", "quotes_for", "_norm_name", "_canon_line"]
